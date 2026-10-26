@@ -1932,17 +1932,14 @@ namespace FlinchApp
             {
                 CloseCurrent();
 
-                if (targetBounds.Width <= 10 || targetBounds.Height <= 10)
+                var ps = System.Windows.Forms.Screen.PrimaryScreen;
+                targetBounds = new NativeMethods.RECT
                 {
-                    var ps = System.Windows.Forms.Screen.PrimaryScreen;
-                    targetBounds = new NativeMethods.RECT
-                    {
-                        Left = ps.Bounds.Left,
-                        Top = ps.Bounds.Top,
-                        Right = ps.Bounds.Right,
-                        Bottom = ps.Bounds.Bottom
-                    };
-                }
+                    Left = ps.Bounds.Left,
+                    Top = ps.Bounds.Top,
+                    Right = ps.Bounds.Right,
+                    Bottom = ps.Bounds.Bottom
+                };
 
                 var win = new OverlayWindow(targetBounds, scene);
                 lock (_instanceLock)
@@ -3216,23 +3213,14 @@ namespace FlinchApp
                             try
                             {
                                 var cap = new WindowsScreenCaptureService();
-                                var tgt = cap.GetActiveForegroundTarget(IntPtr.Zero);
-                                CapturedFrame f = null;
-                                if (tgt != null && tgt.Bounds.Width > 50 && tgt.Bounds.Height > 50)
-                                {
-                                    f = cap.CaptureTarget(tgt);
-                                }
-                                if (f == null || f.JpegBytes == null || f.JpegBytes.Length < 100)
-                                {
-                                    var s = System.Windows.Forms.Screen.PrimaryScreen;
-                                    var pBounds = new NativeMethods.RECT { Left = s.Bounds.Left, Top = s.Bounds.Top, Right = s.Bounds.Right, Bottom = s.Bounds.Bottom };
-                                    f = cap.CaptureBounds(pBounds, "Display");
-                                }
+                                var s = System.Windows.Forms.Screen.PrimaryScreen;
+                                var pBounds = new NativeMethods.RECT { Left = s.Bounds.Left, Top = s.Bounds.Top, Right = s.Bounds.Right, Bottom = s.Bounds.Bottom };
+                                CapturedFrame f = cap.CaptureBounds(pBounds, "Display");
                                 if (f != null && f.JpegBytes != null)
                                 {
                                     screenBytes = f.JpegBytes;
                                     uiaJson = f.UiaJson;
-                                    targetBounds = f.SourceBounds;
+                                    targetBounds = pBounds;
                                     LastActiveTargetBounds = targetBounds;
                                 }
                             }
@@ -3355,7 +3343,16 @@ namespace FlinchApp
                                                         type = oDict.ContainsKey("type") && oDict["type"] != null ? oDict["type"].ToString().ToLowerInvariant() : "",
                                                         label = oDict.ContainsKey("label") && oDict["label"] != null ? oDict["label"].ToString() : null,
                                                         text = oDict.ContainsKey("text") && oDict["text"] != null ? oDict["text"].ToString() : null,
-                                                        latex = oDict.ContainsKey("latex") && oDict["latex"] != null ? oDict["latex"].ToString() : null
+                                                        latex = oDict.ContainsKey("latex") && oDict["latex"] != null ? oDict["latex"].ToString() : null,
+                                                        color = oDict.ContainsKey("color") && oDict["color"] != null ? oDict["color"].ToString() : null,
+                                                        path = oDict.ContainsKey("path") && oDict["path"] != null ? oDict["path"].ToString() : null,
+                                                        title = oDict.ContainsKey("title") && oDict["title"] != null ? oDict["title"].ToString() : null,
+                                                        altAnswer = oDict.ContainsKey("altAnswer") && oDict["altAnswer"] != null ? oDict["altAnswer"].ToString() : null,
+                                                        altExplanation = oDict.ContainsKey("altExplanation") && oDict["altExplanation"] != null ? oDict["altExplanation"].ToString() : null,
+                                                        step = oDict.ContainsKey("step") && oDict["step"] != null ? Convert.ToInt32(oDict["step"]) : (int?)null,
+                                                        delayMs = oDict.ContainsKey("delayMs") && oDict["delayMs"] != null ? Convert.ToInt32(oDict["delayMs"]) : (int?)null,
+                                                        radius = oDict.ContainsKey("radius") && oDict["radius"] != null ? Convert.ToDouble(oDict["radius"]) : (double?)null,
+                                                        strokeWidth = oDict.ContainsKey("strokeWidth") && oDict["strokeWidth"] != null ? Convert.ToDouble(oDict["strokeWidth"]) : (double?)null
                                                     };
 
                                                     if (oDict.ContainsKey("from") && oDict["from"] is Dictionary<string, object>)
@@ -3386,6 +3383,23 @@ namespace FlinchApp
                                                             w = Convert.ToDouble(rDict["w"]),
                                                             h = Convert.ToDouble(rDict["h"])
                                                         };
+                                                    }
+                                                    if (oDict.ContainsKey("points") && oDict["points"] is System.Collections.ArrayList)
+                                                    {
+                                                        var pArr = (System.Collections.ArrayList)oDict["points"];
+                                                        obj.points = new List<ScenePoint>();
+                                                        foreach (var pItem in pArr)
+                                                        {
+                                                            if (pItem is Dictionary<string, object>)
+                                                            {
+                                                                var pd = (Dictionary<string, object>)pItem;
+                                                                obj.points.Add(new ScenePoint
+                                                                {
+                                                                    x = Convert.ToDouble(pd["x"]),
+                                                                    y = Convert.ToDouble(pd["y"])
+                                                                });
+                                                            }
+                                                        }
                                                     }
                                                     parsedScene.objects.Add(obj);
                                                 }
@@ -5508,34 +5522,14 @@ namespace FlinchApp
         {
             try
             {
-                WindowTarget target = null;
-                if (targetHwnd != IntPtr.Zero && targetHwnd != ignoreHwnd)
-                {
-                    target = _captureService.GetActiveForegroundTarget(ignoreHwnd);
-                }
-
-                if (target == null || target.Bounds.Width < 50 || target.Bounds.Height < 50)
-                {
-                    target = _captureService.GetActiveForegroundTarget(ignoreHwnd);
-                }
-
-                CapturedFrame frame = null;
-                if (target != null && target.Bounds.Width > 50 && target.Bounds.Height > 50)
-                {
-                    frame = _captureService.CaptureTarget(target);
-                }
-
-                if (frame == null || frame.JpegBytes == null || frame.JpegBytes.Length < 100)
-                {
-                    var s = System.Windows.Forms.Screen.PrimaryScreen;
-                    var fullBounds = new NativeMethods.RECT { Left = s.Bounds.Left, Top = s.Bounds.Top, Right = s.Bounds.Right, Bottom = s.Bounds.Bottom };
-                    frame = _captureService.CaptureBounds(fullBounds, "Display");
-                }
+                var s = System.Windows.Forms.Screen.PrimaryScreen;
+                var fullBounds = new NativeMethods.RECT { Left = s.Bounds.Left, Top = s.Bounds.Top, Right = s.Bounds.Right, Bottom = s.Bounds.Bottom };
+                CapturedFrame frame = _captureService.CaptureBounds(fullBounds, "Display");
 
                 if (frame != null && frame.JpegBytes != null && frame.JpegBytes.Length > 0)
                 {
                     GeminiClient.SetStagedScreenFrame(frame);
-                    FlinchEnv.Log("Auto-captured active window for Alt+V: " + frame.TargetName);
+                    FlinchEnv.Log("Auto-captured primary screen for voice context: Display");
                 }
             }
             catch (Exception ex)
