@@ -214,6 +214,7 @@ serve(async (req: Request) => {
     const audioFile = formData.get("file");
     const requestedVoice = (formData.get("voice") as string) || "troy";
     const screenFile = formData.get("screen");
+    const isExplicitStaged = String(formData.get("staged") || "").toLowerCase() === "true";
     const clipboardText = ((formData.get("clipboard") as string) || "").slice(0, 4000).trim();
     const uiaText = ((formData.get("uia") as string) || "").slice(0, 4000).trim();
     let screenB64 = "";
