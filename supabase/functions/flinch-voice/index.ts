@@ -274,6 +274,7 @@ serve(async (req: Request) => {
         const fileObj = new File([audioBytes], "audio.wav", { type: "audio/wav" });
         whisperFormData.append("file", fileObj);
         whisperFormData.append("model", wModel);
+        whisperFormData.append("language", "en");
         whisperFormData.append("temperature", "0");
 
         const whisperResp = await fetch("https://api.groq.com/openai/v1/audio/transcriptions", {
@@ -490,10 +491,11 @@ serve(async (req: Request) => {
     const isScreenQuery = isScreenAwarenessQuery(transcript) || isExplicitStaged;
     if (!reply && isScreenQuery && screenB64 && geminiApiKey) {
       const visionModels = [
-        "gemini-flash-lite-latest",
-        "gemini-3.5-flash-lite",
-        "gemini-3.8-flash",
-        "gemini-flash-latest"
+        "gemini-1.5-flash-latest",
+        "gemini-1.5-flash",
+        "gemini-2.0-flash",
+        "gemini-2.5-flash",
+        "gemini-1.5-pro-latest"
       ];
 
       const uiaSection = uiaText
@@ -511,24 +513,26 @@ Look carefully at the attached screenshot of the user's active window/display.${
 
 Instructions:
 1. Provide a direct, helpful spoken response answering their question in 1-2 natural sentences without any markdown, bullets, or asterisks. Make your first sentence direct and snappy.
-2. If the user asks to solve or answer a problem (e.g. 'answer the problem', 'solve the problem on the screen', 'what problem', 'fix the problem'):
-   - First check if an equation, math problem, code error, or problem is visible on the screen.
-   - If a problem/equation/error IS visible: solve it and break down the solution into STEP-BY-STEP visual annotations on the user's screen using sequential "step" numbers (1, 2, 3...) and "delayMs" (e.g. step 1: 0ms, step 2: 1300ms, step 3: 2600ms) so the desktop app animates each step drawing onto the screen in real-time!
-     For math equations like 6 ÷ 2(1+2): step 1 circle (1+2)=3, step 2 highlight 6÷2=3, step 3 callout pointing to 3×3=9. DurationMs: 14000.
-   - If the user asks "Answer the problem" or "Solve the problem", but there is NO problem, equation, or error on the screen:
-     You MUST state: "What problem? I don't see an equation or error on your screen right now."
-     Do not invent an imaginary problem.
-3. If the user asks about anything on screen (code, error, design, text, image, browser, button, equation), use the screenshot to give a precise, knowledgeable answer.
-4. If the user refers to past questions or chat, use the recent conversation history to answer accurately.
-3. If the user asks to solve a problem (e.g. math equations like "6 ÷ 2(1+2) =", code bugs, puzzles, or UI tasks), or asks to find/point out/highlight/circle/draw on elements:
-You MUST break down the solution into STEP-BY-STEP visual annotations on the user's screen using sequential "step" numbers (1, 2, 3...) and "delayMs" (e.g. step 1: 0ms, step 2: 1300ms, step 3: 2600ms) so the desktop app animates each step drawing onto the screen in real-time!
-For math equations:
-- Look at the screenshot to locate the exact bounding box of the equation and its components (normalized coordinates x, y, w, h from 0.0 to 1.0).
-- Step 1: Circle or highlight the first part to calculate (e.g. parentheses "(1+2)") with {"type": "circle", "rect": {"x": 0.47, "y": 0.48, "w": 0.16, "h": 0.14}, "step": 1, "delayMs": 0, "label": "① (1+2) = 3", "color": "#3DDC84"}.
-- Step 2: Highlight or underline the next operation (e.g. division left-to-right "6 ÷ 2") with {"type": "highlight", "rect": {"x": 0.31, "y": 0.50, "w": 0.15, "h": 0.10}, "step": 2, "delayMs": 1300, "label": "② 6 ÷ 2 = 3", "color": "#38BDF8"}.
-- Step 3: Draw an arrow or callout pointing to the answer next to "=" with {"type": "callout", "rect": {"x": 0.65, "y": 0.48, "w": 0.18, "h": 0.12}, "step": 3, "delayMs": 2600, "label": "③ Result: 9", "text": "3 × 3 = 9", "color": "#3DDC84"}.
-- Note on viral problem 6 ÷ 2(1+2) = : Under standard modern algebraic order of operations (PEMDAS/BODMAS with left-to-right division and multiplication), 6 ÷ 2(1+2) = 6 ÷ 2 × 3 = 3 × 3 = 9. State this clearly.
-Set durationMs: 14000 so the user has time to watch each animated step.
+2. If the user asks to solve or explain a problem on screen (e.g. 'solve this', 'solve the problem', 'what is the answer', 'can you solve this', 'how to solve this'):
+   - Look at the screenshot to locate the exact bounding box of the equation or problem (normalized coordinates x, y, w, h from 0.0 to 1.0).
+   - You MUST generate visual drawing objects with sequential step numbers and delayMs:
+     - Step 1: Circle around the first operation (e.g. parentheses "(1+2)") with {"type": "circle", "rect": {"x": 0.40, "y": 0.44, "w": 0.16, "h": 0.16}, "step": 1, "delayMs": 0, "label": "① (1+2) = 3", "color": "#3DDC84"}.
+     - Step 2: Highlight under the next operation (e.g. division "6 ÷ 2") with {"type": "highlight", "rect": {"x": 0.24, "y": 0.46, "w": 0.16, "h": 0.12}, "step": 2, "delayMs": 1400, "label": "② 6 ÷ 2 = 3", "color": "#38BDF8"}.
+     - Step 3: Arrow pointing to the answer space next to "=" with {"type": "arrow", "from": {"x": 0.54, "y": 0.50}, "to": {"x": 0.65, "y": 0.50}, "step": 3, "delayMs": 2800, "label": "③ 3 × 3 = 9", "color": "#3DDC84"}.
+     - Step 4: Include a "notepad" object that creates an interactive solution notebook card on screen:
+       {
+         "type": "notepad",
+         "title": "Order of Operations: 6 ÷ 2(1+2)",
+         "text": "① Parentheses First: (1 + 2) = 3  →  6 ÷ 2(3)\\n② Left-to-Right: 6 ÷ 2 = 3  →  3(3)\\n③ Multiply: 3 × 3 = 9\\n\\nResult = 9 (Modern Standard)",
+         "altAnswer": "1",
+         "altExplanation": "People get 1 by treating implied multiplication 2(3) with higher precedence than division: 6 ÷ [2(3)] = 6 ÷ 6 = 1.\\n\\nUnder modern PEMDAS / ISO 80000-2 standards, multiplication and division share equal priority left-to-right, giving 9.",
+         "delayMs": 400
+       }
+   - For viral equation 6 ÷ 2(1+2) =: State clearly in spoken answer: "Under the modern order of operations, parentheses are evaluated first, then left to right division and multiplication gives nine."
+3. If the user asks about anything else on screen (code, error, design, text, browser, button), use the screenshot to give a precise answer with visual outlines or arrows.
+4. If there is NO problem or error on screen when asked to solve one, reply: "What problem? I don't see an equation or error on your screen right now."
+
+Set durationMs: 20000 so the user has time to watch each animated step and interact with the notebook.
 
 Supported scene object types:
 - "circle": {"type": "circle", "rect": {"x": 0.45, "y": 0.35, "w": 0.1, "h": 0.1}, "step": 1, "delayMs": 0, "label": "Target", "color": "#3DDC84"}
@@ -537,15 +541,14 @@ Supported scene object types:
 - "arrow": {"type": "arrow", "from": {"x": 0.2, "y": 0.3}, "to": {"x": 0.5, "y": 0.4}, "step": 3, "delayMs": 2600, "label": "Click Here", "color": "#38BDF8"}
 - "outline": {"type": "outline", "rect": {"x": 0.4, "y": 0.3, "w": 0.2, "h": 0.08}, "label": "Error / Target"}
 - "callout": {"type": "callout", "rect": {"x": 0.4, "y": 0.4, "w": 0.3, "h": 0.1}, "text": "Explanation note"}
-- "equation": {"type": "equation", "rect": {"x": 0.3, "y": 0.2, "w": 0.4, "h": 0.12}, "latex": "E = mc^2"}
-- "spotlight": {"type": "spotlight", "rect": {"x": 0.4, "y": 0.3, "w": 0.2, "h": 0.2}}
+- "notepad": {"type": "notepad", "title": "Math Notebook", "text": "Step 1...\\nStep 2...", "altAnswer": "1", "altExplanation": "Why people get 1...", "delayMs": 500}
 
 Return your output strictly as a JSON object:
 {
   "answer": "Spoken answer here",
   "scene": {
     "objects": [ ... ],
-    "durationMs": 8000
+    "durationMs": 20000
   }
 }
 If no visual overlay is needed, set "scene": null.`;
@@ -1143,7 +1146,9 @@ function isScreenAwarenessQuery(q: string): boolean {
     "explain the error", "what does this say", "what does this mean", "summarize this page",
     "summarize this window", "can you see", "do you see", "on my display", "on the monitor",
     "point to", "highlight", "draw", "circle", "arrow", "where is", "show me", "which button",
-    "how do i fix", "solve this", "formula", "equation", "problem", "solve the problem",
+    "how do i fix", "solve", "solve this", "can you solve", "can you solve this",
+    "formula", "equation", "problem", "solve the problem", "what is the answer", "answer this",
+    "work this out", "how to solve", "do this problem",
     "answer the problem", "fix the problem", "what problem", "what is the problem",
     "check the screen", "on the screen", "on screen"
   ];
@@ -1156,7 +1161,7 @@ function sanitizeScene(sceneRaw: any): any {
   const objects = Array.isArray(sceneRaw.objects) ? sceneRaw.objects : [];
   if (objects.length === 0) return null;
 
-  const validTypes = new Set(["arrow", "outline", "callout", "equation", "spotlight", "circle", "highlight", "draw", "pen", "path"]);
+  const validTypes = new Set(["arrow", "outline", "callout", "equation", "spotlight", "circle", "highlight", "draw", "pen", "path", "notepad", "notebook"]);
   const cleanObjects: any[] = [];
 
   for (const obj of objects) {
@@ -1172,7 +1177,18 @@ function sanitizeScene(sceneRaw: any): any {
 
     const cleanObj: any = { type };
 
-    if (type === "arrow") {
+    if (type === "notepad" || type === "notebook") {
+      cleanObj.title = String(obj.title || "Math Notebook").slice(0, 150);
+      cleanObj.text = String(obj.text || "").slice(0, 1000);
+      if (obj.altAnswer) cleanObj.altAnswer = String(obj.altAnswer).slice(0, 50);
+      if (obj.altExplanation) cleanObj.altExplanation = String(obj.altExplanation).slice(0, 600);
+      if (obj.rect) {
+        cleanObj.rect = { x: clamp(obj.rect.x), y: clamp(obj.rect.y), w: clamp(obj.rect.w), h: clamp(obj.rect.h) };
+      }
+      if (obj.color) cleanObj.color = String(obj.color).trim();
+      if (typeof obj.delayMs === "number") cleanObj.delayMs = Math.max(0, Math.min(15000, obj.delayMs));
+    }
+    else if (type === "arrow") {
       if (!obj.from || !obj.to) continue;
       cleanObj.from = { x: clamp(obj.from.x), y: clamp(obj.from.y) };
       cleanObj.to = { x: clamp(obj.to.x), y: clamp(obj.to.y) };

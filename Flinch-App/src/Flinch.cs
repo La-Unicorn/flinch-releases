@@ -1898,6 +1898,9 @@ namespace FlinchApp
         public List<ScenePoint> points { get; set; }
         public int? step { get; set; }
         public int? delayMs { get; set; }
+        public string title { get; set; }
+        public string altAnswer { get; set; }
+        public string altExplanation { get; set; }
     }
 
     internal sealed class ScenePayload
@@ -2139,6 +2142,10 @@ namespace FlinchApp
             else if (type == "spotlight" && obj.rect != null)
             {
                 RenderSpotlight(obj);
+            }
+            else if (type == "notepad" || type == "notebook")
+            {
+                RenderNotepadBook(obj);
             }
         }
 
@@ -2655,6 +2662,211 @@ namespace FlinchApp
             Canvas.SetLeft(spotBorder, sx);
             Canvas.SetTop(spotBorder, sy);
             _canvas.Children.Add(spotBorder);
+        }
+
+        private void RenderNotepadBook(SceneObjectPayload obj)
+        {
+            if (obj == null || _isDismissing) return;
+
+            double cardW = Math.Min(420, Width * 0.45);
+            double cardX = Width - cardW - 32;
+            double cardY = 70;
+
+            if (obj.rect != null && obj.rect.w > 0.05)
+            {
+                cardX = Math.Max(20, Math.Min(Width - cardW - 20, obj.rect.x * Width));
+                cardY = Math.Max(40, Math.Min(Height - 380, obj.rect.y * Height));
+            }
+
+            var cardBorder = new Border
+            {
+                Width = cardW,
+                Background = new SolidColorBrush(Color.FromArgb(246, 17, 24, 39)),
+                BorderBrush = new SolidColorBrush(Color.FromRgb(0x3D, 0xDC, 0x84)),
+                BorderThickness = new Thickness(1.8),
+                CornerRadius = new CornerRadius(14),
+                Padding = new Thickness(18, 16, 18, 16),
+                Effect = new DropShadowEffect { Color = Color.FromRgb(0x3D, 0xDC, 0x84), BlurRadius = 24, Opacity = 0.55, ShadowDepth = 4 },
+                Opacity = 0.0
+            };
+
+            var mainStack = new StackPanel();
+
+            // Notebook Header: 📓 Math Notebook
+            var headerRow = new DockPanel { LastChildFill = false, Margin = new Thickness(0, 0, 0, 10) };
+            var headerStack = new StackPanel { Orientation = Orientation.Horizontal };
+            headerStack.Children.Add(new TextBlock
+            {
+                Text = "📓 ",
+                FontSize = 14,
+                VerticalAlignment = VerticalAlignment.Center
+            });
+            headerStack.Children.Add(new TextBlock
+            {
+                Text = string.IsNullOrWhiteSpace(obj.title) ? "Flinch Math Notebook" : obj.title,
+                Foreground = new SolidColorBrush(Color.FromRgb(0x3D, 0xDC, 0x84)),
+                FontWeight = FontWeights.Bold,
+                FontSize = 13.5,
+                FontFamily = new FontFamily("Segoe UI Semibold, Segoe UI"),
+                VerticalAlignment = VerticalAlignment.Center
+            });
+            headerRow.Children.Add(headerStack);
+            mainStack.Children.Add(headerRow);
+
+            // Divider line
+            mainStack.Children.Add(new Border
+            {
+                Height = 1,
+                Background = new SolidColorBrush(Color.FromArgb(50, 255, 255, 255)),
+                Margin = new Thickness(0, 0, 0, 12)
+            });
+
+            // Modern Solution Panel
+            var modernPanel = new StackPanel();
+            string solutionText = obj.text ?? "";
+            var lines = solutionText.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+            foreach (var line in lines)
+            {
+                bool isResult = line.IndexOf("Result", StringComparison.OrdinalIgnoreCase) >= 0 || line.IndexOf("Answer", StringComparison.OrdinalIgnoreCase) >= 0 || line.IndexOf("= 9", StringComparison.OrdinalIgnoreCase) >= 0;
+                var lineBorder = new Border
+                {
+                    Background = isResult ? new SolidColorBrush(Color.FromArgb(50, 0x3D, 0xDC, 0x84)) : new SolidColorBrush(Color.FromArgb(30, 255, 255, 255)),
+                    BorderBrush = isResult ? new SolidColorBrush(Color.FromRgb(0x3D, 0xDC, 0x84)) : Brushes.Transparent,
+                    BorderThickness = new Thickness(isResult ? 1 : 0),
+                    CornerRadius = new CornerRadius(6),
+                    Padding = new Thickness(10, 6, 10, 6),
+                    Margin = new Thickness(0, 0, 0, 6)
+                };
+                lineBorder.Child = new TextBlock
+                {
+                    Text = line,
+                    Foreground = isResult ? new SolidColorBrush(Color.FromRgb(0x86, 0xEF, 0xAC)) : Brushes.White,
+                    FontSize = isResult ? 13 : 12,
+                    FontWeight = isResult ? FontWeights.Bold : FontWeights.Normal,
+                    FontFamily = new FontFamily("Segoe UI, Consolas"),
+                    TextWrapping = TextWrapping.Wrap
+                };
+                modernPanel.Children.Add(lineBorder);
+            }
+
+            // Alternative Panel (Why people get 1)
+            var altPanel = new StackPanel { Visibility = Visibility.Collapsed };
+            var altHeader = new TextBlock
+            {
+                Text = "Historical / Implied Convention:",
+                Foreground = new SolidColorBrush(Color.FromRgb(0xF5, 0x9E, 0x0B)),
+                FontWeight = FontWeights.Bold,
+                FontSize = 12.5,
+                Margin = new Thickness(0, 0, 0, 6)
+            };
+            altPanel.Children.Add(altHeader);
+
+            string altExplanation = string.IsNullOrWhiteSpace(obj.altExplanation)
+                ? "People get 1 because historical 1917 Cajori rules (and some calculators) bind implied multiplication tighter than division: 6 ÷ [2(3)] = 6 ÷ 6 = 1.\n\nModern algebraic standard (PEMDAS/ISO 80000-2) evaluates left-to-right, giving 9."
+                : obj.altExplanation;
+
+            var altTextBorder = new Border
+            {
+                Background = new SolidColorBrush(Color.FromArgb(40, 0xF5, 0x9E, 0x0B)),
+                BorderBrush = new SolidColorBrush(Color.FromRgb(0xF5, 0x9E, 0x0B)),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(8),
+                Padding = new Thickness(10, 8, 10, 8),
+                Margin = new Thickness(0, 0, 0, 8)
+            };
+            altTextBorder.Child = new TextBlock
+            {
+                Text = altExplanation,
+                Foreground = new SolidColorBrush(Color.FromRgb(254, 243, 199)),
+                FontSize = 11.5,
+                FontFamily = new FontFamily("Segoe UI, Consolas"),
+                TextWrapping = TextWrapping.Wrap,
+                LineHeight = 17
+            };
+            altPanel.Children.Add(altTextBorder);
+
+            // Interactive Clickable Button: "Why do people get 1?"
+            var switchBtn = new Border
+            {
+                Background = new SolidColorBrush(Color.FromArgb(60, 56, 189, 248)),
+                BorderBrush = new SolidColorBrush(Color.FromRgb(56, 189, 248)),
+                BorderThickness = new Thickness(1.2),
+                CornerRadius = new CornerRadius(20),
+                Padding = new Thickness(12, 6, 12, 6),
+                HorizontalAlignment = HorizontalAlignment.Center,
+                Cursor = Cursors.Hand,
+                Margin = new Thickness(0, 8, 0, 0)
+            };
+            var btnText = new TextBlock
+            {
+                Text = "❓ Why do people get 1? (Click to view)",
+                Foreground = new SolidColorBrush(Color.FromRgb(186, 230, 253)),
+                FontSize = 11.5,
+                FontWeight = FontWeights.SemiBold,
+                FontFamily = new FontFamily("Segoe UI Semibold, Segoe UI")
+            };
+            switchBtn.Child = btnText;
+
+            bool isShowingAlt = false;
+            switchBtn.MouseLeftButtonDown += (s, e) =>
+            {
+                e.Handled = true;
+                isShowingAlt = !isShowingAlt;
+                if (isShowingAlt)
+                {
+                    modernPanel.Visibility = Visibility.Collapsed;
+                    altPanel.Visibility = Visibility.Visible;
+                    btnText.Text = "← Back to Modern Solution (9)";
+                    switchBtn.BorderBrush = new SolidColorBrush(Color.FromRgb(0x3D, 0xDC, 0x84));
+                    switchBtn.Background = new SolidColorBrush(Color.FromArgb(60, 0x3D, 0xDC, 0x84));
+                    btnText.Foreground = new SolidColorBrush(Color.FromRgb(0x86, 0xEF, 0xAC));
+
+                    Task.Run(() =>
+                    {
+                        try
+                        {
+                            byte[] speechBytes = GeminiClient.SynthesizeSpeechFast("People get 1 because under historical implied multiplication conventions, 2 times 3 is calculated first, yielding 6 divided by 6 equals 1. Under modern PEMDAS, left-to-right division gives 9.");
+                            if (speechBytes != null && speechBytes.Length > 44)
+                            {
+                                using (var ms = new MemoryStream(speechBytes))
+                                using (var sp = new System.Media.SoundPlayer(ms))
+                                {
+                                    sp.PlaySync();
+                                }
+                            }
+                        }
+                        catch { }
+                    });
+                }
+                else
+                {
+                    modernPanel.Visibility = Visibility.Visible;
+                    altPanel.Visibility = Visibility.Collapsed;
+                    btnText.Text = "❓ Why do people get 1? (Click to view)";
+                    switchBtn.BorderBrush = new SolidColorBrush(Color.FromRgb(56, 189, 248));
+                    switchBtn.Background = new SolidColorBrush(Color.FromArgb(60, 56, 189, 248));
+                    btnText.Foreground = new SolidColorBrush(Color.FromRgb(186, 230, 253));
+                }
+            };
+
+            mainStack.Children.Add(modernPanel);
+            mainStack.Children.Add(altPanel);
+            mainStack.Children.Add(switchBtn);
+            cardBorder.Child = mainStack;
+
+            Canvas.SetLeft(cardBorder, cardX);
+            Canvas.SetTop(cardBorder, cardY);
+            _canvas.Children.Add(cardBorder);
+
+            var st = new ScaleTransform(0.88, 0.88, cardW / 2.0, 150);
+            cardBorder.RenderTransform = st;
+            var popAnim = new System.Windows.Media.Animation.DoubleAnimation(0.88, 1.0, new Duration(TimeSpan.FromMilliseconds(350)))
+            {
+                EasingFunction = new BackEase { Amplitude = 0.35, EasingMode = EasingMode.EaseOut }
+            };
+            st.BeginAnimation(ScaleTransform.ScaleXProperty, popAnim);
+            st.BeginAnimation(ScaleTransform.ScaleYProperty, popAnim);
+            cardBorder.BeginAnimation(UIElement.OpacityProperty, new System.Windows.Media.Animation.DoubleAnimation(0.0, 1.0, new Duration(TimeSpan.FromMilliseconds(250))));
         }
 
         public void DismissWithAnimation()
