@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "Flinch.App (Package)": {
+      "commandName": "MsixPackage"
+    },
+    "Flinch.App (Unpackaged)": {
+      "commandName": "Project"
+    }
+  }
+}

@@ -1,0 +1,14 @@
+<Window
+    x:Class="Flinch_App.Overlay.OverlayWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:local="using:Flinch_App.Overlay"
+    Title="Flinch Overlay">
+
+    <Grid x:Name="RootGrid"
+          Background="Transparent"
+          KeyDown="OnRootGridKeyDown">
+        <!-- Overlay Canvas Renderer -->
+        <local:OverlayCanvas x:Name="SceneCanvas" />
+    </Grid>
+</Window>

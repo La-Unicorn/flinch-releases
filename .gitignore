@@ -1,0 +1,40 @@
+# User-specific files
+*.rsuser
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Build outputs
+[Bb]in/
+[Oo]bj/
+[Ll]og/
+[Ll]ogs/
+dist/
+
+# Visual Studio / VS Code
+.vs/
+.vscode/
+.idea/
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+*.pfx
+*.cer
+
+# Python virtual environment
+.venv/
+__pycache__/
+*.pyc
+
+# Legacy temporary folders
+flinch/
+Flinch-App/
+Flinch-Demo-Portable/
+flinch-portable/
+supabase/
+*.zip
+*.exe
+*.log
