@@ -774,7 +774,7 @@ If no visual overlay is needed, set "scene": null.`;
             type: "highlight",
             rect: { x: 0.22, y: 0.46, w: 0.17, h: 0.10 },
             step: 2,
-            delayMs: 1400,
+            delayMs: 2200,
             label: "② 6 ÷ 2 = 3",
             color: "#38BDF8"
           },
@@ -783,7 +783,7 @@ If no visual overlay is needed, set "scene": null.`;
             from: { x: 0.54, y: 0.51 },
             to: { x: 0.65, y: 0.51 },
             step: 3,
-            delayMs: 2600,
+            delayMs: 4400,
             label: "③ 3 × 3 = 9",
             color: "#3DDC84"
           },
@@ -798,7 +798,7 @@ If no visual overlay is needed, set "scene": null.`;
         ]
       };
       if (!reply || reply.includes("don't see") || reply.length < 10) {
-        reply = "Under the modern order of operations, parentheses are evaluated first, then left to right division and multiplication gives nine.";
+        reply = "First, evaluate parentheses: 1 plus 2 is 3. Next, working left to right, 6 divided by 2 is 3. Finally, 3 times 3 gives 9.";
       }
     }
 
