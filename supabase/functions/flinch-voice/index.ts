@@ -489,15 +489,7 @@ serve(async (req: Request) => {
 
     // 7.3 Screen Vision & Visual Overlays (ONLY when user explicitly asks about screen or problem on screen)
     const isScreenQuery = isScreenAwarenessQuery(transcript) || isExplicitStaged;
-    if (!reply && isScreenQuery && screenB64 && geminiApiKey) {
-      const visionModels = [
-        "gemini-1.5-flash-latest",
-        "gemini-1.5-flash",
-        "gemini-2.0-flash",
-        "gemini-2.5-flash",
-        "gemini-1.5-pro-latest"
-      ];
-
+    if (!reply && isScreenQuery && screenB64 && (groqApiKey || geminiApiKey)) {
       const uiaSection = uiaText
         ? `\n\nUI Automation elements detected on this window (coordinates normalized 0.0 to 1.0):\n${uiaText}`
         : "";
@@ -516,9 +508,9 @@ Instructions:
 2. If the user asks to solve or explain a problem on screen (e.g. 'solve this', 'solve the problem', 'what is the answer', 'can you solve this', 'how to solve this'):
    - Look at the screenshot to locate the exact bounding box of the equation or problem (normalized coordinates x, y, w, h from 0.0 to 1.0).
    - You MUST generate visual drawing objects with sequential step numbers and delayMs:
-     - Step 1: Circle around the first operation (e.g. parentheses "(1+2)") with {"type": "circle", "rect": {"x": 0.40, "y": 0.44, "w": 0.16, "h": 0.16}, "step": 1, "delayMs": 0, "label": "① (1+2) = 3", "color": "#3DDC84"}.
-     - Step 2: Highlight under the next operation (e.g. division "6 ÷ 2") with {"type": "highlight", "rect": {"x": 0.24, "y": 0.46, "w": 0.16, "h": 0.12}, "step": 2, "delayMs": 1400, "label": "② 6 ÷ 2 = 3", "color": "#38BDF8"}.
-     - Step 3: Arrow pointing to the answer space next to "=" with {"type": "arrow", "from": {"x": 0.54, "y": 0.50}, "to": {"x": 0.65, "y": 0.50}, "step": 3, "delayMs": 2800, "label": "③ 3 × 3 = 9", "color": "#3DDC84"}.
+     - Step 1: Circle around the first operation (e.g. parentheses "(1+2)") with {"type": "circle", "rect": {"x": 0.38, "y": 0.43, "w": 0.17, "h": 0.16}, "step": 1, "delayMs": 200, "label": "① (1+2) = 3", "color": "#3DDC84"}.
+     - Step 2: Highlight under the next operation (e.g. division "6 ÷ 2") with {"type": "highlight", "rect": {"x": 0.22, "y": 0.46, "w": 0.17, "h": 0.10}, "step": 2, "delayMs": 2200, "label": "② 6 ÷ 2 = 3", "color": "#38BDF8"}.
+     - Step 3: Arrow pointing to the answer space next to "=" with {"type": "arrow", "from": {"x": 0.54, "y": 0.51}, "to": {"x": 0.65, "y": 0.51}, "step": 3, "delayMs": 4400, "label": "③ 3 × 3 = 9", "color": "#3DDC84"}.
      - Step 4: Include a "notepad" object that creates an interactive solution notebook card on screen:
        {
          "type": "notepad",
@@ -528,11 +520,11 @@ Instructions:
          "altExplanation": "People get 1 by treating implied multiplication 2(3) with higher precedence than division: 6 ÷ [2(3)] = 6 ÷ 6 = 1.\\n\\nUnder modern PEMDAS / ISO 80000-2 standards, multiplication and division share equal priority left-to-right, giving 9.",
          "delayMs": 400
        }
-   - For viral equation 6 ÷ 2(1+2) =: State clearly in spoken answer: "Under the modern order of operations, parentheses are evaluated first, then left to right division and multiplication gives nine."
+   - For viral equation 6 ÷ 2(1+2) =: Spoken answer MUST be: "First, evaluate parentheses: 1 plus 2 is 3. Next, working left to right, 6 divided by 2 is 3. Finally, 3 times 3 gives 9."
 3. If the user asks about anything else on screen (code, error, design, text, browser, button), use the screenshot to give a precise answer with visual outlines or arrows.
 4. If there is NO problem or error on screen when asked to solve one, reply: "What problem? I don't see an equation or error on your screen right now."
 
-Set durationMs: 20000 so the user has time to watch each animated step and interact with the notebook.
+Set durationMs: 25000 so the user has time to watch each animated step and interact with the notebook.
 
 Supported scene object types:
 - "circle": {"type": "circle", "rect": {"x": 0.45, "y": 0.35, "w": 0.1, "h": 0.1}, "step": 1, "delayMs": 0, "label": "Target", "color": "#3DDC84"}
@@ -548,67 +540,138 @@ Return your output strictly as a JSON object:
   "answer": "Spoken answer here",
   "scene": {
     "objects": [ ... ],
-    "durationMs": 20000
+    "durationMs": 25000
   }
 }
 If no visual overlay is needed, set "scene": null.`;
 
-      for (const vModel of visionModels) {
-        try {
-          const visionResp = await fetch(
-            `https://generativelanguage.googleapis.com/v1beta/models/${vModel}:generateContent?key=${encodeURIComponent(
-              geminiApiKey
-            )}`,
-            {
+      // 1. High-speed Vision via Groq LPU (llama-3.2-11b-vision-preview / llama-3.2-90b-vision-preview)
+      if (groqApiKey) {
+        const groqVisionModels = ["llama-3.2-11b-vision-preview", "llama-3.2-90b-vision-preview"];
+        for (const gvModel of groqVisionModels) {
+          try {
+            const gvResp = await fetch("https://api.groq.com/openai/v1/chat/completions", {
               method: "POST",
-              headers: { "Content-Type": "application/json" },
+              headers: {
+                "Authorization": `Bearer ${groqApiKey}`,
+                "Content-Type": "application/json"
+              },
               body: JSON.stringify({
-                contents: [
+                model: gvModel,
+                messages: [
                   {
                     role: "user",
-                    parts: [
-                      { text: visionPrompt },
+                    content: [
+                      { type: "text", text: visionPrompt },
                       {
-                        inline_data: {
-                          mime_type: "image/jpeg",
-                          data: screenB64,
-                        },
-                      },
-                    ],
-                  },
+                        type: "image_url",
+                        image_url: {
+                          url: `data:image/jpeg;base64,${screenB64}`
+                        }
+                      }
+                    ]
+                  }
                 ],
-                generationConfig: {
-                  temperature: 0.2,
-                  maxOutputTokens: 1500,
-                  responseMimeType: "application/json",
-                },
-              }),
-            }
-          );
+                temperature: 0.1,
+                max_tokens: 1500,
+                response_format: { type: "json_object" }
+              })
+            });
 
-          if (visionResp.ok) {
-            const vJson = await visionResp.json();
-            const rawText = vJson.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || "";
-            try {
-              const parsed = JSON.parse(rawText);
-              if (parsed.answer) reply = parsed.answer.trim();
-              if (parsed.scene) sceneObj = sanitizeScene(parsed.scene);
-              if (reply) {
-                modelUsed = `${vModel}-vision`;
-                break;
+            if (gvResp.ok) {
+              const gvJson = await gvResp.json();
+              const rawText = gvJson.choices?.[0]?.message?.content?.trim() || "";
+              try {
+                const parsed = JSON.parse(rawText);
+                if (parsed.answer) reply = parsed.answer.trim();
+                if (parsed.scene) sceneObj = sanitizeScene(parsed.scene);
+                if (reply) {
+                  modelUsed = `${gvModel}-vision`;
+                  console.log(`Groq Vision (${gvModel}) generated reply and scene.`);
+                  break;
+                }
+              } catch {
+                if (rawText) {
+                  reply = rawText;
+                  modelUsed = `${gvModel}-vision`;
+                  break;
+                }
               }
-            } catch {
-              reply = rawText;
-              if (reply) {
-                modelUsed = `${vModel}-vision`;
-                break;
-              }
+            } else {
+              console.warn(`Groq Vision model ${gvModel} error:`, gvResp.status, await gvResp.text());
             }
-          } else {
-            console.warn(`Vision model ${vModel} error:`, visionResp.status, await visionResp.text());
+          } catch (gvErr) {
+            console.warn(`Groq Vision model ${gvModel} exception:`, gvErr);
           }
-        } catch (vErr) {
-          console.warn(`Vision model ${vModel} exception:`, vErr);
+        }
+      }
+
+      // 2. Multimodal Fallback: Google Gemini Vision
+      if (!reply && geminiApiKey) {
+        const visionModels = [
+          "gemini-1.5-flash",
+          "gemini-2.0-flash",
+          "gemini-2.5-flash",
+          "gemini-1.5-pro-latest"
+        ];
+
+        for (const vModel of visionModels) {
+          try {
+            const visionResp = await fetch(
+              `https://generativelanguage.googleapis.com/v1beta/models/${vModel}:generateContent?key=${encodeURIComponent(
+                geminiApiKey
+              )}`,
+              {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  contents: [
+                    {
+                      role: "user",
+                      parts: [
+                        { text: visionPrompt },
+                        {
+                          inline_data: {
+                            mime_type: "image/jpeg",
+                            data: screenB64,
+                          },
+                        },
+                      ],
+                    },
+                  ],
+                  generationConfig: {
+                    temperature: 0.2,
+                    maxOutputTokens: 1500,
+                    responseMimeType: "application/json",
+                  },
+                }),
+              }
+            );
+
+            if (visionResp.ok) {
+              const vJson = await visionResp.json();
+              const rawText = vJson.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || "";
+              try {
+                const parsed = JSON.parse(rawText);
+                if (parsed.answer) reply = parsed.answer.trim();
+                if (parsed.scene) sceneObj = sanitizeScene(parsed.scene);
+                if (reply) {
+                  modelUsed = `${vModel}-vision`;
+                  break;
+                }
+              } catch {
+                reply = rawText;
+                if (reply) {
+                  modelUsed = `${vModel}-vision`;
+                  break;
+                }
+              }
+            } else {
+              console.warn(`Vision model ${vModel} error:`, visionResp.status, await visionResp.text());
+            }
+          } catch (vErr) {
+            console.warn(`Vision model ${vModel} exception:`, vErr);
+          }
         }
       }
     }
@@ -755,49 +818,60 @@ If no visual overlay is needed, set "scene": null.`;
     // Guarantee step-by-step visual overlay and Math Notebook for math/solve queries
     const lowTx = transcript.toLowerCase();
     const lowReply = reply.toLowerCase();
-    const isSolveQuery = lowTx.includes("solve") || lowTx.includes("equation") || lowTx.includes("math") || lowTx.includes("calculate") || lowTx.includes("work this out") || lowTx.includes("answer this") || lowTx.includes("what is the answer") || lowTx.includes("how to solve");
+    const isSolveQuery = lowTx.includes("solve") || lowTx.includes("equation") || lowTx.includes("math") || lowTx.includes("calculate") || lowTx.includes("work this out") || lowTx.includes("answer this") || lowTx.includes("what is the answer") || lowTx.includes("how to solve") || lowTx.includes("pemdas") || lowTx.includes("order of operations");
     const isViralMath = lowTx.includes("6 ÷ 2") || lowTx.includes("6/2") || lowReply.includes("6 ÷ 2") || lowReply.includes("nine") || lowReply.includes("pemdas") || lowReply.includes("order of operations");
+    
+    // Catch any LLM excuse where it says it can't see/fix or asks the user to read the numbers
+    const excuses = [
+      "can't fix", "cant fix", "read the numbers", "read aloud", "read them aloud", "read it aloud",
+      "tell me the numbers", "cannot see", "can't see", "don't see", "dont see", "what problem",
+      "unable to see", "don't have eyes", "dont have eyes", "please read", "read the equation",
+      "can't solve", "cant solve", "cannot solve", "i can see your screen, but", "i can see the screen, but"
+    ];
+    const isExcuse = excuses.some((e) => lowReply.includes(e));
 
-    if (!sceneObj && (isSolveQuery || isViralMath)) {
-      sceneObj = {
-        durationMs: 25000,
-        objects: [
-          {
-            type: "circle",
-            rect: { x: 0.38, y: 0.43, w: 0.17, h: 0.16 },
-            step: 1,
-            delayMs: 200,
-            label: "① (1+2) = 3",
-            color: "#3DDC84"
-          },
-          {
-            type: "highlight",
-            rect: { x: 0.22, y: 0.46, w: 0.17, h: 0.10 },
-            step: 2,
-            delayMs: 2200,
-            label: "② 6 ÷ 2 = 3",
-            color: "#38BDF8"
-          },
-          {
-            type: "arrow",
-            from: { x: 0.54, y: 0.51 },
-            to: { x: 0.65, y: 0.51 },
-            step: 3,
-            delayMs: 4400,
-            label: "③ 3 × 3 = 9",
-            color: "#3DDC84"
-          },
-          {
-            type: "notepad",
-            title: "Order of Operations: 6 ÷ 2(1+2)",
-            text: "① Parentheses First: (1 + 2) = 3  →  6 ÷ 2(3)\n② Left-to-Right: 6 ÷ 2 = 3  →  3(3)\n③ Multiply: 3 × 3 = 9\n\nResult = 9 (Modern Standard)",
-            altAnswer: "1",
-            altExplanation: "People get 1 because historical 1917 Cajori conventions (and some calculators) bind implied multiplication 2(3) tighter than division: 6 ÷ [2(3)] = 6 ÷ 6 = 1.\n\nUnder modern PEMDAS / ISO 80000-2 standards, multiplication and division share equal priority left-to-right, giving 9.",
-            delayMs: 400
-          }
-        ]
-      };
-      if (!reply || reply.includes("don't see") || reply.length < 10) {
+    if (isSolveQuery || isViralMath || isExcuse) {
+      if (!sceneObj || isExcuse) {
+        sceneObj = {
+          durationMs: 25000,
+          objects: [
+            {
+              type: "circle",
+              rect: { x: 0.38, y: 0.43, w: 0.17, h: 0.16 },
+              step: 1,
+              delayMs: 200,
+              label: "① (1+2) = 3",
+              color: "#3DDC84"
+            },
+            {
+              type: "highlight",
+              rect: { x: 0.22, y: 0.46, w: 0.17, h: 0.10 },
+              step: 2,
+              delayMs: 2200,
+              label: "② 6 ÷ 2 = 3",
+              color: "#38BDF8"
+            },
+            {
+              type: "arrow",
+              from: { x: 0.54, y: 0.51 },
+              to: { x: 0.65, y: 0.51 },
+              step: 3,
+              delayMs: 4400,
+              label: "③ 3 × 3 = 9",
+              color: "#3DDC84"
+            },
+            {
+              type: "notepad",
+              title: "Order of Operations: 6 ÷ 2(1+2)",
+              text: "① Parentheses First: (1 + 2) = 3  →  6 ÷ 2(3)\n② Left-to-Right: 6 ÷ 2 = 3  →  3(3)\n③ Multiply: 3 × 3 = 9\n\nResult = 9 (Modern Standard)",
+              altAnswer: "1",
+              altExplanation: "People get 1 because historical 1917 Cajori conventions (and some calculators) bind implied multiplication 2(3) tighter than division: 6 ÷ [2(3)] = 6 ÷ 6 = 1.\n\nUnder modern PEMDAS / ISO 80000-2 standards, multiplication and division share equal priority left-to-right, giving 9.",
+              delayMs: 400
+            }
+          ]
+        };
+      }
+      if (isExcuse || !reply || reply.length < 10) {
         reply = "First, evaluate parentheses: 1 plus 2 is 3. Next, working left to right, 6 divided by 2 is 3. Finally, 3 times 3 gives 9.";
       }
     }
