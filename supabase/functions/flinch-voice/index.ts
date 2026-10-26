@@ -274,9 +274,7 @@ serve(async (req: Request) => {
         const fileObj = new File([audioBytes], "audio.wav", { type: "audio/wav" });
         whisperFormData.append("file", fileObj);
         whisperFormData.append("model", wModel);
-        whisperFormData.append("language", "en");
         whisperFormData.append("temperature", "0");
-        whisperFormData.append("prompt", "Clear conversational speech.");
 
         const whisperResp = await fetch("https://api.groq.com/openai/v1/audio/transcriptions", {
           method: "POST",
@@ -288,6 +286,7 @@ serve(async (req: Request) => {
           const whisperJson = await whisperResp.json().catch(() => ({}));
           if (typeof whisperJson.text === "string" && whisperJson.text.trim().length > 0) {
             transcript = whisperJson.text.trim();
+            console.log(`Groq Whisper (${wModel}) transcribed: "${transcript}"`);
             break;
           }
         } else {
@@ -295,6 +294,56 @@ serve(async (req: Request) => {
         }
       } catch (wErr) {
         console.warn(`Groq Whisper ${wModel} fetch error:`, wErr);
+      }
+    }
+
+    // High-accuracy fallback: Gemini Multimodal Audio transcription
+    if (!transcript && geminiApiKey) {
+      const geminiAudioModels = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash", "gemini-flash-latest"];
+      const b64Audio = arrayBufferToBase64(audioBytes);
+      for (const gModel of geminiAudioModels) {
+        try {
+          const gResp = await fetch(
+            `https://generativelanguage.googleapis.com/v1beta/models/${gModel}:generateContent?key=${encodeURIComponent(geminiApiKey)}`,
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                contents: [
+                  {
+                    role: "user",
+                    parts: [
+                      { text: "Listen to the user's speech in this audio recording. Transcribe what they said accurately in the language spoken. Return ONLY the transcribed text with NO commentary, quotes, or markdown. If completely silent or inaudible, return NONE." },
+                      {
+                        inline_data: {
+                          mime_type: "audio/wav",
+                          data: b64Audio,
+                        },
+                      },
+                    ],
+                  },
+                ],
+                generationConfig: {
+                  temperature: 0.1,
+                  maxOutputTokens: 300,
+                },
+              }),
+            }
+          );
+          if (gResp.ok) {
+            const gJson = await gResp.json();
+            const gText = gJson.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || "";
+            if (gText && !gText.toUpperCase().includes("NONE")) {
+              transcript = gText.replace(/^["']|["']$/g, "").trim();
+              console.log(`Gemini Audio fallback (${gModel}) transcribed: "${transcript}"`);
+              break;
+            }
+          } else {
+            console.warn(`Gemini audio model ${gModel} failed (${gResp.status}):`, await gResp.text());
+          }
+        } catch (gErr) {
+          console.warn(`Gemini audio model ${gModel} exception:`, gErr);
+        }
       }
     }
     tStt = performance.now() - tSttStart;

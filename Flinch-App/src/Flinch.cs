@@ -402,12 +402,11 @@ namespace FlinchApp
         private static byte[] TrimSilence(byte[] pcm, int sampleRate)
         {
             int totalSamples = pcm.Length / 2;
-            if (totalSamples < sampleRate / 6) return new byte[0]; // < ~165ms is just a key tap
+            if (totalSamples < 800) return new byte[0]; // < 50ms is just an accidental click
 
-            const int speechThreshold = 420; // ~1.3% peak amplitude gate (filters pure room silence while catching soft voices)
+            const int speechThreshold = 150; // Sensitive speech threshold catches soft mics & whispering
             int firstSample = -1;
             int lastSample = -1;
-            int voicedSamples = 0;
 
             for (int i = 0; i < totalSamples; i++)
             {
@@ -417,23 +416,22 @@ namespace FlinchApp
                 {
                     if (firstSample < 0) firstSample = i;
                     lastSample = i;
-                    voicedSamples++;
                 }
             }
 
-            // If soft speech or low-gain mic didn't cross threshold, keep the raw PCM if user spoke for >= 250ms
-            if (firstSample < 0 || lastSample < firstSample || voicedSamples < (sampleRate / 40))
+            if (firstSample < 0 || lastSample < firstSample)
             {
-                return totalSamples >= (sampleRate / 4) ? pcm : new byte[0];
+                // Soft speech or quiet mic: keep the entire recorded audio
+                return pcm;
             }
 
-            int padSamples = sampleRate / 8;
+            // 250ms padding before and after ensures no syllables are clipped
+            int padSamples = sampleRate / 4;
             firstSample = Math.Max(0, firstSample - padSamples);
             lastSample = Math.Min(totalSamples - 1, lastSample + padSamples);
 
             int keepSamples = lastSample - firstSample + 1;
-            if (keepSamples <= 0) return new byte[0];
-            if (keepSamples >= totalSamples) return pcm;
+            if (keepSamples <= 0 || keepSamples >= totalSamples) return pcm;
 
             byte[] outPcm = new byte[keepSamples * 2];
             Buffer.BlockCopy(pcm, firstSample * 2, outPcm, 0, outPcm.Length);
