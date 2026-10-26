@@ -31,10 +31,12 @@ __pycache__/
 
 # Legacy temporary folders
 flinch/
-Flinch-App/
+# Secrets and dist in Flinch-App
+Flinch-App/.env
+Flinch-App/dist/
 Flinch-Demo-Portable/
 flinch-portable/
-supabase/
+!supabase/functions/
 *.zip
 *.exe
 *.log
