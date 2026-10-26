@@ -262,25 +262,9 @@ serve(async (req: Request) => {
     let structuredResult: any = null;
     let upstreamError: string | null = null;
 
-    // Strategy 1: Google Gemini Flash with responseSchema & Dynamic Discovery
+    // Strategy 1: Google Gemini Flash (gemini-3-flash-preview) with responseSchema
     if (geminiApiKey) {
-      let candidateModels: string[] = [];
-      try {
-        const listResp = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(geminiApiKey)}`
-        );
-        if (listResp.ok) {
-          const listJson = await listResp.json();
-          candidateModels = (listJson.models || [])
-            .filter((m: any) => Array.isArray(m.supportedGenerationMethods) && m.supportedGenerationMethods.includes("generateContent"))
-            .map((m: any) => m.name.replace(/^models\//, ""))
-            .filter((n: string) => n.includes("flash") && !n.includes("tts") && !n.includes("image"));
-        }
-      } catch (e) {}
-
-      if (candidateModels.length === 0) {
-        candidateModels = ["gemini-3.8-flash", "gemini-3.5-flash", "gemini-flash-latest"];
-      }
+      const candidateModels = ["gemini-3-flash-preview"];
       const geminiSchema = {
         type: "OBJECT",
         properties: {
@@ -376,7 +360,7 @@ serve(async (req: Request) => {
         )}`;
 
         const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 25_000);
+        const timeout = setTimeout(() => controller.abort(), 15_000);
 
         try {
           const resp = await fetch(geminiUrl, {

@@ -164,7 +164,7 @@ namespace FlinchApp
     // =========================================================================
     internal static class VisualExplainClient
     {
-        private static readonly HttpClient Http = new HttpClient { Timeout = TimeSpan.FromSeconds(35) };
+        private static readonly HttpClient Http = new HttpClient { Timeout = TimeSpan.FromSeconds(45) };
 
         public static bool RequestVisualExplanation(
             string userQuestion,

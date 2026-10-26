@@ -2916,7 +2916,7 @@ namespace FlinchApp
 
             SharedHttp = new HttpClient
             {
-                Timeout = TimeSpan.FromSeconds(25)
+                Timeout = TimeSpan.FromSeconds(45)
             };
             SharedHttp.DefaultRequestHeaders.ConnectionClose = false;
         }
@@ -3158,7 +3158,7 @@ namespace FlinchApp
 
                 for (int attempt = 0; attempt < 2; attempt++)
                 {
-                    using (var cts = new CancellationTokenSource(TimeSpan.FromSeconds(25)))
+                    using (var cts = new CancellationTokenSource(TimeSpan.FromSeconds(45)))
                     using (var req = new HttpRequestMessage(HttpMethod.Post, endpoint))
                     using (var mp = new MultipartFormDataContent())
                     {
@@ -5433,6 +5433,37 @@ namespace FlinchApp
             }
         }
 
+        private static bool IsVisualExplainIntent(string text, ActionPayload action)
+        {
+            if (action != null && string.Equals(action.type, "visual_explain", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+            if (string.IsNullOrWhiteSpace(text)) return false;
+            string s = text.ToLowerInvariant().Trim();
+
+            if (s.Contains("visual explain") || s.Contains("whiteboard") || s.Contains("draw on screen") || s.Contains("draw the solution") || s.Contains("draw on my screen"))
+                return true;
+
+            bool hasSolveOrExplain = s.Contains("explain") || s.Contains("solve") || s.Contains("work through") ||
+                                     s.Contains("step by step") || s.Contains("how to do") || s.Contains("how do i do") ||
+                                     s.Contains("show me how") || s.Contains("break down") || s.Contains("fix") ||
+                                     s.Contains("work out") || s.Contains("help me with");
+
+            bool hasMathOrProblem = s.Contains("math") || s.Contains("problem") || s.Contains("equation") ||
+                                    s.Contains("formula") || s.Contains("diagram") || s.Contains("question") ||
+                                    s.Contains("calculation") || s.Contains("algebra") || s.Contains("fraction") ||
+                                    s.Contains("derivative") || s.Contains("integral");
+
+            if (hasSolveOrExplain && hasMathOrProblem)
+                return true;
+
+            if (s.Contains("solve this") || s.Contains("solve it") || s.Contains("explain this") || s.Contains("explain it"))
+                return true;
+
+            return false;
+        }
+
         public void TriggerVisualExplainWorkflow(string prompt)
         {
             if (_isBusy) return;
@@ -5667,10 +5698,7 @@ private void FinishRecordingAndSend()
                         }
 
                         // 2. Check for Visual Explain math whiteboard intent
-                        bool isVisualExplain = (lowerTrans.Contains("explain") && (lowerTrans.Contains("math") || lowerTrans.Contains("problem") || lowerTrans.Contains("solve") || lowerTrans.Contains("equation") || lowerTrans.Contains("diagram")))
-                            || lowerTrans.Contains("solve this")
-                            || lowerTrans.Contains("visual explain")
-                            || (action != null && string.Equals(action.type, "visual_explain", StringComparison.OrdinalIgnoreCase));
+                        bool isVisualExplain = IsVisualExplainIntent(lowerTrans, action);
 
                         if (isVisualExplain)
                         {

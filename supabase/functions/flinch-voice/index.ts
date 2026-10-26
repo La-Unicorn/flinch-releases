@@ -545,27 +545,14 @@ Return your output strictly as a JSON object:
 }
 If no visual overlay is needed, set "scene": null.`;
 
-      // 1. High-Precision Vision via Google Gemini Flash (Dynamic Model Discovery)
+      // 1. High-Precision Vision via Google Gemini 3 Flash (Fast & Validated)
       if (geminiApiKey) {
-        let candidateVisionModels: string[] = [];
-        try {
-          const listResp = await fetch(
-            `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(geminiApiKey)}`
-          );
-          if (listResp.ok) {
-            const listJson = await listResp.json();
-            candidateVisionModels = (listJson.models || [])
-              .filter((m: any) => Array.isArray(m.supportedGenerationMethods) && m.supportedGenerationMethods.includes("generateContent"))
-              .map((m: any) => m.name.replace(/^models\//, ""))
-              .filter((n: string) => n.includes("flash") && !n.includes("tts") && !n.includes("image"));
-          }
-        } catch (_e) {}
-
-        if (candidateVisionModels.length === 0) {
-          candidateVisionModels = ["gemini-3.8-flash", "gemini-3.5-flash", "gemini-flash-latest"];
-        }
+        const candidateVisionModels = ["gemini-3-flash-preview"];
 
         for (const vModel of candidateVisionModels) {
+          const controller = new AbortController();
+          const timeout = setTimeout(() => controller.abort(), 14_000);
+
           try {
             const visionResp = await fetch(
               `https://generativelanguage.googleapis.com/v1beta/models/${vModel}:generateContent?key=${encodeURIComponent(
@@ -595,6 +582,7 @@ If no visual overlay is needed, set "scene": null.`;
                     responseMimeType: "application/json",
                   },
                 }),
+                signal: controller.signal,
               }
             );
 
@@ -622,6 +610,8 @@ If no visual overlay is needed, set "scene": null.`;
             }
           } catch (vErr) {
             console.warn(`Vision model ${vModel} exception:`, vErr);
+          } finally {
+            clearTimeout(timeout);
           }
         }
       }
@@ -630,6 +620,8 @@ If no visual overlay is needed, set "scene": null.`;
       if (!reply && groqApiKey) {
         const groqVisionModels = ["llama-3.2-11b-vision-preview", "llama-3.2-90b-vision-preview"];
         for (const gvModel of groqVisionModels) {
+          const gvController = new AbortController();
+          const gvTimeout = setTimeout(() => gvController.abort(), 5_000);
           try {
             const gvResp = await fetch("https://api.groq.com/openai/v1/chat/completions", {
               method: "POST",
@@ -656,7 +648,8 @@ If no visual overlay is needed, set "scene": null.`;
                 temperature: 0.1,
                 max_tokens: 1500,
                 response_format: { type: "json_object" }
-              })
+              }),
+              signal: gvController.signal
             });
 
             if (gvResp.ok) {
@@ -678,7 +671,10 @@ If no visual overlay is needed, set "scene": null.`;
                 }
               }
             }
-          } catch (_e) {}
+          } catch (_e) {
+          } finally {
+            clearTimeout(gvTimeout);
+          }
         }
       }
     }
