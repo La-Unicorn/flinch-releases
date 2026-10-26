@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Flinch Visual Explain</title>
+  <link rel="stylesheet" href="vendor/katex/katex.min.css">
+  <link rel="stylesheet" href="whiteboard.css">
+</head>
+<body>
+  <div class="whiteboard-container">
+    <button class="close-btn" id="closeBtn" title="Close (Esc)">✕</button>
+
+    <div class="whiteboard-canvas-wrapper">
+      <svg id="wbSvg" class="whiteboard-svg" viewBox="0 0 1000 700" preserveAspectRatio="xMidYMid meet"></svg>
+    </div>
+
+    <div class="whiteboard-narration">
+      <div class="narration-text" id="narrationText">Ready to explain...</div>
+      <div class="controls-cluster">
+        <button class="ctrl-btn" id="prevBtn" title="Previous Step">⏮</button>
+        <button class="ctrl-btn primary" id="playBtn" title="Play / Pause">▶ Play</button>
+        <button class="ctrl-btn" id="nextBtn" title="Next Step">⏭</button>
+        <button class="ctrl-btn" id="restartBtn" title="Restart">🔄</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Local Bundled Libraries -->
+  <script src="vendor/rough.min.js"></script>
+  <script src="vendor/katex/katex.min.js"></script>
+
+  <!-- Whiteboard Engine -->
+  <script src="engine/utils.js"></script>
+  <script src="engine/layout.js"></script>
+
+  <!-- Primitive Handlers -->
+  <script src="engine/primitives/text.js"></script>
+  <script src="engine/primitives/line_arrow.js"></script>
+  <script src="engine/primitives/circle_rect.js"></script>
+  <script src="engine/primitives/triangle.js"></script>
+  <script src="engine/primitives/angle_arc.js"></script>
+  <script src="engine/primitives/path.js"></script>
+  <script src="engine/primitives/underline_highlight.js"></script>
+  <script src="engine/primitives/brace.js"></script>
+  <script src="engine/primitives/point.js"></script>
+  <script src="engine/primitives/axes_number_line.js"></script>
+  <script src="engine/primitives/check_cross.js"></script>
+  <script src="engine/primitives/screen_highlight.js"></script>
+
+  <!-- Player -->
+  <script src="engine/player.js"></script>
+
+  <!-- Dynamic Solution Payload -->
+  <script src="payload.js" onerror="/* No active payload */"></script>
+
+  <script>
+    const svgEl = document.getElementById('wbSvg');
+    const narrationText = document.getElementById('narrationText');
+    const playBtn = document.getElementById('playBtn');
+    const prevBtn = document.getElementById('prevBtn');
+    const nextBtn = document.getElementById('nextBtn');
+    const restartBtn = document.getElementById('restartBtn');
+    const closeBtn = document.getElementById('closeBtn');
+
+    let currentAudio = null;
+
+    function stopAudio() {
+      if (currentAudio) {
+        try { currentAudio.pause(); } catch (e) {}
+        currentAudio = null;
+      }
+      if ('speechSynthesis' in window) {
+        try { window.speechSynthesis.cancel(); } catch (e) {}
+      }
+    }
+
+    function playStepAudio(step, index) {
+      stopAudio();
+      const audioPath = step.audioUrl || `audio/step_${index}.wav`;
+      const a = new Audio(audioPath + '?t=' + Date.now());
+      currentAudio = a;
+      a.play().catch(() => {
+        if ('speechSynthesis' in window && step.narration) {
+          const u = new SpeechSynthesisUtterance(step.narration);
+          u.rate = 1.0;
+          window.speechSynthesis.speak(u);
+        }
+      });
+    }
+
+    const player = new WhiteboardPlayer(svgEl, {
+      defaultStepDurationMs: 3400,
+      onStepStart: (index, step, durationMs) => {
+        narrationText.textContent = step.narration || '';
+        playBtn.textContent = '⏸ Pause';
+        playStepAudio(step, index);
+      },
+      onStepComplete: (index, step) => {
+        // Step complete
+      },
+      onAllComplete: () => {
+        playBtn.textContent = '🔄 Replay';
+        stopAudio();
+      }
+    });
+
+    playBtn.addEventListener('click', () => {
+      if (player.isPlaying) {
+        player.pause();
+        stopAudio();
+        playBtn.textContent = '▶ Resume';
+      } else {
+        player.play();
+        playBtn.textContent = '⏸ Pause';
+      }
+    });
+
+    prevBtn.addEventListener('click', () => {
+      stopAudio();
+      player.prevStep();
+    });
+
+    nextBtn.addEventListener('click', () => {
+      stopAudio();
+      player.nextStep();
+    });
+
+    restartBtn.addEventListener('click', () => {
+      stopAudio();
+      player.clear();
+      player.play();
+    });
+
+    closeBtn.addEventListener('click', () => {
+      stopAudio();
+      try {
+        if (window.chrome && window.chrome.webview) {
+          window.chrome.webview.postMessage({ action: 'close' });
+        } else if (window.external && window.external.Close) {
+          window.external.Close();
+        } else {
+          window.close();
+        }
+      } catch (e) {}
+    });
+
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        closeBtn.click();
+      }
+    });
+
+    // Public API exposed to C# host
+    window.loadSolution = function(jsonPayload) {
+      stopAudio();
+      const data = typeof jsonPayload === 'string' ? JSON.parse(jsonPayload) : jsonPayload;
+      player.load(data);
+    };
+
+    window.playSolution = function() {
+      player.play();
+    };
+
+    window.pauseSolution = function() {
+      player.pause();
+      stopAudio();
+    };
+
+    // Auto-load if window.FLINCH_PAYLOAD is populated from payload.js
+    if (window.FLINCH_PAYLOAD && window.FLINCH_PAYLOAD.steps && window.FLINCH_PAYLOAD.steps.length > 0) {
+      player.load(window.FLINCH_PAYLOAD);
+      setTimeout(() => {
+        player.play();
+      }, 350);
+    }
+  </script>
+</body>
+</html>

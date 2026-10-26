@@ -5219,6 +5219,9 @@ namespace FlinchApp
             var itemScreenPreview = menu.Items.Add("🖼️ Preview Window Context");
             itemScreenPreview.Click += (s, e) => Dispatcher.Invoke(new Action(InitiateScreenCaptureWorkflow));
 
+            var itemVisualExplain = menu.Items.Add("✏️ Visual Explain (Math Whiteboard)");
+            itemVisualExplain.Click += (s, e) => Dispatcher.Invoke(new Action(() => TriggerVisualExplainWorkflow("Explain this math problem")));
+
             var itemUpdate = menu.Items.Add("🔄 Check for Updates");
             itemUpdate.Click += (s, e) => Dispatcher.Invoke(new Action(CheckForUpdatesInBackground));
 
@@ -5430,6 +5433,38 @@ namespace FlinchApp
             }
         }
 
+        public void TriggerVisualExplainWorkflow(string prompt)
+        {
+            if (_isBusy) return;
+            _isBusy = true;
+            SetIslandState(IslandState.Thinking, "Visualizing math problem...", "");
+
+            Task.Run(() =>
+            {
+                VisualExplainPayload payload;
+                string err;
+                bool ok = VisualExplainClient.RequestVisualExplanation(prompt, out payload, out err);
+                Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    _isBusy = false;
+                    if (!ok || payload == null || payload.steps == null || payload.steps.Count == 0)
+                    {
+                        SetIslandState(IslandState.Error, "", string.IsNullOrWhiteSpace(err) ? "Visual Explain could not analyze this screen." : err);
+                        return;
+                    }
+
+                    SetIslandState(IslandState.Thinking, "Drawing step-by-step solution...", "");
+                    WhiteboardOverlayManager.LaunchSolution(payload, () =>
+                    {
+                        Dispatcher.BeginInvoke(new Action(() =>
+                        {
+                            SetIslandState(IslandState.Idle, "", "");
+                        }));
+                    });
+                }));
+            });
+        }
+
         private void OnAltVPressed()
         {
             if (_state == IslandState.Countdown)
@@ -5620,6 +5655,28 @@ private void FinishRecordingAndSend()
                     {
                         if (_playbackSessionId != mySession) return;
                         _isBusy = false;
+
+                        string lowerTrans = (transcript ?? "").ToLowerInvariant().Trim();
+
+                        // 1. Check for Close Whiteboard command
+                        if (WhiteboardOverlayManager.IsOpen && (lowerTrans == "close" || lowerTrans.Contains("close whiteboard") || lowerTrans.Contains("dismiss whiteboard") || lowerTrans.Contains("close overlay")))
+                        {
+                            WhiteboardOverlayManager.Close();
+                            SetIslandState(IslandState.Idle, "", "");
+                            return;
+                        }
+
+                        // 2. Check for Visual Explain math whiteboard intent
+                        bool isVisualExplain = (lowerTrans.Contains("explain") && (lowerTrans.Contains("math") || lowerTrans.Contains("problem") || lowerTrans.Contains("solve") || lowerTrans.Contains("equation") || lowerTrans.Contains("diagram")))
+                            || lowerTrans.Contains("solve this")
+                            || lowerTrans.Contains("visual explain")
+                            || (action != null && string.Equals(action.type, "visual_explain", StringComparison.OrdinalIgnoreCase));
+
+                        if (isVisualExplain)
+                        {
+                            TriggerVisualExplainWorkflow(transcript);
+                            return;
+                        }
 
                         if (scene != null && scene.objects != null && scene.objects.Count > 0)
                         {

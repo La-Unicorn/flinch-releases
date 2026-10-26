@@ -58,12 +58,21 @@ $manifest = Join-Path $root 'app.manifest'
 if (-not (Test-Path $manifest)) { throw "app.manifest missing at $manifest" }
 
 Get-Process -Name Flinch -ErrorAction SilentlyContinue | Stop-Process -Force
-& $csc /nologo /target:winexe /win32icon:$ico "/win32manifest:$manifest" "/resource:$ico,flinch.ico" "/resource:$catPng,cat_logo.png" /out:$appExe $wpf $sys $speech (Join-Path $root 'src\Flinch.cs') $gen
+$srcFiles = @(
+    (Join-Path $root 'src\Flinch.cs'),
+    (Join-Path $root 'src\VisualExplain.cs'),
+    $gen
+)
+& $csc /nologo /target:winexe /win32icon:$ico "/win32manifest:$manifest" "/resource:$ico,flinch.ico" "/resource:$catPng,cat_logo.png" /out:$appExe $wpf $sys $speech $srcFiles
 if ($LASTEXITCODE -ne 0) { throw 'Flinch.exe compile failed' }
 
 $setupExe = Join-Path $dist 'FlinchSetup.exe'
 & $csc /nologo /target:winexe /win32icon:$ico "/win32manifest:$manifest" "/resource:$appExe,Flinch.exe" "/resource:$ico,flinch.ico" "/resource:$catPng,cat_logo.png" /out:$setupExe $wpf '/r:System.Xaml.dll' '/r:System.Windows.Forms.dll' (Join-Path $root 'installer\FlinchInstaller.cs')
 if ($LASTEXITCODE -ne 0) { throw 'Installer compile failed' }
+
+# Ensure assets are copied to dist
+$distAssets = Join-Path $dist 'assets'
+Copy-Item (Join-Path $root 'assets') -Destination $distAssets -Recurse -Force
 
 # Copy binaries to workspace root for quick access
 $workspaceRoot = Split-Path -Parent $root

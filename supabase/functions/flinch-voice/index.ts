@@ -545,8 +545,89 @@ Return your output strictly as a JSON object:
 }
 If no visual overlay is needed, set "scene": null.`;
 
-      // 1. High-speed Vision via Groq LPU (llama-3.2-11b-vision-preview / llama-3.2-90b-vision-preview)
-      if (groqApiKey) {
+      // 1. High-Precision Vision via Google Gemini Flash (Dynamic Model Discovery)
+      if (geminiApiKey) {
+        let candidateVisionModels: string[] = [];
+        try {
+          const listResp = await fetch(
+            `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(geminiApiKey)}`
+          );
+          if (listResp.ok) {
+            const listJson = await listResp.json();
+            candidateVisionModels = (listJson.models || [])
+              .filter((m: any) => Array.isArray(m.supportedGenerationMethods) && m.supportedGenerationMethods.includes("generateContent"))
+              .map((m: any) => m.name.replace(/^models\//, ""))
+              .filter((n: string) => n.includes("flash") && !n.includes("tts") && !n.includes("image"));
+          }
+        } catch (_e) {}
+
+        if (candidateVisionModels.length === 0) {
+          candidateVisionModels = ["gemini-3.8-flash", "gemini-3.5-flash", "gemini-flash-latest"];
+        }
+
+        for (const vModel of candidateVisionModels) {
+          try {
+            const visionResp = await fetch(
+              `https://generativelanguage.googleapis.com/v1beta/models/${vModel}:generateContent?key=${encodeURIComponent(
+                geminiApiKey
+              )}`,
+              {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  contents: [
+                    {
+                      role: "user",
+                      parts: [
+                        { text: visionPrompt },
+                        {
+                          inline_data: {
+                            mime_type: "image/jpeg",
+                            data: screenB64,
+                          },
+                        },
+                      ],
+                    },
+                  ],
+                  generationConfig: {
+                    temperature: 0.1,
+                    maxOutputTokens: 2048,
+                    responseMimeType: "application/json",
+                  },
+                }),
+              }
+            );
+
+            if (visionResp.ok) {
+              const vJson = await visionResp.json();
+              const rawText = vJson.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || "";
+              try {
+                const parsed = JSON.parse(rawText);
+                if (parsed.answer) reply = parsed.answer.trim();
+                if (parsed.scene) sceneObj = sanitizeScene(parsed.scene);
+                if (reply) {
+                  modelUsed = `${vModel}-vision`;
+                  console.log(`Gemini Vision (${vModel}) generated reply and scene.`);
+                  break;
+                }
+              } catch {
+                reply = rawText;
+                if (reply) {
+                  modelUsed = `${vModel}-vision`;
+                  break;
+                }
+              }
+            } else {
+              console.warn(`Vision model ${vModel} error:`, visionResp.status, await visionResp.text());
+            }
+          } catch (vErr) {
+            console.warn(`Vision model ${vModel} exception:`, vErr);
+          }
+        }
+      }
+
+      // 2. Groq Vision Fallback
+      if (!reply && groqApiKey) {
         const groqVisionModels = ["llama-3.2-11b-vision-preview", "llama-3.2-90b-vision-preview"];
         for (const gvModel of groqVisionModels) {
           try {
@@ -587,7 +668,6 @@ If no visual overlay is needed, set "scene": null.`;
                 if (parsed.scene) sceneObj = sanitizeScene(parsed.scene);
                 if (reply) {
                   modelUsed = `${gvModel}-vision`;
-                  console.log(`Groq Vision (${gvModel}) generated reply and scene.`);
                   break;
                 }
               } catch {
@@ -597,81 +677,8 @@ If no visual overlay is needed, set "scene": null.`;
                   break;
                 }
               }
-            } else {
-              console.warn(`Groq Vision model ${gvModel} error:`, gvResp.status, await gvResp.text());
             }
-          } catch (gvErr) {
-            console.warn(`Groq Vision model ${gvModel} exception:`, gvErr);
-          }
-        }
-      }
-
-      // 2. Multimodal Fallback: Google Gemini Vision
-      if (!reply && geminiApiKey) {
-        const visionModels = [
-          "gemini-1.5-flash",
-          "gemini-2.0-flash",
-          "gemini-2.5-flash",
-          "gemini-1.5-pro-latest"
-        ];
-
-        for (const vModel of visionModels) {
-          try {
-            const visionResp = await fetch(
-              `https://generativelanguage.googleapis.com/v1beta/models/${vModel}:generateContent?key=${encodeURIComponent(
-                geminiApiKey
-              )}`,
-              {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                  contents: [
-                    {
-                      role: "user",
-                      parts: [
-                        { text: visionPrompt },
-                        {
-                          inline_data: {
-                            mime_type: "image/jpeg",
-                            data: screenB64,
-                          },
-                        },
-                      ],
-                    },
-                  ],
-                  generationConfig: {
-                    temperature: 0.2,
-                    maxOutputTokens: 1500,
-                    responseMimeType: "application/json",
-                  },
-                }),
-              }
-            );
-
-            if (visionResp.ok) {
-              const vJson = await visionResp.json();
-              const rawText = vJson.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || "";
-              try {
-                const parsed = JSON.parse(rawText);
-                if (parsed.answer) reply = parsed.answer.trim();
-                if (parsed.scene) sceneObj = sanitizeScene(parsed.scene);
-                if (reply) {
-                  modelUsed = `${vModel}-vision`;
-                  break;
-                }
-              } catch {
-                reply = rawText;
-                if (reply) {
-                  modelUsed = `${vModel}-vision`;
-                  break;
-                }
-              }
-            } else {
-              console.warn(`Vision model ${vModel} error:`, visionResp.status, await visionResp.text());
-            }
-          } catch (vErr) {
-            console.warn(`Vision model ${vModel} exception:`, vErr);
-          }
+          } catch (_e) {}
         }
       }
     }
