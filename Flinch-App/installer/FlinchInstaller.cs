@@ -143,8 +143,25 @@ namespace FlinchInstaller
             using (Stream s = Assembly.GetExecutingAssembly().GetManifestResourceStream("Flinch.exe"))
             {
                 if (s == null) throw new InvalidOperationException("Installer payload is missing.");
-                using (FileStream fs = new FileStream(Paths.AppExe, FileMode.Create, FileAccess.Write))
-                    s.CopyTo(fs);
+                int attempts = 0;
+                while (true)
+                {
+                    try
+                    {
+                        using (FileStream fs = new FileStream(Paths.AppExe, FileMode.Create, FileAccess.Write, FileShare.None))
+                        {
+                            s.CopyTo(fs);
+                        }
+                        break;
+                    }
+                    catch (IOException)
+                    {
+                        attempts++;
+                        if (attempts >= 20) throw;
+                        Thread.Sleep(150);
+                        s.Position = 0;
+                    }
+                }
             }
             try
             {
@@ -735,6 +752,50 @@ namespace FlinchInstaller
                 }
 
                 new Application().Run(new UninstallerWindow());
+                return 0;
+            }
+
+            bool isSilentUpdate = args != null && Array.Exists(args, a =>
+                a.Equals("/silent", StringComparison.OrdinalIgnoreCase) ||
+                a.Equals("/update", StringComparison.OrdinalIgnoreCase));
+
+            if (isSilentUpdate)
+            {
+                try
+                {
+                    // Check registry for existing installation folder
+                    using (RegistryKey k = Registry.CurrentUser.OpenSubKey(Paths.UninstallKey))
+                    {
+                        if (k != null)
+                        {
+                            object loc = k.GetValue("InstallLocation");
+                            if (loc != null && !string.IsNullOrWhiteSpace(loc.ToString()) && Directory.Exists(loc.ToString()))
+                            {
+                                Paths.InstallDir = loc.ToString();
+                            }
+                        }
+                    }
+
+                    Installer.Install(delegate(int pct, string msg) { });
+                    Installer.LaunchApp();
+
+                    // Cleanup temporary installer if running from Temp folder
+                    string currentExe = Assembly.GetExecutingAssembly().Location;
+                    string tempPath = Path.GetTempPath();
+                    if (currentExe.StartsWith(tempPath, StringComparison.OrdinalIgnoreCase))
+                    {
+                        try
+                        {
+                            ProcessStartInfo psi = new ProcessStartInfo("cmd.exe",
+                                "/c ping 127.0.0.1 -n 3 >nul & del /f /q \"" + currentExe + "\"");
+                            psi.CreateNoWindow = true;
+                            psi.UseShellExecute = false;
+                            Process.Start(psi);
+                        }
+                        catch { }
+                    }
+                }
+                catch { }
                 return 0;
             }
 

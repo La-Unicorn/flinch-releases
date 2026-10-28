@@ -5030,7 +5030,7 @@ namespace FlinchApp
                             {
                                 try
                                 {
-                                    Process.Start(new ProcessStartInfo(destExe) { UseShellExecute = true });
+                                    Process.Start(new ProcessStartInfo(destExe, "/update") { UseShellExecute = true });
                                     if (_trayIcon != null)
                                     {
                                         _trayIcon.Visible = false;
