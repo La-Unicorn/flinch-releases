@@ -1109,27 +1109,28 @@ async function synthesizeWithCartesia(
 
 // Ultra-low latency Neural Speech via Deepgram Aura (<180ms TTFB)
 const DEEPGRAM_VOICE_MAP: Record<string, { model: string; label: string }> = {
-  // Female Voices
-  "asteria": { model: "aura-asteria-en", label: "Deepgram Asteria (US Female)" },
-  "autumn":  { model: "aura-asteria-en", label: "Deepgram Asteria (US Female)" },
-  "luna":    { model: "aura-luna-en",    label: "Deepgram Luna (US Female)" },
-  "stella":  { model: "aura-stella-en",  label: "Deepgram Stella (US Female)" },
-  "athena":  { model: "aura-athena-en",  label: "Deepgram Athena (US Female)" },
-  "hera":    { model: "aura-hera-en",    label: "Deepgram Hera (US Female)" },
-  "diana":   { model: "aura-athena-en",  label: "Deepgram Athena (US Female)" },
-  "aoede":   { model: "aura-stella-en",  label: "Deepgram Stella (US Female)" },
+  // Female Voices (Aura-2 for enhanced expressive prosody where supported)
+  "asteria": { model: "aura-2-asteria-en", label: "Deepgram Aura-2 Asteria (US Female)" },
+  "autumn":  { model: "aura-2-asteria-en", label: "Deepgram Aura-2 Asteria (US Female)" },
+  "luna":    { model: "aura-2-luna-en",    label: "Deepgram Aura-2 Luna (US Female)" },
+  "thalia":  { model: "aura-2-thalia-en",  label: "Deepgram Aura-2 Thalia (US Female)" },
+  "athena":  { model: "aura-2-athena-en",  label: "Deepgram Aura-2 Athena (US Female)" },
+  "hera":    { model: "aura-2-hera-en",    label: "Deepgram Aura-2 Hera (US Female)" },
+  "stella":  { model: "aura-stella-en",    label: "Deepgram Stella (US Female)" },
+  "diana":   { model: "aura-2-athena-en",  label: "Deepgram Aura-2 Athena (US Female)" },
+  "aoede":   { model: "aura-stella-en",    label: "Deepgram Stella (US Female)" },
 
-  // Male Voices
-  "arcas":   { model: "aura-arcas-en",   label: "Deepgram Arcas (US Male)" },
-  "troy":    { model: "aura-arcas-en",   label: "Deepgram Arcas (US Male)" },
-  "orion":   { model: "aura-orion-en",   label: "Deepgram Orion (US Male)" },
-  "perseus": { model: "aura-perseus-en", label: "Deepgram Perseus (US Male)" },
-  "angus":   { model: "aura-angus-en",   label: "Deepgram Angus (US Male)" },
-  "orpheus": { model: "aura-orpheus-en", label: "Deepgram Orpheus (US Male)" },
-  "helios":  { model: "aura-helios-en",  label: "Deepgram Helios (US Male)" },
-  "zeus":    { model: "aura-zeus-en",    label: "Deepgram Zeus (US Male)" },
-  "daniel":  { model: "aura-orion-en",   label: "Deepgram Orion (US Male)" },
-  "austin":  { model: "aura-perseus-en", label: "Deepgram Perseus (US Male)" },
+  // Male Voices (Aura-2 for natural cadence & tone where supported)
+  "arcas":   { model: "aura-2-arcas-en",   label: "Deepgram Aura-2 Arcas (US Male)" },
+  "troy":    { model: "aura-2-arcas-en",   label: "Deepgram Aura-2 Arcas (US Male)" },
+  "orion":   { model: "aura-2-orion-en",   label: "Deepgram Aura-2 Orion (US Male)" },
+  "orpheus": { model: "aura-2-orpheus-en", label: "Deepgram Aura-2 Orpheus (US Male)" },
+  "zeus":    { model: "aura-2-zeus-en",    label: "Deepgram Aura-2 Zeus (US Male)" },
+  "perseus": { model: "aura-perseus-en",   label: "Deepgram Perseus (US Male)" },
+  "angus":   { model: "aura-angus-en",     label: "Deepgram Angus (US Male)" },
+  "helios":  { model: "aura-helios-en",    label: "Deepgram Helios (US Male)" },
+  "daniel":  { model: "aura-2-orion-en",   label: "Deepgram Aura-2 Orion (US Male)" },
+  "austin":  { model: "aura-perseus-en",   label: "Deepgram Perseus (US Male)" },
 };
 
 async function synthesizeWithDeepgram(

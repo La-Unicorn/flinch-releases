@@ -4377,37 +4377,26 @@ namespace FlinchApp
 
             var updateCanvas = new Canvas
             {
-                Width = 200,
-                Height = 200
+                Width = 90,
+                Height = 90
             };
 
-            // Background card matching all 3 SVGs (<rect width="200" height="200" rx="28" fill="#14213A"/>)
-            var updateBg = new System.Windows.Shapes.Rectangle
-            {
-                Width = 200,
-                Height = 200,
-                RadiusX = 28,
-                RadiusY = 28,
-                Fill = new SolidColorBrush(Color.FromRgb(0x14, 0x21, 0x3A))
-            };
-            updateCanvas.Children.Add(updateBg);
-
-            // 1. Available State (01-update-available.svg)
-            _updateAvailHost = new Canvas { Width = 200, Height = 200, Visibility = Visibility.Visible };
+            // 1. Available State (01-update-available.svg - pure circle with no square background)
+            _updateAvailHost = new Canvas { Width = 90, Height = 90, Visibility = Visibility.Visible };
             var availCircle = new System.Windows.Shapes.Ellipse
             {
-                Width = 80,
-                Height = 80,
+                Width = 72,
+                Height = 72,
                 Fill = new SolidColorBrush(Color.FromRgb(0x3D, 0x8B, 0xFF))
             };
-            Canvas.SetLeft(availCircle, 60);
-            Canvas.SetTop(availCircle, 60);
+            Canvas.SetLeft(availCircle, 9);
+            Canvas.SetTop(availCircle, 9);
 
             var availArrow = new System.Windows.Shapes.Path
             {
-                Data = Geometry.Parse("M 100,83 L 100,108 M 89,97 L 100,108 L 111,97 M 87,119 L 113,119"),
+                Data = Geometry.Parse("M 45,30 L 45,52 M 35,42 L 45,52 L 55,42 M 33,61 L 57,61"),
                 Stroke = new SolidColorBrush(Color.FromRgb(0xF4, 0xF7, 0xFF)),
-                StrokeThickness = 5,
+                StrokeThickness = 4.5,
                 StrokeStartLineCap = PenLineCap.Round,
                 StrokeEndLineCap = PenLineCap.Round,
                 StrokeLineJoin = PenLineJoin.Round
@@ -4415,24 +4404,24 @@ namespace FlinchApp
 
             _updateRippleEllipse = new System.Windows.Shapes.Ellipse
             {
-                Width = 20,
-                Height = 20,
+                Width = 16,
+                Height = 16,
                 Fill = new SolidColorBrush(Color.FromRgb(0xFF, 0xB2, 0x24)),
-                Opacity = 0.7
+                Opacity = 0.75
             };
-            Canvas.SetLeft(_updateRippleEllipse, 120);
-            Canvas.SetTop(_updateRippleEllipse, 60);
+            Canvas.SetLeft(_updateRippleEllipse, 64);
+            Canvas.SetTop(_updateRippleEllipse, 10);
 
             var availDot = new System.Windows.Shapes.Ellipse
             {
-                Width = 20,
-                Height = 20,
+                Width = 16,
+                Height = 16,
                 Fill = new SolidColorBrush(Color.FromRgb(0xFF, 0xB2, 0x24)),
-                Stroke = new SolidColorBrush(Color.FromRgb(0x14, 0x21, 0x3A)),
-                StrokeThickness = 3
+                Stroke = new SolidColorBrush(Color.FromRgb(0x0A, 0x0F, 0x1D)),
+                StrokeThickness = 2.2
             };
-            Canvas.SetLeft(availDot, 120);
-            Canvas.SetTop(availDot, 60);
+            Canvas.SetLeft(availDot, 64);
+            Canvas.SetTop(availDot, 10);
 
             _updateAvailHost.Children.Add(availCircle);
             _updateAvailHost.Children.Add(availArrow);
@@ -4440,31 +4429,31 @@ namespace FlinchApp
             _updateAvailHost.Children.Add(availDot);
 
             // 2. Progress Ring State (03-progress-ring.svg)
-            _updateProgressHost = new Canvas { Width = 200, Height = 200, Visibility = Visibility.Collapsed };
+            _updateProgressHost = new Canvas { Width = 90, Height = 90, Visibility = Visibility.Collapsed };
             var progTrack = new System.Windows.Shapes.Ellipse
             {
-                Width = 80,
-                Height = 80,
+                Width = 72,
+                Height = 72,
                 Fill = Brushes.Transparent,
                 Stroke = new SolidColorBrush(Color.FromRgb(0x24, 0x38, 0x5C)),
-                StrokeThickness = 6
+                StrokeThickness = 5.0
             };
-            Canvas.SetLeft(progTrack, 60);
-            Canvas.SetTop(progTrack, 60);
+            Canvas.SetLeft(progTrack, 9);
+            Canvas.SetTop(progTrack, 9);
 
             _updateProgressArcPath = new System.Windows.Shapes.Path
             {
                 Stroke = new SolidColorBrush(Color.FromRgb(0x3D, 0x8B, 0xFF)),
-                StrokeThickness = 6,
+                StrokeThickness = 5.0,
                 StrokeStartLineCap = PenLineCap.Round,
                 StrokeEndLineCap = PenLineCap.Round
             };
 
             var progArrow = new System.Windows.Shapes.Path
             {
-                Data = Geometry.Parse("M 100,83 L 100,108 M 89,97 L 100,108 L 111,97 M 87,119 L 113,119"),
+                Data = Geometry.Parse("M 45,30 L 45,52 M 35,42 L 45,52 L 55,42 M 33,61 L 57,61"),
                 Stroke = new SolidColorBrush(Color.FromRgb(0xF4, 0xF7, 0xFF)),
-                StrokeThickness = 5,
+                StrokeThickness = 4.5,
                 StrokeStartLineCap = PenLineCap.Round,
                 StrokeEndLineCap = PenLineCap.Round,
                 StrokeLineJoin = PenLineJoin.Round
@@ -4475,23 +4464,23 @@ namespace FlinchApp
             _updateProgressHost.Children.Add(progArrow);
 
             // 3. Download Complete State (09-download-complete.svg)
-            _updateCompleteHost = new Canvas { Width = 200, Height = 200, Visibility = Visibility.Collapsed };
+            _updateCompleteHost = new Canvas { Width = 90, Height = 90, Visibility = Visibility.Collapsed };
             var compRing = new System.Windows.Shapes.Ellipse
             {
-                Width = 80,
-                Height = 80,
+                Width = 72,
+                Height = 72,
                 Fill = Brushes.Transparent,
                 Stroke = new SolidColorBrush(Color.FromRgb(0x3D, 0xDC, 0x97)),
-                StrokeThickness = 6
+                StrokeThickness = 5.0
             };
-            Canvas.SetLeft(compRing, 60);
-            Canvas.SetTop(compRing, 60);
+            Canvas.SetLeft(compRing, 9);
+            Canvas.SetTop(compRing, 9);
 
             var compCheck = new System.Windows.Shapes.Path
             {
-                Data = Geometry.Parse("M 86,102 L 96,112 L 114,90"),
+                Data = Geometry.Parse("M 32,46 L 41,55 L 59,35"),
                 Stroke = new SolidColorBrush(Color.FromRgb(0x3D, 0xDC, 0x97)),
-                StrokeThickness = 6,
+                StrokeThickness = 5.0,
                 StrokeStartLineCap = PenLineCap.Round,
                 StrokeEndLineCap = PenLineCap.Round,
                 StrokeLineJoin = PenLineJoin.Round
@@ -4506,8 +4495,8 @@ namespace FlinchApp
 
             _updateRootViewbox = new Viewbox
             {
-                Width = 24,
-                Height = 24,
+                Width = 26,
+                Height = 26,
                 Stretch = Stretch.Uniform,
                 Child = updateCanvas
             };
@@ -4929,9 +4918,9 @@ namespace FlinchApp
         {
             if (_updateProgressArcPath == null) return;
             fraction = Math.Max(0.01, Math.Min(0.999, fraction));
-            double cx = 100.0;
-            double cy = 100.0;
-            double r = 40.0;
+            double cx = 45.0;
+            double cy = 45.0;
+            double r = 36.0;
             double startAngle = -90.0;
             double endAngle = startAngle + (fraction * 360.0);
 
@@ -7425,12 +7414,12 @@ private void FinishRecordingAndSend()
                 if (_updateVisualState == UpdateVisualState.Available && _updateRippleEllipse != null)
                 {
                     double pulse = (t % 2.0) / 2.0; // 0..1 over 2s (matches 01-update-available.svg)
-                    double rippleR = 10.0 + (pulse * 16.0); // 10 -> 26
+                    double rippleR = 8.0 + (pulse * 12.0); // 8 -> 20
                     _updateRippleEllipse.Width = rippleR * 2.0;
                     _updateRippleEllipse.Height = rippleR * 2.0;
-                    Canvas.SetLeft(_updateRippleEllipse, 130.0 - rippleR);
-                    Canvas.SetTop(_updateRippleEllipse, 70.0 - rippleR);
-                    _updateRippleEllipse.Opacity = 0.7 * (1.0 - pulse);
+                    Canvas.SetLeft(_updateRippleEllipse, 72.0 - rippleR);
+                    Canvas.SetTop(_updateRippleEllipse, 18.0 - rippleR);
+                    _updateRippleEllipse.Opacity = 0.75 * (1.0 - pulse);
                 }
                 else if (_updateVisualState == UpdateVisualState.Downloading)
                 {
