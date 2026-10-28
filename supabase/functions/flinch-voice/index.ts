@@ -110,6 +110,85 @@ serve(async (req: Request) => {
   if (contentType.includes("application/json")) {
     try {
       const body = await req.json();
+      if (body.action === "write_document" || body.action === "generate_content") {
+        const topic = String(body.topic || body.title || "").trim();
+        const docType = String(body.type || "essay").trim();
+        const instructions = String(body.prompt || `Write a comprehensive, engaging, well-structured ${docType} about: ${topic}. Include an introduction, deep body paragraphs with historical, cultural, or factual details, and a thoughtful conclusion.`).trim();
+
+        let generatedContent = "";
+
+        // 1. Primary: Gemini 3 Flash Preview (Fast & high quality)
+        if (geminiApiKey) {
+          try {
+            const gResp = await fetch(
+              `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${encodeURIComponent(geminiApiKey)}`,
+              {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  contents: [
+                    {
+                      role: "user",
+                      parts: [{ text: instructions }]
+                    }
+                  ],
+                  generationConfig: {
+                    temperature: 0.7,
+                    maxOutputTokens: 4096
+                  }
+                })
+              }
+            );
+            if (gResp.ok) {
+              const gData = await gResp.json();
+              generatedContent = gData.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || "";
+            }
+          } catch (_e) {}
+        }
+
+        // 2. Fallback: Groq LPU (Llama 3.3 70B)
+        if (!generatedContent && groqApiKey) {
+          try {
+            const grResp = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+              method: "POST",
+              headers: {
+                "Authorization": `Bearer ${groqApiKey}`,
+                "Content-Type": "application/json"
+              },
+              body: JSON.stringify({
+                model: "llama-3.3-70b-versatile",
+                messages: [
+                  { role: "system", content: `You are an expert essay and document writer. Write comprehensive, well-structured, engaging ${docType}s.` },
+                  { role: "user", content: instructions }
+                ],
+                temperature: 0.7,
+                max_tokens: 3500
+              })
+            });
+            if (grResp.ok) {
+              const grData = await grResp.json();
+              generatedContent = grData.choices?.[0]?.message?.content?.trim() || "";
+            }
+          } catch (_e) {}
+        }
+
+        if (generatedContent) {
+          return new Response(
+            JSON.stringify({
+              topic: topic,
+              type: docType,
+              content: generatedContent
+            }),
+            { status: 200, headers: corsHeaders }
+          );
+        }
+
+        return new Response(
+          JSON.stringify({ error: "generation_failed", message: "Could not generate document content." }),
+          { status: 502, headers: corsHeaders }
+        );
+      }
+
       if (body.action === "tts" || body.text) {
         const textToSpeak = String(body.text || "").trim();
         const voiceName = String(body.voice || "troy").toLowerCase();

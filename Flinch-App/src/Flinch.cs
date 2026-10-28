@@ -3857,6 +3857,8 @@ namespace FlinchApp
                 }
             };
             _notchPath.MouseLeftButtonDown += OnPillClicked;
+            _notchPath.MouseEnter += OnPillMouseEnter;
+            _notchPath.MouseLeave += OnPillMouseLeave;
 
             _notchContentHost = new Grid
             {
@@ -3867,6 +3869,8 @@ namespace FlinchApp
                 Cursor = Cursors.Hand
             };
             _notchContentHost.MouseLeftButtonDown += OnPillClicked;
+            _notchContentHost.MouseEnter += OnPillMouseEnter;
+            _notchContentHost.MouseLeave += OnPillMouseLeave;
 
             // =================================================================
             // 1. Listening Visualizer Host (Compact: 220x36, Green & White Only)
@@ -4944,7 +4948,8 @@ namespace FlinchApp
 
         private void UpdateMultitaskDisplay()
         {
-            bool hasActiveMultitask = (_isTimerRunning && _activeTimerSecondsLeft > 0) || _isBackgroundTaskRunning;
+            int bgCount = BackgroundTaskManager.ActiveCount;
+            bool hasActiveMultitask = (_isTimerRunning && _activeTimerSecondsLeft > 0) || _isBackgroundTaskRunning || bgCount > 0;
 
             if (hasActiveMultitask)
             {
@@ -4967,6 +4972,25 @@ namespace FlinchApp
                         ? (double)_activeTimerSecondsLeft / _activeTimerSecondsTotal
                         : 1.0;
                     UpdateTimerProgressArc(progress);
+                }
+                else if (bgCount > 0)
+                {
+                    var tasks = BackgroundTaskManager.GetActiveTasks();
+                    var first = tasks.Count > 0 ? tasks[0] : null;
+
+                    _timerTaskHost.Visibility = Visibility.Collapsed;
+                    _searchTaskHost.Visibility = Visibility.Collapsed;
+                    _audioTaskHost.Visibility = Visibility.Collapsed;
+                    _spinnerTaskHost.Visibility = Visibility.Visible;
+
+                    if (bgCount == 1 && first != null)
+                    {
+                        _spinnerTaskText.Text = first.Title + " (" + first.ProgressPercent + "%)";
+                    }
+                    else
+                    {
+                        _spinnerTaskText.Text = string.Format("{0} tasks running", bgCount);
+                    }
                 }
                 else if (_isBackgroundTaskRunning)
                 {
@@ -5317,6 +5341,26 @@ namespace FlinchApp
                     SetIslandState(IslandState.Alert, "Urgent Email Alert", alertMsg);
                 }));
             };
+
+            BackgroundTaskManager.OnTasksUpdated += () =>
+            {
+                Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    UpdateMultitaskDisplay();
+                    RefreshTasksExpandedUI();
+                }));
+            };
+
+            BackgroundTaskManager.OnTaskCompleted += (task) =>
+            {
+                Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    string dirName = task.TargetDirectory.IndexOf("Desktop", StringComparison.OrdinalIgnoreCase) >= 0 ? "Desktop" : "Flinch folder";
+                    string alertMsg = string.Format("Finished {0}! Saved to {1}", task.Title, dirName);
+                    SetIslandState(IslandState.Alert, "Task Completed", alertMsg);
+                    SpeakAnswer(string.Format("I've finished writing your {0} about {1} and saved it to your {2}.", task.TaskType, task.Topic, dirName));
+                }));
+            };
         }
 
         private void OnWindowSourceInitialized(object sender, EventArgs e)
@@ -5502,6 +5546,83 @@ namespace FlinchApp
             });
         }
 
+        private bool _isPillHovered = false;
+
+        private void OnPillMouseEnter(object sender, MouseEventArgs e)
+        {
+            if (BackgroundTaskManager.ActiveCount > 0 || (_isTimerRunning && _activeTimerSecondsLeft > 0))
+            {
+                _isPillHovered = true;
+                RefreshTasksExpandedUI();
+                SetIslandState(IslandState.TasksExpanded, "", "");
+            }
+        }
+
+        private void OnPillMouseLeave(object sender, MouseEventArgs e)
+        {
+            _isPillHovered = false;
+            if (_state == IslandState.TasksExpanded)
+            {
+                Task.Delay(400).ContinueWith(_ =>
+                {
+                    Dispatcher.BeginInvoke(new Action(() =>
+                    {
+                        if (!_isPillHovered && _state == IslandState.TasksExpanded)
+                        {
+                            SetIslandState(IslandState.Idle, "", "");
+                        }
+                    }));
+                });
+            }
+        }
+
+        private void RefreshTasksExpandedUI()
+        {
+            var tasks = BackgroundTaskManager.GetActiveTasks();
+            if (tasks.Count == 0) return;
+
+            var t1 = tasks[0];
+            if (_expandedBgTitleText != null)
+            {
+                _expandedBgTitleText.Text = t1.Title;
+            }
+            if (_expandedBgDetailText != null)
+            {
+                _expandedBgDetailText.Text = t1.ProgressPercent + "%";
+            }
+            if (_expandedBgProgressBar != null)
+            {
+                _expandedBgProgressBar.Width = Math.Max(10, Math.Min(180, (t1.ProgressPercent / 100.0) * 180.0));
+            }
+
+            if (tasks.Count > 1)
+            {
+                var t2 = tasks[1];
+                if (_expandedSearchTitleText != null)
+                {
+                    _expandedSearchTitleText.Text = t2.Title;
+                }
+                if (_expandedSearchSubtitle != null)
+                {
+                    _expandedSearchSubtitle.Text = t2.ProgressPercent + "% • " + t2.StatusDetail;
+                }
+            }
+        }
+
+        private static bool CheckInternetAvailable()
+        {
+            try
+            {
+                if (!System.Net.NetworkInformation.NetworkInterface.GetIsNetworkAvailable())
+                    return false;
+                return true;
+            }
+            catch
+            {
+                return true;
+            }
+        }
+
         private static bool IsVisualExplainIntent(string text, ActionPayload action)
         {
             if (action != null && string.Equals(action.type, "visual_explain", StringComparison.OrdinalIgnoreCase))
@@ -5608,6 +5729,28 @@ namespace FlinchApp
             OverlayWindow.CloseCurrent();
             _autoCollapseTimer.Stop();
 
+            if (!CheckInternetAvailable())
+            {
+                SetIslandState(IslandState.Error, "No network", "Please check your internet connection.");
+                try
+                {
+                    byte[] offWav = LocalSpeechEngine.SynthesizeToWav("No network.", FlinchEnv.VoiceName);
+                    if (offWav != null && offWav.Length > 44)
+                    {
+                        PlayRawWavOnChannel(offWav);
+                    }
+                }
+                catch { }
+                Task.Delay(3000).ContinueWith(_ =>
+                {
+                    Dispatcher.BeginInvoke(new Action(() =>
+                    {
+                        if (_state == IslandState.Error) SetIslandState(IslandState.Idle, "", "");
+                    }));
+                });
+                return;
+            }
+
             if (SupabaseAuthClient.CurrentSession == null || string.IsNullOrWhiteSpace(SupabaseAuthClient.CurrentSession.AccessToken))
             {
                 SetIslandState(IslandState.Error, "", "Please sign in to speak with Flinch.");
@@ -5686,6 +5829,21 @@ private void FinishRecordingAndSend()
             {
                 FlinchEnv.Log("No speech detected above voice gate — skipping transcription.");
                 SetIslandState(IslandState.Error, "", "Didn't catch that. Speak a bit louder.");
+                return;
+            }
+
+            if (!CheckInternetAvailable())
+            {
+                SetIslandState(IslandState.Error, "No network", "Please check your internet connection.");
+                try
+                {
+                    byte[] offWav = LocalSpeechEngine.SynthesizeToWav("No network.", FlinchEnv.VoiceName);
+                    if (offWav != null && offWav.Length > 44)
+                    {
+                        PlayRawWavOnChannel(offWav);
+                    }
+                }
+                catch { }
                 return;
             }
 
@@ -5778,6 +5936,64 @@ private void FinishRecordingAndSend()
                         {
                             string emailSummary = BackgroundAutomationsEngine.GetSpokenEmailSummary();
                             SpeakAnswer(emailSummary);
+                            return;
+                        }
+
+                        // Autonomous Background Writing Tasks (e.g. "write an essay about sri lanka", "write a report on quantum computing")
+                        bool isWritingTask = (lowerTrans.Contains("write") || lowerTrans.Contains("generate") || lowerTrans.Contains("draft") || lowerTrans.Contains("create"))
+                            && (lowerTrans.Contains("essay") || lowerTrans.Contains("report") || lowerTrans.Contains("article") || lowerTrans.Contains("paper") || lowerTrans.Contains("document") || lowerTrans.Contains("story"));
+
+                        if (isWritingTask)
+                        {
+                            string docType = "essay";
+                            if (lowerTrans.Contains("report")) docType = "report";
+                            else if (lowerTrans.Contains("article")) docType = "article";
+                            else if (lowerTrans.Contains("paper")) docType = "paper";
+                            else if (lowerTrans.Contains("story")) docType = "story";
+
+                            string topic = "";
+                            string[] triggers = new[] { "about", "on", "regarding", "for", "titled" };
+                            foreach (var tr in triggers)
+                            {
+                                int idx = lowerTrans.IndexOf(tr + " ");
+                                if (idx >= 0)
+                                {
+                                    topic = transcript.Substring(idx + tr.Length + 1).Trim();
+                                    break;
+                                }
+                            }
+                            if (string.IsNullOrWhiteSpace(topic))
+                            {
+                                topic = "Sri Lanka";
+                            }
+
+                            string targetDir = null;
+                            string targetDirName = "Flinch folder";
+                            if (lowerTrans.Contains("desktop"))
+                            {
+                                targetDir = Environment.GetFolderPath(Environment.SpecialFolder.Desktop);
+                                targetDirName = "Desktop";
+                                topic = Regex.Replace(topic, @"(?i)(and save (it )?(to|on) (my )?desktop|on (my )?desktop|to (my )?desktop)", "").Trim();
+                            }
+                            else if (lowerTrans.Contains("documents") || lowerTrans.Contains("document folder"))
+                            {
+                                targetDir = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+                                targetDirName = "Documents";
+                                topic = Regex.Replace(topic, @"(?i)(and save (it )?(to|in) (my )?documents|in (my )?documents|to (my )?documents)", "").Trim();
+                            }
+                            else if (lowerTrans.Contains("downloads") || lowerTrans.Contains("download folder"))
+                            {
+                                targetDir = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads");
+                                targetDirName = "Downloads";
+                                topic = Regex.Replace(topic, @"(?i)(and save (it )?(to|in) (my )?downloads|in (my )?downloads|to (my )?downloads)", "").Trim();
+                            }
+
+                            topic = topic.Trim(',', '.', '!', ' ');
+
+                            string replyText = string.Format("I will write an {0} about {1} right now. I'll save it to your {2}.", docType, topic, targetDirName);
+                            SpeakAnswer(replyText);
+
+                            BackgroundTaskManager.StartWritingTask(topic, docType, targetDir);
                             return;
                         }
 
@@ -6116,7 +6332,7 @@ private void FinishRecordingAndSend()
                 _alertPanel.Visibility = Visibility.Collapsed;
                 _cardPanel.Visibility = Visibility.Collapsed;
 
-                if ((_isTimerRunning && _activeTimerSecondsLeft > 0) || _isBackgroundTaskRunning)
+                if ((_isTimerRunning && _activeTimerSecondsLeft > 0) || _isBackgroundTaskRunning || BackgroundTaskManager.ActiveCount > 0)
                 {
                     _multitaskLeftHost.Visibility = Visibility.Visible;
                     _targetW = _isUpdateAvailable ? 310 : 280;
@@ -6141,7 +6357,7 @@ private void FinishRecordingAndSend()
                 _alertPanel.Visibility = Visibility.Collapsed;
                 _cardPanel.Visibility = Visibility.Collapsed;
 
-                if ((_isTimerRunning && _activeTimerSecondsLeft > 0) || _isBackgroundTaskRunning)
+                if ((_isTimerRunning && _activeTimerSecondsLeft > 0) || _isBackgroundTaskRunning || BackgroundTaskManager.ActiveCount > 0)
                 {
                     _multitaskLeftHost.Visibility = Visibility.Visible;
                     _dotsCenterHost.HorizontalAlignment = HorizontalAlignment.Right;
