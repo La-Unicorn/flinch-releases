@@ -552,7 +552,7 @@ namespace FlinchApp
     {
         public static string SupabaseUrl = "";
         public static string SupabaseAnonKey = "";
-        public static string VoiceName = "troy";
+        public static string VoiceName = "arcas";
         public static string LogFilePath = "";
         public static string SystemRules =
             "You are Flinch, a desktop AI voice buddy talking out loud with the user.\n" +
@@ -3510,9 +3510,10 @@ namespace FlinchApp
                 {
                     synth.Rate = 1;
                     string voiceLow = (preferredVoice ?? "").ToLowerInvariant();
-                    bool isFemale = voiceLow.Contains("autumn") || voiceLow.Contains("hannah") ||
-                                   voiceLow.Contains("diana") || voiceLow.Contains("kore") ||
-                                   voiceLow.Contains("aoede") || voiceLow.Contains("female");
+                    bool isFemale = voiceLow.Contains("asteria") || voiceLow.Contains("luna") ||
+                                   voiceLow.Contains("stella") || voiceLow.Contains("athena") ||
+                                   voiceLow.Contains("hera") || voiceLow.Contains("autumn") ||
+                                   voiceLow.Contains("diana") || voiceLow.Contains("female");
 
                     var installed = synth.GetInstalledVoices();
                     foreach (var v in installed)
@@ -5476,12 +5477,21 @@ namespace FlinchApp
             var voiceMenu = new System.Windows.Forms.ToolStripMenuItem("🔊 Voice (" + FlinchEnv.VoiceName + ")");
             string[][] voiceOptions = new[]
             {
-                new[] { "troy",   "Troy (Jameson · Warm US Male)" },
-                new[] { "daniel", "Daniel (Crisp Modern Male)" },
-                new[] { "austin", "Austin (Archie · British Male)" },
-                new[] { "autumn", "Autumn (Katie · Bright US Female)" },
-                new[] { "diana",  "Diana (Skylar · Warm US Female)" },
-                new[] { "aoede",  "Aoede (Gemma · British Female)" }
+                // Female Voices
+                new[] { "asteria", "Asteria (Clear & Natural · US Female)" },
+                new[] { "luna",    "Luna (Warm & Friendly · US Female)" },
+                new[] { "stella",  "Stella (Upbeat & Energetic · US Female)" },
+                new[] { "athena",  "Athena (Confident & Authoritative · US Female)" },
+                new[] { "hera",    "Hera (Mature & Poised · US Female)" },
+
+                // Male Voices
+                new[] { "arcas",   "Arcas (Crisp & Conversational · US Male)" },
+                new[] { "orion",   "Orion (Deep & Authoritative · US Male)" },
+                new[] { "perseus", "Perseus (Casual & Engaging · US Male)" },
+                new[] { "angus",   "Angus (Friendly & Everyday · US Male)" },
+                new[] { "orpheus", "Orpheus (Smooth Studio Narrator · US Male)" },
+                new[] { "helios",  "Helios (Dynamic & Energetic · US Male)" },
+                new[] { "zeus",    "Zeus (Deep Resonant Baritone · US Male)" }
             };
             foreach (string[] kv in voiceOptions)
             {

@@ -6,7 +6,7 @@
 // ============================================================================
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2.39.0";
+import { createClient } from "npm:@supabase/supabase-js@2.39.0";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -1108,6 +1108,30 @@ async function synthesizeWithCartesia(
 }
 
 // Ultra-low latency Neural Speech via Deepgram Aura (<180ms TTFB)
+const DEEPGRAM_VOICE_MAP: Record<string, { model: string; label: string }> = {
+  // Female Voices
+  "asteria": { model: "aura-asteria-en", label: "Deepgram Asteria (US Female)" },
+  "autumn":  { model: "aura-asteria-en", label: "Deepgram Asteria (US Female)" },
+  "luna":    { model: "aura-luna-en",    label: "Deepgram Luna (US Female)" },
+  "stella":  { model: "aura-stella-en",  label: "Deepgram Stella (US Female)" },
+  "athena":  { model: "aura-athena-en",  label: "Deepgram Athena (US Female)" },
+  "hera":    { model: "aura-hera-en",    label: "Deepgram Hera (US Female)" },
+  "diana":   { model: "aura-athena-en",  label: "Deepgram Athena (US Female)" },
+  "aoede":   { model: "aura-stella-en",  label: "Deepgram Stella (US Female)" },
+
+  // Male Voices
+  "arcas":   { model: "aura-arcas-en",   label: "Deepgram Arcas (US Male)" },
+  "troy":    { model: "aura-arcas-en",   label: "Deepgram Arcas (US Male)" },
+  "orion":   { model: "aura-orion-en",   label: "Deepgram Orion (US Male)" },
+  "perseus": { model: "aura-perseus-en", label: "Deepgram Perseus (US Male)" },
+  "angus":   { model: "aura-angus-en",   label: "Deepgram Angus (US Male)" },
+  "orpheus": { model: "aura-orpheus-en", label: "Deepgram Orpheus (US Male)" },
+  "helios":  { model: "aura-helios-en",  label: "Deepgram Helios (US Male)" },
+  "zeus":    { model: "aura-zeus-en",    label: "Deepgram Zeus (US Male)" },
+  "daniel":  { model: "aura-orion-en",   label: "Deepgram Orion (US Male)" },
+  "austin":  { model: "aura-perseus-en", label: "Deepgram Perseus (US Male)" },
+};
+
 async function synthesizeWithDeepgram(
   text: string,
   voice: string,
@@ -1115,14 +1139,21 @@ async function synthesizeWithDeepgram(
 ): Promise<{ audio: string; voice: string } | null> {
   if (!deepgramKey) return null;
 
-  const low = (voice || "troy").toLowerCase().trim();
-  const isFemale = low.includes("autumn") || low.includes("hannah") || low.includes("diana") || low.includes("female") || low.includes("asteria") || low.includes("luna") || low.includes("kore");
+  const low = (voice || "arcas").toLowerCase().trim();
+  let modelName = "aura-arcas-en";
+  let voiceDisplayName = "Deepgram Arcas (US Male)";
 
-  // Deepgram Aura Voice Mapping:
-  // Male: aura-arcas-en (calm, confident, natural male voice)
-  // Female: aura-asteria-en (warm, engaging, confident female voice)
-  const modelName = isFemale ? "aura-asteria-en" : "aura-arcas-en";
-  const voiceDisplayName = isFemale ? "Deepgram Asteria (US Female)" : "Deepgram Arcas (US Male)";
+  if (DEEPGRAM_VOICE_MAP[low]) {
+    modelName = DEEPGRAM_VOICE_MAP[low].model;
+    voiceDisplayName = DEEPGRAM_VOICE_MAP[low].label;
+  } else if (low.startsWith("aura-")) {
+    modelName = low;
+    voiceDisplayName = `Deepgram ${low}`;
+  } else {
+    const isFemale = low.includes("autumn") || low.includes("female") || low.includes("asteria") || low.includes("luna") || low.includes("stella") || low.includes("athena") || low.includes("hera") || low.includes("diana") || low.includes("aoede");
+    modelName = isFemale ? "aura-asteria-en" : "aura-arcas-en";
+    voiceDisplayName = isFemale ? "Deepgram Asteria (US Female)" : "Deepgram Arcas (US Male)";
+  }
 
   try {
     const cts = new AbortController();
