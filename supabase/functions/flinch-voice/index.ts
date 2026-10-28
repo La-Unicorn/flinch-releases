@@ -115,6 +115,12 @@ serve(async (req: Request) => {
         const docType = String(body.type || "essay").trim();
         const instructions = String(body.prompt || `Write a comprehensive, engaging, well-structured ${docType} about: ${topic}. Include an introduction, deep body paragraphs with historical, cultural, or factual details, and a thoughtful conclusion.`).trim();
 
+        const systemAuthorRule = `You are an expert author writing a comprehensive ${docType}.
+CRITICAL INSTRUCTIONS:
+1. Output ONLY the document title, section headers, and body paragraphs of the ${docType}.
+2. NEVER include conversational chatter, greetings, user guidance, instructions on how to copy/paste text, or AI disclaimers (e.g. NEVER write "Since I am an AI...", "Here is the essay...", or mention Discord, WhatsApp, or saving files).
+3. Start directly with the title and content.`;
+
         let generatedContent = "";
 
         // 1. Primary: Gemini 3 Flash Preview (Fast & high quality)
@@ -126,10 +132,13 @@ serve(async (req: Request) => {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
+                  systemInstruction: {
+                    parts: [{ text: systemAuthorRule }]
+                  },
                   contents: [
                     {
                       role: "user",
-                      parts: [{ text: instructions }]
+                      parts: [{ text: `Write a comprehensive, engaging, well-structured ${docType} about: ${topic}.` }]
                     }
                   ],
                   generationConfig: {
@@ -158,8 +167,8 @@ serve(async (req: Request) => {
               body: JSON.stringify({
                 model: "llama-3.3-70b-versatile",
                 messages: [
-                  { role: "system", content: `You are an expert essay and document writer. Write comprehensive, well-structured, engaging ${docType}s.` },
-                  { role: "user", content: instructions }
+                  { role: "system", content: systemAuthorRule },
+                  { role: "user", content: `Write a comprehensive, engaging, well-structured ${docType} about: ${topic}.` }
                 ],
                 temperature: 0.7,
                 max_tokens: 3500
@@ -173,6 +182,8 @@ serve(async (req: Request) => {
         }
 
         if (generatedContent) {
+          // Strip any accidental AI preamble
+          generatedContent = generatedContent.replace(/^(Since I am an AI|As an AI|I cannot directly access|Here is the).*?\n+/gis, "").trim();
           return new Response(
             JSON.stringify({
               topic: topic,

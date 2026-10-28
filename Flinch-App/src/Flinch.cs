@@ -3648,6 +3648,17 @@ namespace FlinchApp
         }
     }
 
+    internal sealed class ActiveTimerItem
+    {
+        public string Id { get; set; }
+        public string Label { get; set; }
+        public string Type { get; set; }
+        public string Text { get; set; }
+        public int SecondsTotal { get; set; }
+        public int SecondsLeft { get; set; }
+        public DateTime StartedUtc { get; set; }
+    }
+
     internal sealed class DynamicIslandWindow : Window
     {
         private const int HOTKEY_ID_ALTV = 0xB401;
@@ -3726,19 +3737,25 @@ namespace FlinchApp
         private readonly Border[] _audioEqBars = new Border[3];
         private readonly TextBlock _audioTaskText;
 
-        // Multitask State
+        // Multitask State & Multi-Timer Queue
+        private readonly List<ActiveTimerItem> _activeTimers = new List<ActiveTimerItem>();
+        private readonly object _timerLock = new object();
+        private readonly List<ActiveBackgroundTask> _pendingCompletedTasks = new List<ActiveBackgroundTask>();
+        private readonly object _pendingTasksLock = new object();
+
         private DispatcherTimer _liveCountdownTicker;
         private int _activeTimerSecondsTotal = 0;
         private int _activeTimerSecondsLeft = 0;
         private string _activeTimerLabel = "";
-        private bool _isTimerRunning = false;
         private bool _isBackgroundTaskRunning = false;
         private string _backgroundTaskType = "organizing";
         private string _backgroundTaskTitle = "";
         private string _backgroundTaskDetail = "";
 
-        // Expanded Task Card (flinch-notch-expanded 2.svg)
+        // Expanded Task Card (Dynamic Multi-Task & Multi-Timer List)
         private readonly Grid _tasksExpandedPanel;
+        private readonly ScrollViewer _tasksScrollViewer;
+        private readonly StackPanel _tasksItemsStack;
         private readonly System.Windows.Shapes.Path _expandedTimerRingPath;
         private readonly TextBlock _expandedTimerSubtitle;
         private readonly TextBlock _expandedTimerTimeText;
@@ -3812,7 +3829,6 @@ namespace FlinchApp
         private ActionPayload _pendingAction;
         private DispatcherTimer _countdownTimer;
         private int _countdownSecRemaining;
-        private readonly List<DispatcherTimer> _activeTimers = new List<DispatcherTimer>();
         private static byte[] _cachedChimeWav;
         private readonly IScreenCaptureService _captureService = new WindowsScreenCaptureService();
 
@@ -3972,7 +3988,7 @@ namespace FlinchApp
 
             _timerProgressArcPath = new System.Windows.Shapes.Path
             {
-                Stroke = BrushOrange,
+                Stroke = BrushMint,
                 StrokeThickness = 2.4,
                 StrokeStartLineCap = PenLineCap.Round,
                 StrokeEndLineCap = PenLineCap.Round,
@@ -4016,7 +4032,7 @@ namespace FlinchApp
             _spinnerArcPath = new System.Windows.Shapes.Path
             {
                 Data = Geometry.Parse("M 10,2 A 8,8 0 0 1 18,10"),
-                Stroke = BrushOrange,
+                Stroke = BrushMint,
                 StrokeThickness = 2.4,
                 StrokeStartLineCap = PenLineCap.Round,
                 StrokeEndLineCap = PenLineCap.Round,
@@ -4152,103 +4168,27 @@ namespace FlinchApp
             var div1 = new Border { Height = 1, Background = BrushDivider, Margin = new Thickness(34, 34, 34, 0), VerticalAlignment = VerticalAlignment.Top };
             _tasksExpandedPanel.Children.Add(div1);
 
-            // Row 1: Timer Task (y = 44)
-            var timerRow = new Grid { Margin = new Thickness(34, 44, 34, 0), Height = 48, VerticalAlignment = VerticalAlignment.Top };
-            var timerRingHost = new Grid { Width = 24, Height = 24, HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Center };
-            timerRingHost.Children.Add(new Ellipse { Width = 22, Height = 22, Stroke = BrushTrack, StrokeThickness = 2.6 });
-            _expandedTimerRingPath = new System.Windows.Shapes.Path { Stroke = BrushOrange, StrokeThickness = 2.6, StrokeStartLineCap = PenLineCap.Round, StrokeEndLineCap = PenLineCap.Round };
-            timerRingHost.Children.Add(_expandedTimerRingPath);
-            timerRow.Children.Add(timerRingHost);
-
-            var timerTitleStack = new StackPanel { Orientation = Orientation.Vertical, Margin = new Thickness(34, 4, 0, 0), VerticalAlignment = VerticalAlignment.Center };
-            timerTitleStack.Children.Add(new TextBlock { Text = "Timer", Foreground = BrushCream, FontSize = 13.5, FontFamily = new FontFamily("Segoe UI Variable Semibold, Segoe UI Semibold, Segoe UI") });
-            _expandedTimerSubtitle = new TextBlock { Text = "Countdown", Foreground = BrushTextMuted, FontSize = 11.5, FontFamily = new FontFamily("Segoe UI Variable, Segoe UI") };
-            timerTitleStack.Children.Add(_expandedTimerSubtitle);
-            timerRow.Children.Add(timerTitleStack);
-
-            _expandedTimerTimeText = new TextBlock { Text = "00:00", Foreground = BrushCream, FontSize = 16, FontFamily = new FontFamily("Segoe UI Variable Semibold, Segoe UI Semibold, Segoe UI"), HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 32, 0) };
-            timerRow.Children.Add(_expandedTimerTimeText);
-
-            var timerPauseBtn = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Center, Cursor = Cursors.Hand };
-            timerPauseBtn.Children.Add(new Border { Width = 3.5, Height = 13, CornerRadius = new CornerRadius(1.75), Background = BrushTextMuted, Margin = new Thickness(0, 0, 3, 0) });
-            timerPauseBtn.Children.Add(new Border { Width = 3.5, Height = 13, CornerRadius = new CornerRadius(1.75), Background = BrushTextMuted });
-            timerPauseBtn.MouseLeftButtonDown += (s, e) =>
+            // Dynamic items container for all running timers and background tasks
+            _tasksItemsStack = new StackPanel { Orientation = Orientation.Vertical };
+            _tasksScrollViewer = new ScrollViewer
             {
-                e.Handled = true;
-                if (_isTimerRunning)
-                {
-                    _isTimerRunning = false;
-                    if (_liveCountdownTicker != null) _liveCountdownTicker.Stop();
-                    UpdateMultitaskDisplay();
-                    SetIslandState(IslandState.Idle, "", "");
-                }
+                Margin = new Thickness(34, 38, 34, 10),
+                VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+                HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+                Focusable = false,
+                Content = _tasksItemsStack
             };
-            timerRow.Children.Add(timerPauseBtn);
-            _tasksExpandedPanel.Children.Add(timerRow);
+            _tasksExpandedPanel.Children.Add(_tasksScrollViewer);
 
-            // Divider 2 (y = 96)
-            var div2 = new Border { Height = 1, Background = BrushDivider, Margin = new Thickness(34, 96, 34, 0), VerticalAlignment = VerticalAlignment.Top };
-            _tasksExpandedPanel.Children.Add(div2);
-
-            // Row 2: Organizing Downloads / Background task (y = 102)
-            var bgRow = new Grid { Margin = new Thickness(34, 102, 34, 0), Height = 46, VerticalAlignment = VerticalAlignment.Top };
-            var bgSpinnerHost = new Grid { Width = 22, Height = 22, HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Center };
-            bgSpinnerHost.Children.Add(new Ellipse { Width = 20, Height = 20, Stroke = BrushTrack, StrokeThickness = 2.4 });
-            _expandedBgSpinnerArc = new System.Windows.Shapes.Path { Stroke = BrushOrange, StrokeThickness = 2.4, StrokeStartLineCap = PenLineCap.Round, StrokeEndLineCap = PenLineCap.Round };
-            bgSpinnerHost.Children.Add(_expandedBgSpinnerArc);
-            bgRow.Children.Add(bgSpinnerHost);
-
-            var bgStack = new StackPanel { Orientation = Orientation.Vertical, Margin = new Thickness(34, 4, 0, 0), VerticalAlignment = VerticalAlignment.Center };
-            _expandedBgTitleText = new TextBlock { Text = "Organizing Downloads", Foreground = BrushCream, FontSize = 13.5, FontFamily = new FontFamily("Segoe UI Variable Semibold, Segoe UI Semibold, Segoe UI") };
-            bgStack.Children.Add(_expandedBgTitleText);
-
-            var bgProgressTrack = new Grid { Width = 180, Height = 3, HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 4, 0, 0) };
-            bgProgressTrack.Children.Add(new Border { Width = 180, Height = 3, CornerRadius = new CornerRadius(1.5), Background = BrushTrack, HorizontalAlignment = HorizontalAlignment.Left });
-            _expandedBgProgressBar = new Border { Width = 60, Height = 3, CornerRadius = new CornerRadius(1.5), Background = BrushOrange, HorizontalAlignment = HorizontalAlignment.Left };
-            bgProgressTrack.Children.Add(_expandedBgProgressBar);
-            bgStack.Children.Add(bgProgressTrack);
-            bgRow.Children.Add(bgStack);
-
-            _expandedBgDetailText = new TextBlock { Text = "12 of 40", Foreground = BrushTextMuted, FontSize = 12, FontFamily = new FontFamily("Segoe UI Variable, Segoe UI"), HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Center };
-            bgRow.Children.Add(_expandedBgDetailText);
-            _tasksExpandedPanel.Children.Add(bgRow);
-
-            // Divider 3 (y = 150)
-            var div3 = new Border { Height = 1, Background = BrushDivider, Margin = new Thickness(34, 150, 34, 0), VerticalAlignment = VerticalAlignment.Top };
-            _tasksExpandedPanel.Children.Add(div3);
-
-            // Row 3: Checking flight prices / Web search (y = 156)
-            var searchRow = new Grid { Margin = new Thickness(34, 156, 34, 0), Height = 44, VerticalAlignment = VerticalAlignment.Top };
-            var searchIconExpanded = new System.Windows.Shapes.Path
-            {
-                Data = Geometry.Parse("M 5.5,1 A 4.5,4.5 0 1 0 10,5.5 A 4.5,4.5 0 0 0 5.5,1 Z M 9,9 L 13.5,13.5"),
-                Stroke = BrushCream,
-                StrokeThickness = 1.8,
-                StrokeStartLineCap = PenLineCap.Round,
-                StrokeEndLineCap = PenLineCap.Round,
-                Width = 16,
-                Height = 16,
-                HorizontalAlignment = HorizontalAlignment.Left,
-                VerticalAlignment = VerticalAlignment.Center
-            };
-            searchRow.Children.Add(searchIconExpanded);
-
-            var searchStack = new StackPanel { Orientation = Orientation.Vertical, Margin = new Thickness(34, 3, 0, 0), VerticalAlignment = VerticalAlignment.Center };
-            _expandedSearchTitleText = new TextBlock { Text = "Checking flight prices", Foreground = BrushCream, FontSize = 13.5, FontFamily = new FontFamily("Segoe UI Variable Semibold, Segoe UI Semibold, Segoe UI") };
-            searchStack.Children.Add(_expandedSearchTitleText);
-            _expandedSearchSubtitle = new TextBlock { Text = "Searching the web", Foreground = BrushTextMuted, FontSize = 11.5, FontFamily = new FontFamily("Segoe UI Variable, Segoe UI") };
-            searchStack.Children.Add(_expandedSearchSubtitle);
-            searchRow.Children.Add(searchStack);
-
-            var searchDotsStack = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Center };
-            for (int i = 0; i < 3; i++)
-            {
-                var dot = new Border { Width = 4, Height = 4, CornerRadius = new CornerRadius(2), Background = BrushCream, Margin = new Thickness(2, 0, 2, 0) };
-                _expandedSearchDots[i] = dot;
-                searchDotsStack.Children.Add(dot);
-            }
-            searchRow.Children.Add(searchDotsStack);
-            _tasksExpandedPanel.Children.Add(searchRow);
+            _expandedTimerRingPath = new System.Windows.Shapes.Path { Stroke = BrushMint, StrokeThickness = 2.6 };
+            _expandedTimerSubtitle = new TextBlock();
+            _expandedTimerTimeText = new TextBlock();
+            _expandedBgSpinnerArc = new System.Windows.Shapes.Path { Stroke = BrushMint, StrokeThickness = 2.4 };
+            _expandedBgTitleText = new TextBlock();
+            _expandedBgProgressBar = new Border { Background = BrushMint };
+            _expandedBgDetailText = new TextBlock();
+            _expandedSearchTitleText = new TextBlock();
+            _expandedSearchSubtitle = new TextBlock();
 
             _tasksExpandedPanel.MouseLeftButtonDown += (s, e) =>
             {
@@ -4318,7 +4258,7 @@ namespace FlinchApp
             _countdownSecText = new TextBlock
             {
                 Text = "(5s)",
-                Foreground = BrushOrange,
+                Foreground = BrushMint,
                 FontFamily = new FontFamily("Segoe UI Semibold, Segoe UI"),
                 FontSize = 11.5,
                 VerticalAlignment = VerticalAlignment.Center,
@@ -4538,7 +4478,7 @@ namespace FlinchApp
                     Height = 15,
                     RadiusX = 3,
                     RadiusY = 3,
-                    Fill = (i % 2 == 0) ? BrushOrange : BrushCream,
+                    Fill = (i % 2 == 0) ? BrushMint : BrushCream,
                     RenderTransform = new RotateTransform(i * 45.0, 3.0, 27.0)
                 };
                 Canvas.SetLeft(rect, 29);
@@ -4698,33 +4638,146 @@ namespace FlinchApp
             SetIslandState(IslandState.Idle, "", "");
         }
 
+        private List<ActiveTimerItem> GetActiveTimersList()
+        {
+            lock (_timerLock)
+            {
+                return new List<ActiveTimerItem>(_activeTimers);
+            }
+        }
+
+        private ActiveTimerItem GetLatestActiveTimer()
+        {
+            lock (_timerLock)
+            {
+                ActiveTimerItem latest = null;
+                foreach (var t in _activeTimers)
+                {
+                    if (latest == null || t.StartedUtc > latest.StartedUtc)
+                    {
+                        latest = t;
+                    }
+                }
+                return latest;
+            }
+        }
+
+        private bool CancelTimer(string id)
+        {
+            lock (_timerLock)
+            {
+                for (int i = 0; i < _activeTimers.Count; i++)
+                {
+                    if (_activeTimers[i].Id == id)
+                    {
+                        _activeTimers.RemoveAt(i);
+                        if (_activeTimers.Count == 0 && _liveCountdownTicker != null)
+                        {
+                            _liveCountdownTicker.Stop();
+                        }
+                        UpdateMultitaskDisplay();
+                        RefreshTasksExpandedUI();
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+
+        private ActiveTimerItem CancelLatestTimer()
+        {
+            lock (_timerLock)
+            {
+                var latest = GetLatestActiveTimer();
+                if (latest != null)
+                {
+                    _activeTimers.Remove(latest);
+                    if (_activeTimers.Count == 0 && _liveCountdownTicker != null)
+                    {
+                        _liveCountdownTicker.Stop();
+                    }
+                    UpdateMultitaskDisplay();
+                    RefreshTasksExpandedUI();
+                    return latest;
+                }
+            }
+            return null;
+        }
+
         private void StartTimerOrReminder(int seconds, string type, string text, string label)
         {
             if (seconds <= 0) seconds = 5;
+            string lbl = !string.IsNullOrWhiteSpace(label) ? label : (!string.IsNullOrWhiteSpace(text) ? text : "Timer");
+
+            var item = new ActiveTimerItem
+            {
+                Id = Guid.NewGuid().ToString(),
+                Label = lbl,
+                Type = type,
+                Text = text,
+                SecondsTotal = seconds,
+                SecondsLeft = seconds,
+                StartedUtc = DateTime.UtcNow
+            };
+
+            lock (_timerLock)
+            {
+                _activeTimers.Add(item);
+            }
+
             _activeTimerSecondsTotal = seconds;
             _activeTimerSecondsLeft = seconds;
-            _activeTimerLabel = !string.IsNullOrWhiteSpace(label) ? label : (!string.IsNullOrWhiteSpace(text) ? text : "Timer");
-            _isTimerRunning = true;
+            _activeTimerLabel = lbl;
 
             UpdateMultitaskDisplay();
+            RefreshTasksExpandedUI();
 
             if (_liveCountdownTicker == null)
             {
                 _liveCountdownTicker = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
                 _liveCountdownTicker.Tick += (s, e) =>
                 {
-                    _activeTimerSecondsLeft--;
-                    if (_activeTimerSecondsLeft <= 0)
+                    List<ActiveTimerItem> completed = new List<ActiveTimerItem>();
+                    lock (_timerLock)
                     {
-                        _liveCountdownTicker.Stop();
-                        _isTimerRunning = false;
-                        UpdateMultitaskDisplay();
-                        ShowAlert(type, text, label);
+                        for (int i = _activeTimers.Count - 1; i >= 0; i--)
+                        {
+                            var t = _activeTimers[i];
+                            t.SecondsLeft--;
+                            if (t.SecondsLeft <= 0)
+                            {
+                                completed.Add(t);
+                                _activeTimers.RemoveAt(i);
+                            }
+                        }
                     }
-                    else
+
+                    foreach (var c in completed)
                     {
-                        UpdateMultitaskDisplay();
+                        ShowAlert(c.Type, c.Text, c.Label);
                     }
+
+                    lock (_timerLock)
+                    {
+                        if (_activeTimers.Count == 0)
+                        {
+                            _liveCountdownTicker.Stop();
+                        }
+                        else
+                        {
+                            ActiveTimerItem nextExpiring = _activeTimers[0];
+                            foreach (var at in _activeTimers)
+                            {
+                                if (at.SecondsLeft < nextExpiring.SecondsLeft) nextExpiring = at;
+                            }
+                            _activeTimerSecondsLeft = nextExpiring.SecondsLeft;
+                            _activeTimerSecondsTotal = nextExpiring.SecondsTotal;
+                            _activeTimerLabel = nextExpiring.Label;
+                        }
+                    }
+
+                    UpdateMultitaskDisplay();
+                    RefreshTasksExpandedUI();
                 };
             }
             _liveCountdownTicker.Start();
@@ -4949,48 +5002,56 @@ namespace FlinchApp
         private void UpdateMultitaskDisplay()
         {
             int bgCount = BackgroundTaskManager.ActiveCount;
-            bool hasActiveMultitask = (_isTimerRunning && _activeTimerSecondsLeft > 0) || _isBackgroundTaskRunning || bgCount > 0;
+            int timerCount;
+            lock (_timerLock) { timerCount = _activeTimers.Count; }
+            bool hasActiveMultitask = timerCount > 0 || _isBackgroundTaskRunning || bgCount > 0;
 
             if (hasActiveMultitask)
             {
                 _multitaskLeftHost.Visibility = Visibility.Visible;
 
-                // User constraint: When multitasking show ONLY the suitable icon for what is active!
-                if (_isTimerRunning && _activeTimerSecondsLeft > 0)
+                if (timerCount > 0)
                 {
                     _timerTaskHost.Visibility = Visibility.Visible;
                     _spinnerTaskHost.Visibility = Visibility.Collapsed;
                     _searchTaskHost.Visibility = Visibility.Collapsed;
                     _audioTaskHost.Visibility = Visibility.Collapsed;
 
-                    string formatted = FormatTimerDisplay(_activeTimerSecondsLeft);
-                    _liveTimerText.Text = formatted;
-                    if (_expandedTimerTimeText != null) _expandedTimerTimeText.Text = formatted;
-                    if (_expandedTimerSubtitle != null) _expandedTimerSubtitle.Text = !string.IsNullOrWhiteSpace(_activeTimerLabel) ? _activeTimerLabel : "Countdown";
+                    ActiveTimerItem minTimer = null;
+                    lock (_timerLock)
+                    {
+                        if (_activeTimers.Count > 0)
+                        {
+                            minTimer = _activeTimers[0];
+                            foreach (var at in _activeTimers)
+                            {
+                                if (at.SecondsLeft < minTimer.SecondsLeft) minTimer = at;
+                            }
+                        }
+                    }
 
-                    double progress = (_activeTimerSecondsTotal > 0)
-                        ? (double)_activeTimerSecondsLeft / _activeTimerSecondsTotal
-                        : 1.0;
-                    UpdateTimerProgressArc(progress);
+                    if (minTimer != null)
+                    {
+                        string formatted = FormatTimerDisplay(minTimer.SecondsLeft);
+                        _liveTimerText.Text = formatted;
+                        if (_expandedTimerTimeText != null) _expandedTimerTimeText.Text = formatted;
+                        if (_expandedTimerSubtitle != null) _expandedTimerSubtitle.Text = !string.IsNullOrWhiteSpace(minTimer.Label) ? minTimer.Label : "Countdown";
+
+                        double progress = (minTimer.SecondsTotal > 0)
+                            ? (double)minTimer.SecondsLeft / minTimer.SecondsTotal
+                            : 1.0;
+                        UpdateTimerProgressArc(progress);
+                    }
                 }
                 else if (bgCount > 0)
                 {
-                    var tasks = BackgroundTaskManager.GetActiveTasks();
-                    var first = tasks.Count > 0 ? tasks[0] : null;
-
                     _timerTaskHost.Visibility = Visibility.Collapsed;
                     _searchTaskHost.Visibility = Visibility.Collapsed;
                     _audioTaskHost.Visibility = Visibility.Collapsed;
                     _spinnerTaskHost.Visibility = Visibility.Visible;
 
-                    if (bgCount == 1 && first != null)
-                    {
-                        _spinnerTaskText.Text = first.Title + " (" + first.ProgressPercent + "%)";
-                    }
-                    else
-                    {
-                        _spinnerTaskText.Text = string.Format("{0} tasks running", bgCount);
-                    }
+                    // When not hovered: user requested the spinner should be fine without showing what it's doing in the background
+                    _spinnerTaskText.Visibility = Visibility.Collapsed;
                 }
                 else if (_isBackgroundTaskRunning)
                 {
@@ -5015,10 +5076,7 @@ namespace FlinchApp
                         _spinnerTaskHost.Visibility = Visibility.Visible;
                         _searchTaskHost.Visibility = Visibility.Collapsed;
                         _audioTaskHost.Visibility = Visibility.Collapsed;
-                        _spinnerTaskText.Text = string.IsNullOrWhiteSpace(_backgroundTaskTitle) ? "Organizing..." : _backgroundTaskTitle;
-                        if (_expandedBgTitleText != null) _expandedBgTitleText.Text = _spinnerTaskText.Text;
-                        if (_expandedBgDetailText != null && !string.IsNullOrWhiteSpace(_backgroundTaskDetail))
-                            _expandedBgDetailText.Text = _backgroundTaskDetail;
+                        _spinnerTaskText.Visibility = Visibility.Collapsed;
                     }
                 }
 
@@ -5033,9 +5091,19 @@ namespace FlinchApp
 
                 if (_state == IslandState.Idle)
                 {
-                    _targetW = _isUpdateAvailable ? 310 : 280;
-                    _targetH = 46;
-                    _targetBotR = 23;
+                    if (bgCount > 0 && timerCount == 0)
+                    {
+                        // Sleek unhovered spinner pill
+                        _targetW = _isUpdateAvailable ? 230 : 190;
+                        _targetH = 34;
+                        _targetBotR = 17;
+                    }
+                    else
+                    {
+                        _targetW = _isUpdateAvailable ? 310 : 280;
+                        _targetH = 46;
+                        _targetBotR = 23;
+                    }
                 }
             }
             else
@@ -5356,6 +5424,19 @@ namespace FlinchApp
                 Dispatcher.BeginInvoke(new Action(() =>
                 {
                     string dirName = task.TargetDirectory.IndexOf("Desktop", StringComparison.OrdinalIgnoreCase) >= 0 ? "Desktop" : "Flinch folder";
+
+                    // If user is currently asking another question or listening to an answer, defer announcement!
+                    if (_state == IslandState.Listening || _state == IslandState.Thinking || _state == IslandState.Speaking || _isBusy)
+                    {
+                        lock (_pendingTasksLock)
+                        {
+                            _pendingCompletedTasks.Add(task);
+                        }
+                        UpdateMultitaskDisplay();
+                        RefreshTasksExpandedUI();
+                        return;
+                    }
+
                     string alertMsg = string.Format("Finished {0}! Saved to {1}", task.Title, dirName);
                     SetIslandState(IslandState.Alert, "Task Completed", alertMsg);
                     SpeakAnswer(string.Format("I've finished writing your {0} about {1} and saved it to your {2}.", task.TaskType, task.Topic, dirName));
@@ -5418,8 +5499,9 @@ namespace FlinchApp
             {
                 SetIslandState(IslandState.Idle, "", "");
             }
-            else if ((_isTimerRunning && _activeTimerSecondsLeft > 0) || _isBackgroundTaskRunning)
+            else if (_activeTimers.Count > 0 || BackgroundTaskManager.ActiveCount > 0 || _isBackgroundTaskRunning)
             {
+                RefreshTasksExpandedUI();
                 SetIslandState(IslandState.TasksExpanded, "", "");
             }
             else if (!_isBusy)
@@ -5550,7 +5632,9 @@ namespace FlinchApp
 
         private void OnPillMouseEnter(object sender, MouseEventArgs e)
         {
-            if (BackgroundTaskManager.ActiveCount > 0 || (_isTimerRunning && _activeTimerSecondsLeft > 0))
+            int timerCount;
+            lock (_timerLock) { timerCount = _activeTimers.Count; }
+            if (BackgroundTaskManager.ActiveCount > 0 || timerCount > 0 || _isBackgroundTaskRunning)
             {
                 _isPillHovered = true;
                 RefreshTasksExpandedUI();
@@ -5576,36 +5660,239 @@ namespace FlinchApp
             }
         }
 
+        private static Geometry BuildArcGeometry(double cx, double cy, double r, double progress)
+        {
+            if (progress <= 0.001) return null;
+            double angle = Math.Min(359.9, Math.Max(0.1, progress * 360.0));
+            double rad = (angle - 90.0) * Math.PI / 180.0;
+            double xEnd = cx + r * Math.Cos(rad);
+            double yEnd = cy + r * Math.Sin(rad);
+
+            var fig = new PathFigure
+            {
+                StartPoint = new Point(cx, cy - r),
+                IsClosed = false,
+                IsFilled = false
+            };
+            fig.Segments.Add(new ArcSegment(
+                new Point(xEnd, yEnd),
+                new Size(r, r),
+                0, angle > 180.0, SweepDirection.Clockwise, true));
+
+            var geom = new PathGeometry();
+            geom.Figures.Add(fig);
+            geom.Freeze();
+            return geom;
+        }
+
+        private UIElement BuildTimerRow(ActiveTimerItem tm)
+        {
+            var row = new Grid { Margin = new Thickness(0, 4, 0, 4), Height = 48 };
+
+            var ringHost = new Grid { Width = 24, Height = 24, HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Center };
+            ringHost.Children.Add(new Ellipse { Width = 22, Height = 22, Stroke = BrushTrack, StrokeThickness = 2.6 });
+
+            double prog = tm.SecondsTotal > 0 ? (double)tm.SecondsLeft / tm.SecondsTotal : 1.0;
+            var arcPath = new System.Windows.Shapes.Path
+            {
+                Stroke = BrushMint,
+                StrokeThickness = 2.6,
+                StrokeStartLineCap = PenLineCap.Round,
+                StrokeEndLineCap = PenLineCap.Round,
+                Data = BuildArcGeometry(12, 12, 10, prog)
+            };
+            ringHost.Children.Add(arcPath);
+            row.Children.Add(ringHost);
+
+            var titleStack = new StackPanel { Orientation = Orientation.Vertical, Margin = new Thickness(34, 4, 0, 0), VerticalAlignment = VerticalAlignment.Center };
+            titleStack.Children.Add(new TextBlock { Text = tm.Label, Foreground = BrushCream, FontSize = 13.5, FontFamily = new FontFamily("Segoe UI Variable Semibold, Segoe UI Semibold, Segoe UI") });
+            titleStack.Children.Add(new TextBlock { Text = string.Format("{0}-second countdown", tm.SecondsTotal), Foreground = BrushTextMuted, FontSize = 11.5, FontFamily = new FontFamily("Segoe UI Variable, Segoe UI") });
+            row.Children.Add(titleStack);
+
+            var timeTxt = new TextBlock
+            {
+                Text = FormatTimerDisplay(tm.SecondsLeft),
+                Foreground = BrushCream,
+                FontSize = 15,
+                FontFamily = new FontFamily("Segoe UI Variable Semibold, Segoe UI Semibold, Segoe UI"),
+                HorizontalAlignment = HorizontalAlignment.Right,
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(0, 0, 36, 0)
+            };
+            row.Children.Add(timeTxt);
+
+            var cancelBtn = new Border
+            {
+                Width = 22,
+                Height = 22,
+                CornerRadius = new CornerRadius(11),
+                Background = new SolidColorBrush(Color.FromArgb(40, 255, 255, 255)),
+                HorizontalAlignment = HorizontalAlignment.Right,
+                VerticalAlignment = VerticalAlignment.Center,
+                Cursor = Cursors.Hand,
+                ToolTip = "Cancel this timer"
+            };
+            var xPath = new System.Windows.Shapes.Path
+            {
+                Data = Geometry.Parse("M 7,7 L 15,15 M 15,7 L 7,15"),
+                Stroke = BrushCream,
+                StrokeThickness = 1.8,
+                StrokeStartLineCap = PenLineCap.Round,
+                StrokeEndLineCap = PenLineCap.Round
+            };
+            cancelBtn.Child = xPath;
+            cancelBtn.MouseEnter += (s, e) => cancelBtn.Background = new SolidColorBrush(Color.FromArgb(90, 255, 100, 100));
+            cancelBtn.MouseLeave += (s, e) => cancelBtn.Background = new SolidColorBrush(Color.FromArgb(40, 255, 255, 255));
+            string timerId = tm.Id;
+            cancelBtn.MouseLeftButtonDown += (s, e) =>
+            {
+                e.Handled = true;
+                CancelTimer(timerId);
+            };
+            row.Children.Add(cancelBtn);
+
+            return row;
+        }
+
+        private UIElement BuildTaskRow(ActiveBackgroundTask task)
+        {
+            var row = new Grid { Margin = new Thickness(0, 4, 0, 4), Height = 48 };
+
+            var spinnerHost = new Grid { Width = 22, Height = 22, HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Center };
+            spinnerHost.Children.Add(new Ellipse { Width = 20, Height = 20, Stroke = BrushTrack, StrokeThickness = 2.4 });
+
+            var spinnerArc = new System.Windows.Shapes.Path
+            {
+                Data = Geometry.Parse("M 10,2 A 8,8 0 0 1 18,10"),
+                Stroke = BrushMint,
+                StrokeThickness = 2.4,
+                StrokeStartLineCap = PenLineCap.Round,
+                StrokeEndLineCap = PenLineCap.Round
+            };
+            var spinRot = new RotateTransform(0, 10, 10);
+            spinnerArc.RenderTransform = spinRot;
+            spinnerHost.Children.Add(spinnerArc);
+            row.Children.Add(spinnerHost);
+
+            var bgStack = new StackPanel { Orientation = Orientation.Vertical, Margin = new Thickness(34, 3, 0, 0), VerticalAlignment = VerticalAlignment.Center };
+            bgStack.Children.Add(new TextBlock
+            {
+                Text = task.Title,
+                Foreground = BrushCream,
+                FontSize = 13,
+                FontFamily = new FontFamily("Segoe UI Variable Semibold, Segoe UI Semibold, Segoe UI"),
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                MaxWidth = 210
+            });
+
+            var trackGrid = new Grid { Width = 180, Height = 3, HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 4, 0, 0) };
+            trackGrid.Children.Add(new Border { Width = 180, Height = 3, CornerRadius = new CornerRadius(1.5), Background = BrushTrack, HorizontalAlignment = HorizontalAlignment.Left });
+            double barW = Math.Max(10, Math.Min(180, (task.ProgressPercent / 100.0) * 180.0));
+            var fillBar = new Border { Width = barW, Height = 3, CornerRadius = new CornerRadius(1.5), Background = BrushMint, HorizontalAlignment = HorizontalAlignment.Left };
+            trackGrid.Children.Add(fillBar);
+            bgStack.Children.Add(trackGrid);
+            row.Children.Add(bgStack);
+
+            var pctTxt = new TextBlock
+            {
+                Text = task.ProgressPercent + "%",
+                Foreground = BrushTextMuted,
+                FontSize = 12,
+                FontFamily = new FontFamily("Segoe UI Variable, Segoe UI"),
+                HorizontalAlignment = HorizontalAlignment.Right,
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(0, 0, 36, 0)
+            };
+            row.Children.Add(pctTxt);
+
+            var cancelBtn = new Border
+            {
+                Width = 22,
+                Height = 22,
+                CornerRadius = new CornerRadius(11),
+                Background = new SolidColorBrush(Color.FromArgb(40, 255, 255, 255)),
+                HorizontalAlignment = HorizontalAlignment.Right,
+                VerticalAlignment = VerticalAlignment.Center,
+                Cursor = Cursors.Hand,
+                ToolTip = "Stop this task"
+            };
+            var xPath = new System.Windows.Shapes.Path
+            {
+                Data = Geometry.Parse("M 7,7 L 15,15 M 15,7 L 7,15"),
+                Stroke = BrushCream,
+                StrokeThickness = 1.8,
+                StrokeStartLineCap = PenLineCap.Round,
+                StrokeEndLineCap = PenLineCap.Round
+            };
+            cancelBtn.Child = xPath;
+            cancelBtn.MouseEnter += (s, e) => cancelBtn.Background = new SolidColorBrush(Color.FromArgb(90, 255, 100, 100));
+            cancelBtn.MouseLeave += (s, e) => cancelBtn.Background = new SolidColorBrush(Color.FromArgb(40, 255, 255, 255));
+            string taskId = task.Id;
+            cancelBtn.MouseLeftButtonDown += (s, e) =>
+            {
+                e.Handled = true;
+                BackgroundTaskManager.CancelTask(taskId);
+            };
+            row.Children.Add(cancelBtn);
+
+            return row;
+        }
+
         private void RefreshTasksExpandedUI()
         {
+            if (_tasksItemsStack == null) return;
+            _tasksItemsStack.Children.Clear();
+
+            int count = 0;
+
+            // 1. Render all active timers
+            List<ActiveTimerItem> timers;
+            lock (_timerLock)
+            {
+                timers = new List<ActiveTimerItem>(_activeTimers);
+            }
+            foreach (var tm in timers)
+            {
+                if (count > 0)
+                {
+                    _tasksItemsStack.Children.Add(new Border { Height = 1, Background = BrushDivider, Margin = new Thickness(0, 2, 0, 2) });
+                }
+                _tasksItemsStack.Children.Add(BuildTimerRow(tm));
+                count++;
+            }
+
+            // 2. Render all active background tasks
             var tasks = BackgroundTaskManager.GetActiveTasks();
-            if (tasks.Count == 0) return;
-
-            var t1 = tasks[0];
-            if (_expandedBgTitleText != null)
+            foreach (var task in tasks)
             {
-                _expandedBgTitleText.Text = t1.Title;
-            }
-            if (_expandedBgDetailText != null)
-            {
-                _expandedBgDetailText.Text = t1.ProgressPercent + "%";
-            }
-            if (_expandedBgProgressBar != null)
-            {
-                _expandedBgProgressBar.Width = Math.Max(10, Math.Min(180, (t1.ProgressPercent / 100.0) * 180.0));
+                if (count > 0)
+                {
+                    _tasksItemsStack.Children.Add(new Border { Height = 1, Background = BrushDivider, Margin = new Thickness(0, 2, 0, 2) });
+                }
+                _tasksItemsStack.Children.Add(BuildTaskRow(task));
+                count++;
             }
 
-            if (tasks.Count > 1)
+            // 3. If no active tasks or timers
+            if (count == 0)
             {
-                var t2 = tasks[1];
-                if (_expandedSearchTitleText != null)
+                var emptyTxt = new TextBlock
                 {
-                    _expandedSearchTitleText.Text = t2.Title;
-                }
-                if (_expandedSearchSubtitle != null)
-                {
-                    _expandedSearchSubtitle.Text = t2.ProgressPercent + "% • " + t2.StatusDetail;
-                }
+                    Text = "No running tasks or timers.",
+                    Foreground = BrushTextMuted,
+                    FontSize = 12.5,
+                    FontFamily = new FontFamily("Segoe UI Variable, Segoe UI"),
+                    Margin = new Thickness(0, 16, 0, 16),
+                    HorizontalAlignment = HorizontalAlignment.Center
+                };
+                _tasksItemsStack.Children.Add(emptyTxt);
+            }
+
+            // Update target height for TasksExpanded
+            if (_state == IslandState.TasksExpanded)
+            {
+                int rowCount = Math.Max(1, count);
+                _targetH = Math.Min(240, 48 + rowCount * 54);
             }
         }
 
@@ -5939,6 +6226,147 @@ private void FinishRecordingAndSend()
                             return;
                         }
 
+                        // Stop / Cancel Voice Intent (Stops specific or LATEST active timer/task)
+                        bool isStopWord = lowerTrans == "stop" || lowerTrans == "cancel" || lowerTrans == "abort" || lowerTrans == "quit" ||
+                                          lowerTrans.StartsWith("stop ") || lowerTrans.StartsWith("cancel ") ||
+                                          lowerTrans.Contains("stop the") || lowerTrans.Contains("cancel the") ||
+                                          lowerTrans.Contains("stop my") || lowerTrans.Contains("cancel my");
+
+                        if (isStopWord)
+                        {
+                            bool mentionsTimer = lowerTrans.Contains("timer") || lowerTrans.Contains("countdown");
+                            bool mentionsTask = lowerTrans.Contains("task") || lowerTrans.Contains("writing") || lowerTrans.Contains("essay") || lowerTrans.Contains("background") || lowerTrans.Contains("report");
+
+                            if (mentionsTimer && !mentionsTask)
+                            {
+                                var activeTimers = GetActiveTimersList();
+                                if (activeTimers.Count == 0)
+                                {
+                                    SpeakAnswer("There are no active timers running.");
+                                    return;
+                                }
+
+                                ActiveTimerItem targetTimer = null;
+                                foreach (var tm in activeTimers)
+                                {
+                                    if (lowerTrans.Contains(tm.Label.ToLowerInvariant()) || (tm.SecondsTotal > 0 && lowerTrans.Contains(tm.SecondsTotal.ToString())))
+                                    {
+                                        targetTimer = tm;
+                                        break;
+                                    }
+                                }
+                                if (targetTimer == null)
+                                {
+                                    targetTimer = CancelLatestTimer();
+                                }
+                                else
+                                {
+                                    CancelTimer(targetTimer.Id);
+                                }
+
+                                if (targetTimer != null)
+                                {
+                                    SpeakAnswer(string.Format("Cancelled your {0}.", targetTimer.Label));
+                                }
+                                return;
+                            }
+                            else if (mentionsTask && !mentionsTimer)
+                            {
+                                var activeTasks = BackgroundTaskManager.GetActiveTasks();
+                                if (activeTasks.Count == 0)
+                                {
+                                    SpeakAnswer("There are no background tasks running.");
+                                    return;
+                                }
+
+                                ActiveBackgroundTask targetTask = null;
+                                foreach (var at in activeTasks)
+                                {
+                                    if (!string.IsNullOrWhiteSpace(at.Topic) && lowerTrans.Contains(at.Topic.ToLowerInvariant()))
+                                    {
+                                        targetTask = at;
+                                        break;
+                                    }
+                                }
+                                if (targetTask == null)
+                                {
+                                    targetTask = BackgroundTaskManager.CancelLatestTask();
+                                }
+                                else
+                                {
+                                    BackgroundTaskManager.CancelTask(targetTask.Id);
+                                }
+
+                                if (targetTask != null)
+                                {
+                                    SpeakAnswer(string.Format("Stopped your background task: {0}.", targetTask.Title));
+                                }
+                                return;
+                            }
+                            else
+                            {
+                                var latestTimer = GetLatestActiveTimer();
+                                var latestTask = BackgroundTaskManager.GetLatestActiveTask();
+
+                                if (latestTimer != null && latestTask != null)
+                                {
+                                    if (latestTimer.StartedUtc >= latestTask.StartedUtc)
+                                    {
+                                        CancelTimer(latestTimer.Id);
+                                        SpeakAnswer(string.Format("Cancelled your latest timer: {0}.", latestTimer.Label));
+                                    }
+                                    else
+                                    {
+                                        BackgroundTaskManager.CancelTask(latestTask.Id);
+                                        SpeakAnswer(string.Format("Stopped your latest background task: {0}.", latestTask.Title));
+                                    }
+                                    return;
+                                }
+                                else if (latestTimer != null)
+                                {
+                                    CancelTimer(latestTimer.Id);
+                                    SpeakAnswer(string.Format("Cancelled your timer: {0}.", latestTimer.Label));
+                                    return;
+                                }
+                                else if (latestTask != null)
+                                {
+                                    BackgroundTaskManager.CancelTask(latestTask.Id);
+                                    SpeakAnswer(string.Format("Stopped your background task: {0}.", latestTask.Title));
+                                    return;
+                                }
+                            }
+                        }
+
+                        // Local Multi-Timer Intent parser (e.g. "set a timer for 5 minutes", "timer for 30 seconds")
+                        Match timerMatch = Regex.Match(lowerTrans, @"(?i)(?:set|start|create)\s+(?:a\s+)?(?:(\d+)\s*(second|sec|minute|min|hour|hr)s?\s+timer|timer\s+for\s+(\d+)\s*(second|sec|minute|min|hour|hr)s?)");
+                        if (timerMatch.Success)
+                        {
+                            int num = 0;
+                            string unit = "";
+                            if (timerMatch.Groups[1].Success)
+                            {
+                                int.TryParse(timerMatch.Groups[1].Value, out num);
+                                unit = timerMatch.Groups[2].Value.ToLowerInvariant();
+                            }
+                            else if (timerMatch.Groups[3].Success)
+                            {
+                                int.TryParse(timerMatch.Groups[3].Value, out num);
+                                unit = timerMatch.Groups[4].Value.ToLowerInvariant();
+                            }
+
+                            if (num > 0)
+                            {
+                                int totalSec = num;
+                                if (unit.StartsWith("min")) totalSec = num * 60;
+                                else if (unit.StartsWith("hour") || unit.StartsWith("hr")) totalSec = num * 3600;
+
+                                string timerLabel = string.Format("{0}-{1} timer", num, unit.StartsWith("min") ? "minute" : (unit.StartsWith("hour") ? "hour" : "second"));
+                                StartTimerOrReminder(totalSec, "timer", timerLabel, timerLabel);
+                                SpeakAnswer(string.Format("Starting a {0} {1} timer right now.", num, unit.StartsWith("min") ? "minute" : (unit.StartsWith("hour") ? "hour" : "second")));
+                                return;
+                            }
+                        }
+
                         // Autonomous Background Writing Tasks (e.g. "write an essay about sri lanka", "write a report on quantum computing")
                         bool isWritingTask = (lowerTrans.Contains("write") || lowerTrans.Contains("generate") || lowerTrans.Contains("draft") || lowerTrans.Contains("create"))
                             && (lowerTrans.Contains("essay") || lowerTrans.Contains("report") || lowerTrans.Contains("article") || lowerTrans.Contains("paper") || lowerTrans.Contains("document") || lowerTrans.Contains("story"));
@@ -5967,30 +6395,54 @@ private void FinishRecordingAndSend()
                                 topic = "Sri Lanka";
                             }
 
+                            // Detect external app requests (Discord, WhatsApp, Telegram, etc.)
+                            string unsupportedApp = null;
+                            if (Regex.IsMatch(lowerTrans, @"\b(discord)\b")) unsupportedApp = "Discord";
+                            else if (Regex.IsMatch(lowerTrans, @"\b(whatsapp)\b")) unsupportedApp = "WhatsApp";
+                            else if (Regex.IsMatch(lowerTrans, @"\b(telegram)\b")) unsupportedApp = "Telegram";
+                            else if (Regex.IsMatch(lowerTrans, @"\b(slack)\b")) unsupportedApp = "Slack";
+                            else if (Regex.IsMatch(lowerTrans, @"\b(instagram)\b")) unsupportedApp = "Instagram";
+                            else if (Regex.IsMatch(lowerTrans, @"\b(twitter|tweet)\b")) unsupportedApp = "Twitter";
+
                             string targetDir = null;
                             string targetDirName = "Flinch folder";
-                            if (lowerTrans.Contains("desktop"))
+                            if (unsupportedApp == null)
                             {
-                                targetDir = Environment.GetFolderPath(Environment.SpecialFolder.Desktop);
-                                targetDirName = "Desktop";
-                                topic = Regex.Replace(topic, @"(?i)(and save (it )?(to|on) (my )?desktop|on (my )?desktop|to (my )?desktop)", "").Trim();
-                            }
-                            else if (lowerTrans.Contains("documents") || lowerTrans.Contains("document folder"))
-                            {
-                                targetDir = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
-                                targetDirName = "Documents";
-                                topic = Regex.Replace(topic, @"(?i)(and save (it )?(to|in) (my )?documents|in (my )?documents|to (my )?documents)", "").Trim();
-                            }
-                            else if (lowerTrans.Contains("downloads") || lowerTrans.Contains("download folder"))
-                            {
-                                targetDir = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads");
-                                targetDirName = "Downloads";
-                                topic = Regex.Replace(topic, @"(?i)(and save (it )?(to|in) (my )?downloads|in (my )?downloads|to (my )?downloads)", "").Trim();
+                                if (lowerTrans.Contains("desktop"))
+                                {
+                                    targetDir = Environment.GetFolderPath(Environment.SpecialFolder.Desktop);
+                                    targetDirName = "Desktop";
+                                }
+                                else if (lowerTrans.Contains("document"))
+                                {
+                                    targetDir = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+                                    targetDirName = "Documents";
+                                }
+                                else if (lowerTrans.Contains("download"))
+                                {
+                                    targetDir = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads");
+                                    targetDirName = "Downloads";
+                                }
                             }
 
-                            topic = topic.Trim(',', '.', '!', ' ');
+                            // Clean topic of any destination phrases so the file name & content stay 100% clean
+                            topic = Regex.Replace(topic, @"(?i)\s*(and\s+)?(save|send|put|export|store|place|upload)\s+(it\s+)?(to|in|on|into)\s+.*$", "").Trim();
+                            topic = Regex.Replace(topic, @"(?i)\s*(to|in|on)\s+(my\s+)?(desktop|documents|downloads|discord|whatsapp|telegram|slack|pc|folder).*$", "").Trim();
+                            topic = Regex.Replace(topic, @"(?i)\s*and\s+(send|save)\s+it.*$", "").Trim();
+                            topic = topic.Trim(',', '.', '!', ' ', ';', ':', '"', '\'');
 
-                            string replyText = string.Format("I will write an {0} about {1} right now. I'll save it to your {2}.", docType, topic, targetDirName);
+                            if (string.IsNullOrWhiteSpace(topic)) topic = "Sri Lanka";
+
+                            string replyText;
+                            if (unsupportedApp != null)
+                            {
+                                replyText = string.Format("I will write an {0} about {1} right now. I can't send files directly to {2} yet, so I'll save it in your {3}.",
+                                    docType, topic, unsupportedApp, targetDirName);
+                            }
+                            else
+                            {
+                                replyText = string.Format("I will write an {0} about {1} right now. I'll save it to your {2}.", docType, topic, targetDirName);
+                            }
                             SpeakAnswer(replyText);
 
                             BackgroundTaskManager.StartWritingTask(topic, docType, targetDir);
@@ -6049,6 +6501,27 @@ private void FinishRecordingAndSend()
                                     if (_playbackSessionId != mySession) return;
                                     if (_state == IslandState.Speaking)
                                     {
+                                        // Check if any background tasks completed while user was asking or listening to the answer
+                                        List<ActiveBackgroundTask> pendingToAnnounce = new List<ActiveBackgroundTask>();
+                                        lock (_pendingTasksLock)
+                                        {
+                                            if (_pendingCompletedTasks.Count > 0)
+                                            {
+                                                pendingToAnnounce.AddRange(_pendingCompletedTasks);
+                                                _pendingCompletedTasks.Clear();
+                                            }
+                                        }
+
+                                        if (pendingToAnnounce.Count > 0)
+                                        {
+                                            var pt = pendingToAnnounce[0];
+                                            string dirName = pt.TargetDirectory.IndexOf("Desktop", StringComparison.OrdinalIgnoreCase) >= 0 ? "Desktop" : "Flinch folder";
+                                            string alertMsg = string.Format("Finished {0}! Saved to {1}", pt.Title, dirName);
+                                            SetIslandState(IslandState.Alert, "Task Completed", alertMsg);
+                                            SpeakAnswer(string.Format("By the way, I've finished writing your {0} about {1} and saved it to your {2}.", pt.TaskType, pt.Topic, dirName));
+                                            return;
+                                        }
+
                                         SetIslandState(IslandState.Done, "", "");
                                         Task.Delay(1800).ContinueWith(__ =>
                                         {
@@ -6318,9 +6791,13 @@ private void FinishRecordingAndSend()
                 _alertPanel.Visibility = Visibility.Collapsed;
                 _cardPanel.Visibility = Visibility.Collapsed;
 
+                int timerCount;
+                lock (_timerLock) { timerCount = _activeTimers.Count; }
+                int totalActive = timerCount + BackgroundTaskManager.ActiveCount;
+                int rowCount = Math.Max(1, totalActive);
                 _targetW = 400;
-                _targetH = 206;
-                _targetBotR = 32;
+                _targetH = Math.Min(240, 48 + rowCount * 54);
+                _targetBotR = 24;
             }
             else if (newState == IslandState.Thinking)
             {
@@ -6332,7 +6809,7 @@ private void FinishRecordingAndSend()
                 _alertPanel.Visibility = Visibility.Collapsed;
                 _cardPanel.Visibility = Visibility.Collapsed;
 
-                if ((_isTimerRunning && _activeTimerSecondsLeft > 0) || _isBackgroundTaskRunning || BackgroundTaskManager.ActiveCount > 0)
+                if (_activeTimers.Count > 0 || _isBackgroundTaskRunning || BackgroundTaskManager.ActiveCount > 0)
                 {
                     _multitaskLeftHost.Visibility = Visibility.Visible;
                     _targetW = _isUpdateAvailable ? 310 : 280;
@@ -6357,7 +6834,7 @@ private void FinishRecordingAndSend()
                 _alertPanel.Visibility = Visibility.Collapsed;
                 _cardPanel.Visibility = Visibility.Collapsed;
 
-                if ((_isTimerRunning && _activeTimerSecondsLeft > 0) || _isBackgroundTaskRunning || BackgroundTaskManager.ActiveCount > 0)
+                if (_activeTimers.Count > 0 || _isBackgroundTaskRunning || BackgroundTaskManager.ActiveCount > 0)
                 {
                     _multitaskLeftHost.Visibility = Visibility.Visible;
                     _dotsCenterHost.HorizontalAlignment = HorizontalAlignment.Right;

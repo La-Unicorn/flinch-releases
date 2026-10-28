@@ -1992,6 +1992,35 @@ namespace FlinchApp
             return string.Format("# {0} on {1}\r\n\r\nContent generated successfully by Flinch.", char.ToUpper(docType[0]) + docType.Substring(1), topic);
         }
 
+        public static ActiveBackgroundTask GetLatestActiveTask()
+        {
+            lock (_lock)
+            {
+                ActiveBackgroundTask latest = null;
+                foreach (var t in _tasks)
+                {
+                    if (!t.IsCompleted)
+                    {
+                        if (latest == null || t.StartedUtc > latest.StartedUtc)
+                        {
+                            latest = t;
+                        }
+                    }
+                }
+                return latest;
+            }
+        }
+
+        public static ActiveBackgroundTask CancelLatestTask()
+        {
+            var latest = GetLatestActiveTask();
+            if (latest != null)
+            {
+                CancelTask(latest.Id);
+            }
+            return latest;
+        }
+
         public static void CancelTask(string taskId)
         {
             lock (_lock)
