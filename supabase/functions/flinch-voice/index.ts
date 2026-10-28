@@ -43,6 +43,7 @@ serve(async (req: Request) => {
   const geminiApiKey = Deno.env.get("GEMINI_API_KEY") || "";
   const exaApiKey = Deno.env.get("EXA_API_KEY") || "";
   let cartesiaApiKey = Deno.env.get("CARTESIA_API_KEY") || "";
+  let deepgramApiKey = Deno.env.get("DEEPGRAM_API_KEY") || "";
 
   if (!supabaseUrl || !supabaseAnonKey || !supabaseServiceKey || !groqApiKey) {
     return new Response(
@@ -88,16 +89,18 @@ serve(async (req: Request) => {
     auth: { persistSession: false },
   });
 
-  if (!cartesiaApiKey) {
+  if (!cartesiaApiKey || !deepgramApiKey) {
     try {
-      const { data: secRow } = await adminClient
+      const { data: secRows } = await adminClient
         .schema("flinch_private")
         .from("secrets")
-        .select("key_value")
-        .eq("key_name", "CARTESIA_API_KEY")
-        .maybeSingle();
-      if (secRow?.key_value) {
-        cartesiaApiKey = secRow.key_value;
+        .select("key_name, key_value")
+        .in("key_name", ["CARTESIA_API_KEY", "DEEPGRAM_API_KEY"]);
+      if (secRows && Array.isArray(secRows)) {
+        for (const row of secRows) {
+          if (row.key_name === "CARTESIA_API_KEY" && !cartesiaApiKey) cartesiaApiKey = row.key_value;
+          if (row.key_name === "DEEPGRAM_API_KEY" && !deepgramApiKey) deepgramApiKey = row.key_value;
+        }
       }
     } catch (_e) {
       // ignore
@@ -210,7 +213,7 @@ CRITICAL INSTRUCTIONS:
           });
         }
 
-        const ttsRes = await synthesizeSpeech(textToSpeak, voiceName, cartesiaApiKey, groqApiKey, geminiApiKey);
+        const ttsRes = await synthesizeSpeech(textToSpeak, voiceName, deepgramApiKey, cartesiaApiKey, groqApiKey, geminiApiKey);
         if (ttsRes && ttsRes.audio) {
           return new Response(
             JSON.stringify({
@@ -971,7 +974,7 @@ If no visual overlay is needed, set "scene": null.`;
 
     // 9. Text-to-Speech (TTS) Synthesis with resilient multi-voice fallback (Cartesia Sonic -> Groq Orpheus)
     const tTtsStart = performance.now();
-    const ttsRes = await synthesizeSpeech(reply, requestedVoice, cartesiaApiKey, groqApiKey, geminiApiKey);
+    const ttsRes = await synthesizeSpeech(reply, requestedVoice, deepgramApiKey, cartesiaApiKey, groqApiKey, geminiApiKey);
     tTts = performance.now() - tTtsStart;
 
     const totalServerMs = performance.now() - tStart;
@@ -1104,15 +1107,80 @@ async function synthesizeWithCartesia(
   return null;
 }
 
-// Resilient Text-to-Speech Synthesis: Cartesia Sonic -> Groq Orpheus
+// Ultra-low latency Neural Speech via Deepgram Aura (<180ms TTFB)
+async function synthesizeWithDeepgram(
+  text: string,
+  voice: string,
+  deepgramKey: string
+): Promise<{ audio: string; voice: string } | null> {
+  if (!deepgramKey) return null;
+
+  const low = (voice || "troy").toLowerCase().trim();
+  const isFemale = low.includes("autumn") || low.includes("hannah") || low.includes("diana") || low.includes("female") || low.includes("asteria") || low.includes("luna") || low.includes("kore");
+
+  // Deepgram Aura Voice Mapping:
+  // Male: aura-arcas-en (calm, confident, natural male voice)
+  // Female: aura-asteria-en (warm, engaging, confident female voice)
+  const modelName = isFemale ? "aura-asteria-en" : "aura-arcas-en";
+  const voiceDisplayName = isFemale ? "Deepgram Asteria (US Female)" : "Deepgram Arcas (US Male)";
+
+  try {
+    const cts = new AbortController();
+    const timer = setTimeout(() => cts.abort(), 6000);
+    const resp = await fetch(
+      `https://api.deepgram.com/v1/speak?model=${encodeURIComponent(modelName)}&encoding=linear16&container=wav&sample_rate=24000`,
+      {
+        method: "POST",
+        signal: cts.signal,
+        headers: {
+          "Authorization": `Token ${deepgramKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ text }),
+      }
+    );
+    clearTimeout(timer);
+
+    if (resp.ok) {
+      const audioBuf = await resp.arrayBuffer();
+      if (audioBuf.byteLength > 100) {
+        return {
+          audio: arrayBufferToBase64(audioBuf),
+          voice: voiceDisplayName,
+        };
+      }
+    } else {
+      console.warn("Deepgram Aura TTS API error:", resp.status, await resp.text());
+    }
+  } catch (dErr) {
+    console.warn("Deepgram Aura TTS fetch error:", dErr);
+  }
+
+  return null;
+}
+
+// Resilient Text-to-Speech Synthesis: Deepgram Aura -> Cartesia Sonic -> Groq Orpheus
 async function synthesizeSpeech(
   text: string,
   voice: string,
+  deepgramKey: string,
   cartesiaKey: string,
   groqKey: string,
   _geminiKey: string
 ): Promise<{ audio: string; provider: string; voice: string } | null> {
-  // 1. Try Cartesia Sonic first (ultra-fast <150ms, natural neural voice)
+  // 1. Try Deepgram Aura first (user has active $200 free credit, <180ms TTFB)
+  if (deepgramKey) {
+    const deepgramRes = await synthesizeWithDeepgram(text, voice, deepgramKey);
+    if (deepgramRes && deepgramRes.audio) {
+      return {
+        audio: deepgramRes.audio,
+        provider: "deepgram-aura",
+        voice: deepgramRes.voice,
+      };
+    }
+  }
+
+  // 2. Try Cartesia Sonic fallback (ultra-fast <150ms, natural neural voice)
   if (cartesiaKey) {
     const cartesiaRes = await synthesizeWithCartesia(text, voice, cartesiaKey);
     if (cartesiaRes && cartesiaRes.audio) {
@@ -1124,7 +1192,7 @@ async function synthesizeSpeech(
     }
   }
 
-  // 2. Fall back to Groq Orpheus
+  // 3. Fall back to Groq Orpheus
   const primary = resolveVoice(voice);
   const fallback = primary === "troy" ? "autumn" : "troy";
 
