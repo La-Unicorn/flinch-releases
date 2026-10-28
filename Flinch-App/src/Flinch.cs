@@ -3767,10 +3767,21 @@ namespace FlinchApp
         private readonly TextBlock _expandedSearchSubtitle;
         private readonly Border[] _expandedSearchDots = new Border[3];
 
-        // Blue Download Button for GitHub Updates
+        // Update Button (01-update-available.svg, 03-progress-ring.svg, 09-download-complete.svg)
+        private enum UpdateVisualState
+        {
+            Available,
+            Downloading,
+            Complete
+        }
+        private UpdateVisualState _updateVisualState = UpdateVisualState.Available;
         private readonly Border _updateDownloadBtn;
-        private readonly System.Windows.Shapes.Path _updateIconPath;
-        private readonly TextBlock _updateBadgeText;
+        private readonly Viewbox _updateRootViewbox;
+        private readonly Canvas _updateAvailHost;
+        private readonly Canvas _updateProgressHost;
+        private readonly Canvas _updateCompleteHost;
+        private readonly System.Windows.Shapes.Ellipse _updateRippleEllipse;
+        private readonly System.Windows.Shapes.Path _updateProgressArcPath;
         private bool _isUpdateAvailable = false;
         private string _pendingUpdateUrl = null;
         private volatile bool _isDownloadingUpdate = false;
@@ -4350,14 +4361,11 @@ namespace FlinchApp
             _cardPanel.Children.Add(_transcriptText);
             _cardPanel.Children.Add(_answerText);
 
-            // 4F. Blue Download Button for GitHub Updates
+            // 4F. Update Button (01-update-available.svg, 03-progress-ring.svg, 09-download-complete.svg)
             _updateDownloadBtn = new Border
             {
-                Background = new SolidColorBrush(Color.FromArgb(50, 56, 189, 248)),
-                BorderBrush = new SolidColorBrush(Color.FromArgb(160, 56, 189, 248)),
-                BorderThickness = new Thickness(1),
-                CornerRadius = new CornerRadius(10),
-                Padding = new Thickness(5, 3, 5, 3),
+                Background = Brushes.Transparent,
+                BorderThickness = new Thickness(0),
                 HorizontalAlignment = HorizontalAlignment.Right,
                 VerticalAlignment = VerticalAlignment.Center,
                 Margin = new Thickness(0, 0, 8, 0),
@@ -4366,51 +4374,147 @@ namespace FlinchApp
                 ToolTip = "New Flinch update available! Click to install."
             };
 
-            var updatePanel = new StackPanel
+            var updateCanvas = new Canvas
             {
-                Orientation = Orientation.Horizontal,
-                VerticalAlignment = VerticalAlignment.Center
+                Width = 200,
+                Height = 200
             };
 
-            _updateIconPath = new System.Windows.Shapes.Path
+            // Background card matching all 3 SVGs (<rect width="200" height="200" rx="28" fill="#14213A"/>)
+            var updateBg = new System.Windows.Shapes.Rectangle
             {
-                Data = Geometry.Parse("M6,2 L6,8 M3,5 L6,8 L9,5 M2,10 L10,10"),
-                Stroke = new SolidColorBrush(Color.FromRgb(56, 189, 248)),
-                StrokeThickness = 1.6,
+                Width = 200,
+                Height = 200,
+                RadiusX = 28,
+                RadiusY = 28,
+                Fill = new SolidColorBrush(Color.FromRgb(0x14, 0x21, 0x3A))
+            };
+            updateCanvas.Children.Add(updateBg);
+
+            // 1. Available State (01-update-available.svg)
+            _updateAvailHost = new Canvas { Width = 200, Height = 200, Visibility = Visibility.Visible };
+            var availCircle = new System.Windows.Shapes.Ellipse
+            {
+                Width = 80,
+                Height = 80,
+                Fill = new SolidColorBrush(Color.FromRgb(0x3D, 0x8B, 0xFF))
+            };
+            Canvas.SetLeft(availCircle, 60);
+            Canvas.SetTop(availCircle, 60);
+
+            var availArrow = new System.Windows.Shapes.Path
+            {
+                Data = Geometry.Parse("M 100,83 L 100,108 M 89,97 L 100,108 L 111,97 M 87,119 L 113,119"),
+                Stroke = new SolidColorBrush(Color.FromRgb(0xF4, 0xF7, 0xFF)),
+                StrokeThickness = 5,
                 StrokeStartLineCap = PenLineCap.Round,
                 StrokeEndLineCap = PenLineCap.Round,
-                StrokeLineJoin = PenLineJoin.Round,
-                Width = 12,
-                Height = 12,
+                StrokeLineJoin = PenLineJoin.Round
+            };
+
+            _updateRippleEllipse = new System.Windows.Shapes.Ellipse
+            {
+                Width = 20,
+                Height = 20,
+                Fill = new SolidColorBrush(Color.FromRgb(0xFF, 0xB2, 0x24)),
+                Opacity = 0.7
+            };
+            Canvas.SetLeft(_updateRippleEllipse, 120);
+            Canvas.SetTop(_updateRippleEllipse, 60);
+
+            var availDot = new System.Windows.Shapes.Ellipse
+            {
+                Width = 20,
+                Height = 20,
+                Fill = new SolidColorBrush(Color.FromRgb(0xFF, 0xB2, 0x24)),
+                Stroke = new SolidColorBrush(Color.FromRgb(0x14, 0x21, 0x3A)),
+                StrokeThickness = 3
+            };
+            Canvas.SetLeft(availDot, 120);
+            Canvas.SetTop(availDot, 60);
+
+            _updateAvailHost.Children.Add(availCircle);
+            _updateAvailHost.Children.Add(availArrow);
+            _updateAvailHost.Children.Add(_updateRippleEllipse);
+            _updateAvailHost.Children.Add(availDot);
+
+            // 2. Progress Ring State (03-progress-ring.svg)
+            _updateProgressHost = new Canvas { Width = 200, Height = 200, Visibility = Visibility.Collapsed };
+            var progTrack = new System.Windows.Shapes.Ellipse
+            {
+                Width = 80,
+                Height = 80,
+                Fill = Brushes.Transparent,
+                Stroke = new SolidColorBrush(Color.FromRgb(0x24, 0x38, 0x5C)),
+                StrokeThickness = 6
+            };
+            Canvas.SetLeft(progTrack, 60);
+            Canvas.SetTop(progTrack, 60);
+
+            _updateProgressArcPath = new System.Windows.Shapes.Path
+            {
+                Stroke = new SolidColorBrush(Color.FromRgb(0x3D, 0x8B, 0xFF)),
+                StrokeThickness = 6,
+                StrokeStartLineCap = PenLineCap.Round,
+                StrokeEndLineCap = PenLineCap.Round
+            };
+
+            var progArrow = new System.Windows.Shapes.Path
+            {
+                Data = Geometry.Parse("M 100,83 L 100,108 M 89,97 L 100,108 L 111,97 M 87,119 L 113,119"),
+                Stroke = new SolidColorBrush(Color.FromRgb(0xF4, 0xF7, 0xFF)),
+                StrokeThickness = 5,
+                StrokeStartLineCap = PenLineCap.Round,
+                StrokeEndLineCap = PenLineCap.Round,
+                StrokeLineJoin = PenLineJoin.Round
+            };
+
+            _updateProgressHost.Children.Add(progTrack);
+            _updateProgressHost.Children.Add(_updateProgressArcPath);
+            _updateProgressHost.Children.Add(progArrow);
+
+            // 3. Download Complete State (09-download-complete.svg)
+            _updateCompleteHost = new Canvas { Width = 200, Height = 200, Visibility = Visibility.Collapsed };
+            var compRing = new System.Windows.Shapes.Ellipse
+            {
+                Width = 80,
+                Height = 80,
+                Fill = Brushes.Transparent,
+                Stroke = new SolidColorBrush(Color.FromRgb(0x3D, 0xDC, 0x97)),
+                StrokeThickness = 6
+            };
+            Canvas.SetLeft(compRing, 60);
+            Canvas.SetTop(compRing, 60);
+
+            var compCheck = new System.Windows.Shapes.Path
+            {
+                Data = Geometry.Parse("M 86,102 L 96,112 L 114,90"),
+                Stroke = new SolidColorBrush(Color.FromRgb(0x3D, 0xDC, 0x97)),
+                StrokeThickness = 6,
+                StrokeStartLineCap = PenLineCap.Round,
+                StrokeEndLineCap = PenLineCap.Round,
+                StrokeLineJoin = PenLineJoin.Round
+            };
+
+            _updateCompleteHost.Children.Add(compRing);
+            _updateCompleteHost.Children.Add(compCheck);
+
+            updateCanvas.Children.Add(_updateAvailHost);
+            updateCanvas.Children.Add(_updateProgressHost);
+            updateCanvas.Children.Add(_updateCompleteHost);
+
+            _updateRootViewbox = new Viewbox
+            {
+                Width = 24,
+                Height = 24,
                 Stretch = Stretch.Uniform,
-                VerticalAlignment = VerticalAlignment.Center
+                Child = updateCanvas
             };
 
-            _updateBadgeText = new TextBlock
-            {
-                Text = "",
-                Foreground = new SolidColorBrush(Color.FromRgb(56, 189, 248)),
-                FontFamily = new FontFamily("Segoe UI Semibold, Segoe UI"),
-                FontSize = 9.5,
-                VerticalAlignment = VerticalAlignment.Center,
-                Margin = new Thickness(4, 0, 0, 0),
-                Visibility = Visibility.Collapsed
-            };
+            _updateDownloadBtn.Child = _updateRootViewbox;
 
-            updatePanel.Children.Add(_updateIconPath);
-            updatePanel.Children.Add(_updateBadgeText);
-            _updateDownloadBtn.Child = updatePanel;
-
-            _updateDownloadBtn.MouseEnter += (s, e) =>
-            {
-                _updateDownloadBtn.Background = new SolidColorBrush(Color.FromArgb(90, 56, 189, 248));
-                _updateDownloadBtn.BorderBrush = new SolidColorBrush(Color.FromRgb(56, 189, 248));
-            };
-            _updateDownloadBtn.MouseLeave += (s, e) =>
-            {
-                _updateDownloadBtn.Background = new SolidColorBrush(Color.FromArgb(50, 56, 189, 248));
-                _updateDownloadBtn.BorderBrush = new SolidColorBrush(Color.FromArgb(160, 56, 189, 248));
-            };
+            _updateDownloadBtn.MouseEnter += (s, e) => _updateDownloadBtn.Opacity = 0.82;
+            _updateDownloadBtn.MouseLeave += (s, e) => _updateDownloadBtn.Opacity = 1.0;
 
             _updateDownloadBtn.MouseLeftButtonDown += (s, e) =>
             {
@@ -4809,6 +4913,43 @@ namespace FlinchApp
             _updateCheckTimer.Start();
         }
 
+        private void SetUpdateVisualState(UpdateVisualState state)
+        {
+            _updateVisualState = state;
+            if (_updateAvailHost != null)
+                _updateAvailHost.Visibility = (state == UpdateVisualState.Available) ? Visibility.Visible : Visibility.Collapsed;
+            if (_updateProgressHost != null)
+                _updateProgressHost.Visibility = (state == UpdateVisualState.Downloading) ? Visibility.Visible : Visibility.Collapsed;
+            if (_updateCompleteHost != null)
+                _updateCompleteHost.Visibility = (state == UpdateVisualState.Complete) ? Visibility.Visible : Visibility.Collapsed;
+        }
+
+        private void UpdateDownloadProgressArc(double fraction)
+        {
+            if (_updateProgressArcPath == null) return;
+            fraction = Math.Max(0.01, Math.Min(0.999, fraction));
+            double cx = 100.0;
+            double cy = 100.0;
+            double r = 40.0;
+            double startAngle = -90.0;
+            double endAngle = startAngle + (fraction * 360.0);
+
+            double startRad = startAngle * Math.PI / 180.0;
+            double endRad = endAngle * Math.PI / 180.0;
+
+            Point pStart = new Point(cx + r * Math.Cos(startRad), cy + r * Math.Sin(startRad));
+            Point pEnd = new Point(cx + r * Math.Cos(endRad), cy + r * Math.Sin(endRad));
+
+            bool isLargeArc = fraction > 0.5;
+
+            var fig = new PathFigure { StartPoint = pStart, IsClosed = false };
+            fig.Segments.Add(new ArcSegment(pEnd, new Size(r, r), 0, isLargeArc, SweepDirection.Clockwise, true));
+
+            var geo = new PathGeometry();
+            geo.Figures.Add(fig);
+            _updateProgressArcPath.Data = geo;
+        }
+
         private void CheckForUpdatesInBackground()
         {
             Task.Run(() =>
@@ -4820,6 +4961,7 @@ namespace FlinchApp
                     {
                         _isUpdateAvailable = true;
                         _pendingUpdateUrl = info.AssetDownloadUrl;
+                        SetUpdateVisualState(UpdateVisualState.Available);
                         _updateDownloadBtn.Visibility = Visibility.Visible;
                         _updateDownloadBtn.ToolTip = "New Flinch update available (" + info.TagName + ")! Click to install.";
                         UpdateMultitaskDisplay();
@@ -4847,8 +4989,7 @@ namespace FlinchApp
                 url = "https://github.com/" + FlinchEnv.GitHubRepo + "/releases/download/v0.1.0/FlinchSetup.exe";
             }
 
-            _updateBadgeText.Text = "Updating...";
-            _updateBadgeText.Visibility = Visibility.Visible;
+            SetUpdateVisualState(UpdateVisualState.Downloading);
             _updateDownloadBtn.ToolTip = "Downloading latest Flinch update from GitHub...";
             UpdateMultitaskDisplay();
 
@@ -4880,23 +5021,32 @@ namespace FlinchApp
 
                     Dispatcher.BeginInvoke(new Action(() =>
                     {
-                        try
+                        SetUpdateVisualState(UpdateVisualState.Complete);
+                        _updateDownloadBtn.ToolTip = "Update downloaded! Installing...";
+
+                        Task.Delay(600).ContinueWith(_ =>
                         {
-                            Process.Start(new ProcessStartInfo(destExe) { UseShellExecute = true });
-                            if (_trayIcon != null)
+                            Dispatcher.BeginInvoke(new Action(() =>
                             {
-                                _trayIcon.Visible = false;
-                                _trayIcon.Dispose();
-                            }
-                            Application.Current.Shutdown();
-                        }
-                        catch (Exception ex)
-                        {
-                            FlinchEnv.Log("Launch installer error: " + ex.Message);
-                            _isDownloadingUpdate = false;
-                            _updateBadgeText.Text = "Retry";
-                            _updateDownloadBtn.ToolTip = "Installer failed to launch: " + ex.Message;
-                        }
+                                try
+                                {
+                                    Process.Start(new ProcessStartInfo(destExe) { UseShellExecute = true });
+                                    if (_trayIcon != null)
+                                    {
+                                        _trayIcon.Visible = false;
+                                        _trayIcon.Dispose();
+                                    }
+                                    Application.Current.Shutdown();
+                                }
+                                catch (Exception ex)
+                                {
+                                    FlinchEnv.Log("Launch installer error: " + ex.Message);
+                                    _isDownloadingUpdate = false;
+                                    SetUpdateVisualState(UpdateVisualState.Available);
+                                    _updateDownloadBtn.ToolTip = "Installer failed to launch: " + ex.Message;
+                                }
+                            }));
+                        });
                     }));
                 }
                 catch (Exception ex)
@@ -4905,7 +5055,7 @@ namespace FlinchApp
                     Dispatcher.BeginInvoke(new Action(() =>
                     {
                         _isDownloadingUpdate = false;
-                        _updateBadgeText.Text = "Error";
+                        SetUpdateVisualState(UpdateVisualState.Available);
                         _updateDownloadBtn.ToolTip = "Download failed: " + ex.Message + ". Click to retry.";
                     }));
                 }
@@ -7254,6 +7404,29 @@ private void FinishRecordingAndSend()
                         _soundBars[i].Height = 6.0;
                         _soundBars[i].CornerRadius = new CornerRadius(3.0);
                     }
+                }
+            }
+
+            // -----------------------------------------------------------------
+            // 5. Update Button Animation (01-update-available ripple & 03-progress-ring sweep)
+            // -----------------------------------------------------------------
+            if (_isUpdateAvailable && _updateDownloadBtn.Visibility == Visibility.Visible)
+            {
+                if (_updateVisualState == UpdateVisualState.Available && _updateRippleEllipse != null)
+                {
+                    double pulse = (t % 2.0) / 2.0; // 0..1 over 2s (matches 01-update-available.svg)
+                    double rippleR = 10.0 + (pulse * 16.0); // 10 -> 26
+                    _updateRippleEllipse.Width = rippleR * 2.0;
+                    _updateRippleEllipse.Height = rippleR * 2.0;
+                    Canvas.SetLeft(_updateRippleEllipse, 130.0 - rippleR);
+                    Canvas.SetTop(_updateRippleEllipse, 70.0 - rippleR);
+                    _updateRippleEllipse.Opacity = 0.7 * (1.0 - pulse);
+                }
+                else if (_updateVisualState == UpdateVisualState.Downloading)
+                {
+                    double pCycle = (t % 3.2) / 3.2; // 0..1 over 3.2s (matches 03-progress-ring.svg)
+                    double sweep = (pCycle < 0.85) ? (pCycle / 0.85) : 1.0;
+                    UpdateDownloadProgressArc(sweep);
                 }
             }
         }
