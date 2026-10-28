@@ -5574,8 +5574,16 @@ namespace FlinchApp
                 {
                     string dirName = task.TargetDirectory.IndexOf("Desktop", StringComparison.OrdinalIgnoreCase) >= 0 ? "Desktop" : "Flinch folder";
 
-                    // If user is currently asking another question or listening to an answer, defer announcement!
-                    if (_state == IslandState.Listening || _state == IslandState.Thinking || _state == IslandState.Speaking || _isBusy)
+                    // If user is asking, listening, recording, or bot is busy/answering, queue the completed task!
+                    bool isUserOrBotActive = _state == IslandState.Listening ||
+                                             _state == IslandState.Thinking ||
+                                             _state == IslandState.Speaking ||
+                                             _state == IslandState.Countdown ||
+                                             _isBusy ||
+                                             _recorder.IsRecording ||
+                                             _keyWasHeld;
+
+                    if (isUserOrBotActive)
                     {
                         lock (_pendingTasksLock)
                         {
@@ -5747,7 +5755,20 @@ namespace FlinchApp
 
         public void SpeakAnswer(string text)
         {
-            if (string.IsNullOrWhiteSpace(text)) return;
+            SpeakAnswerWithContinuation(text, null);
+        }
+
+        public void SpeakAnswerWithContinuation(string text, Action onComplete = null)
+        {
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                if (onComplete != null) Dispatcher.BeginInvoke(onComplete);
+                else CheckAndAnnouncePendingTasks();
+                return;
+            }
+
+            int mySession = Interlocked.Increment(ref _playbackSessionId);
+
             Task.Run(() =>
             {
                 byte[] wav = GeminiClient.SynthesizeSpeechFast(text);
@@ -5759,6 +5780,7 @@ namespace FlinchApp
                 {
                     Dispatcher.BeginInvoke(new Action(() =>
                     {
+                        if (_playbackSessionId != mySession) return;
                         SetIslandState(IslandState.Speaking, "", "");
                         PlayRawWavOnChannel(wav);
                         double dur = GetWavDurationSeconds(wav);
@@ -5766,15 +5788,83 @@ namespace FlinchApp
                         {
                             Dispatcher.BeginInvoke(new Action(() =>
                             {
-                                if (_state == IslandState.Speaking)
+                                if (_playbackSessionId != mySession) return;
+                                if (onComplete != null)
                                 {
-                                    SetIslandState(IslandState.Idle, "", "");
+                                    onComplete();
+                                }
+                                else if (_state == IslandState.Speaking)
+                                {
+                                    CheckAndAnnouncePendingTasks();
                                 }
                             }));
                         });
                     }));
                 }
+                else
+                {
+                    Dispatcher.BeginInvoke(new Action(() =>
+                    {
+                        if (onComplete != null) onComplete();
+                        else CheckAndAnnouncePendingTasks();
+                    }));
+                }
             });
+        }
+
+        private void CheckAndAnnouncePendingTasks()
+        {
+            // If user is currently speaking, holding hotkey, or recording, don't interrupt!
+            if (_state == IslandState.Listening || _recorder.IsRecording || _keyWasHeld || _isBusy)
+            {
+                return;
+            }
+
+            ActiveBackgroundTask pt = null;
+            lock (_pendingTasksLock)
+            {
+                if (_pendingCompletedTasks.Count > 0)
+                {
+                    pt = _pendingCompletedTasks[0];
+                    _pendingCompletedTasks.RemoveAt(0);
+                }
+            }
+
+            if (pt != null)
+            {
+                UpdateMultitaskDisplay();
+                RefreshTasksExpandedUI();
+
+                string dirName = pt.TargetDirectory.IndexOf("Desktop", StringComparison.OrdinalIgnoreCase) >= 0 ? "Desktop" : "Flinch folder";
+                string alertMsg = string.Format("Finished {0}! Saved to {1}", pt.Title, dirName);
+                SetIslandState(IslandState.Alert, "Task Completed", alertMsg);
+
+                Task.Delay(350).ContinueWith(_ =>
+                {
+                    Dispatcher.BeginInvoke(new Action(() =>
+                    {
+                        SpeakAnswerWithContinuation(
+                            string.Format("By the way, I've finished writing your {0} about {1} and saved it to your {2}.", pt.TaskType, pt.Topic, dirName),
+                            () =>
+                            {
+                                CheckAndAnnouncePendingTasks();
+                            }
+                        );
+                    }));
+                });
+            }
+            else
+            {
+                SetIslandState(IslandState.Done, "", "");
+                Task.Delay(1800).ContinueWith(__ =>
+                {
+                    Dispatcher.BeginInvoke(new Action(() =>
+                    {
+                        if (_state == IslandState.Done)
+                            SetIslandState(IslandState.Idle, "", "");
+                    }));
+                });
+            }
         }
 
         private bool _isPillHovered = false;
@@ -6650,37 +6740,7 @@ private void FinishRecordingAndSend()
                                     if (_playbackSessionId != mySession) return;
                                     if (_state == IslandState.Speaking)
                                     {
-                                        // Check if any background tasks completed while user was asking or listening to the answer
-                                        List<ActiveBackgroundTask> pendingToAnnounce = new List<ActiveBackgroundTask>();
-                                        lock (_pendingTasksLock)
-                                        {
-                                            if (_pendingCompletedTasks.Count > 0)
-                                            {
-                                                pendingToAnnounce.AddRange(_pendingCompletedTasks);
-                                                _pendingCompletedTasks.Clear();
-                                            }
-                                        }
-
-                                        if (pendingToAnnounce.Count > 0)
-                                        {
-                                            var pt = pendingToAnnounce[0];
-                                            string dirName = pt.TargetDirectory.IndexOf("Desktop", StringComparison.OrdinalIgnoreCase) >= 0 ? "Desktop" : "Flinch folder";
-                                            string alertMsg = string.Format("Finished {0}! Saved to {1}", pt.Title, dirName);
-                                            SetIslandState(IslandState.Alert, "Task Completed", alertMsg);
-                                            SpeakAnswer(string.Format("By the way, I've finished writing your {0} about {1} and saved it to your {2}.", pt.TaskType, pt.Topic, dirName));
-                                            return;
-                                        }
-
-                                        SetIslandState(IslandState.Done, "", "");
-                                        Task.Delay(1800).ContinueWith(__ =>
-                                        {
-                                            Dispatcher.BeginInvoke(new Action(() =>
-                                            {
-                                                if (_playbackSessionId != mySession) return;
-                                                if (_state == IslandState.Done)
-                                                    SetIslandState(IslandState.Idle, "", "");
-                                            }));
-                                        });
+                                        CheckAndAnnouncePendingTasks();
                                     }
                                 }));
                             });
@@ -6696,7 +6756,9 @@ private void FinishRecordingAndSend()
                                     {
                                         if (_playbackSessionId != mySession) return;
                                         if (_state == IslandState.Done)
-                                            SetIslandState(IslandState.Idle, "", "");
+                                        {
+                                            CheckAndAnnouncePendingTasks();
+                                        }
                                     }));
                                 });
                             }
