@@ -552,7 +552,7 @@ namespace FlinchApp
     {
         public static string SupabaseUrl = "";
         public static string SupabaseAnonKey = "";
-        public static string VoiceName = "arcas";
+        public static string VoiceName = "troy";
         public static string LogFilePath = "";
         public static string SystemRules =
             "You are Flinch, a desktop AI voice buddy talking out loud with the user.\n" +
@@ -5467,20 +5467,20 @@ namespace FlinchApp
             string[][] voiceOptions = new[]
             {
                 // Female Voices
-                new[] { "asteria", "Asteria (Clear & Natural · US Female)" },
-                new[] { "luna",    "Luna (Warm & Friendly · US Female)" },
-                new[] { "stella",  "Stella (Upbeat & Energetic · US Female)" },
-                new[] { "athena",  "Athena (Confident & Authoritative · US Female)" },
-                new[] { "hera",    "Hera (Mature & Poised · US Female)" },
+                // Expressive & Emotional Voices (CanopyLabs Orpheus on Groq)
+                new[] { "troy",   "Troy (Groq Orpheus · Expressive US Male)" },
+                new[] { "daniel", "Daniel (Groq Orpheus · Crisp US Male)" },
+                new[] { "autumn", "Autumn (Groq Orpheus · Bright US Female)" },
 
-                // Male Voices
-                new[] { "arcas",   "Arcas (Crisp & Conversational · US Male)" },
-                new[] { "orion",   "Orion (Deep & Authoritative · US Male)" },
-                new[] { "perseus", "Perseus (Casual & Engaging · US Male)" },
-                new[] { "angus",   "Angus (Friendly & Everyday · US Male)" },
-                new[] { "orpheus", "Orpheus (Smooth Studio Narrator · US Male)" },
-                new[] { "helios",  "Helios (Dynamic & Energetic · US Male)" },
-                new[] { "zeus",    "Zeus (Deep Resonant Baritone · US Male)" }
+                // Deepgram Aura-2 Models
+                new[] { "zeus",    "Zeus (Deepgram · Deep Baritone Male)" },
+                new[] { "orion",   "Orion (Deepgram · Deep & Authoritative Male)" },
+                new[] { "arcas",   "Arcas (Deepgram · Conversational Male)" },
+                new[] { "asteria", "Asteria (Deepgram · Clear US Female)" },
+                new[] { "luna",    "Luna (Deepgram · Warm & Friendly Female)" },
+                new[] { "athena",  "Athena (Deepgram · Confident Female)" },
+                new[] { "hera",    "Hera (Deepgram · Mature Female)" },
+                new[] { "stella",  "Stella (Deepgram · Upbeat Female)" }
             };
             foreach (string[] kv in voiceOptions)
             {

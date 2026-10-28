@@ -1191,7 +1191,7 @@ async function synthesizeWithDeepgram(
   return null;
 }
 
-// Resilient Text-to-Speech Synthesis: Deepgram Aura -> Cartesia Sonic -> Groq Orpheus
+// Resilient Text-to-Speech Synthesis: Groq Orpheus (for Troy/Daniel/Autumn) <-> Deepgram Aura-2
 async function synthesizeSpeech(
   text: string,
   voice: string,
@@ -1200,7 +1200,49 @@ async function synthesizeSpeech(
   groqKey: string,
   _geminiKey: string
 ): Promise<{ audio: string; provider: string; voice: string } | null> {
-  // 1. Try Deepgram Aura first (user has active $200 free credit, <180ms TTFB)
+  const low = (voice || "troy").toLowerCase().trim();
+  const isGroqVoice = low === "troy" || low === "daniel" || low === "autumn" || low === "diana" || low === "austin" || low === "hannah";
+
+  // 1. If user selected an expressive Groq Orpheus voice (Troy, Daniel, Autumn), synthesize via CanopyLabs Orpheus on Groq!
+  if (isGroqVoice && groqKey) {
+    const vName = (low === "autumn" || low === "diana" || low === "hannah") ? "autumn" : (low === "daniel" ? "daniel" : "troy");
+    try {
+      const ttsCts = new AbortController();
+      const ttsTimer = setTimeout(() => ttsCts.abort(), 6500);
+      const orpheusResp = await fetch("https://api.groq.com/openai/v1/audio/speech", {
+        method: "POST",
+        signal: ttsCts.signal,
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${groqKey}`,
+        },
+        body: JSON.stringify({
+          model: "canopylabs/orpheus-v1-english",
+          input: text,
+          voice: vName,
+          response_format: "wav",
+        }),
+      });
+      clearTimeout(ttsTimer);
+
+      if (orpheusResp.ok) {
+        const audioBuf = await orpheusResp.arrayBuffer();
+        if (audioBuf.byteLength > 100) {
+          return {
+            audio: arrayBufferToBase64(audioBuf),
+            provider: "groq-orpheus",
+            voice: `Groq Orpheus (${vName})`,
+          };
+        }
+      } else {
+        console.warn(`Groq Orpheus TTS error:`, orpheusResp.status, await orpheusResp.text());
+      }
+    } catch (oErr) {
+      console.warn(`Orpheus fetch failed:`, oErr);
+    }
+  }
+
+  // 2. Deepgram Aura-2 (Primary for Deepgram voices or resilient fallback for Groq)
   if (deepgramKey) {
     const deepgramRes = await synthesizeWithDeepgram(text, voice, deepgramKey);
     if (deepgramRes && deepgramRes.audio) {
@@ -1212,7 +1254,7 @@ async function synthesizeSpeech(
     }
   }
 
-  // 2. Try Cartesia Sonic fallback (ultra-fast <150ms, natural neural voice)
+  // 3. Cartesia Sonic fallback if available
   if (cartesiaKey) {
     const cartesiaRes = await synthesizeWithCartesia(text, voice, cartesiaKey);
     if (cartesiaRes && cartesiaRes.audio) {
@@ -1224,45 +1266,38 @@ async function synthesizeSpeech(
     }
   }
 
-  // 3. Fall back to Groq Orpheus
-  const primary = resolveVoice(voice);
-  const fallback = primary === "troy" ? "autumn" : "troy";
+  // 4. Final Groq Orpheus fallback if not already attempted
+  if (groqKey && !isGroqVoice) {
+    try {
+      const ttsCts = new AbortController();
+      const ttsTimer = setTimeout(() => ttsCts.abort(), 6500);
+      const orpheusResp = await fetch("https://api.groq.com/openai/v1/audio/speech", {
+        method: "POST",
+        signal: ttsCts.signal,
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${groqKey}`,
+        },
+        body: JSON.stringify({
+          model: "canopylabs/orpheus-v1-english",
+          input: text,
+          voice: "troy",
+          response_format: "wav",
+        }),
+      });
+      clearTimeout(ttsTimer);
 
-  if (groqKey) {
-    for (const v of [primary, fallback]) {
-      try {
-        const ttsCts = new AbortController();
-        const ttsTimer = setTimeout(() => ttsCts.abort(), 6000);
-        const orpheusResp = await fetch("https://api.groq.com/openai/v1/audio/speech", {
-          method: "POST",
-          signal: ttsCts.signal,
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${groqKey}`,
-          },
-          body: JSON.stringify({
-            model: "canopylabs/orpheus-v1-english",
-            input: text,
-            voice: v,
-            response_format: "wav",
-          }),
-        });
-        clearTimeout(ttsTimer);
-
-        if (orpheusResp.ok) {
-          const audioBuf = await orpheusResp.arrayBuffer();
+      if (orpheusResp.ok) {
+        const audioBuf = await orpheusResp.arrayBuffer();
+        if (audioBuf.byteLength > 100) {
           return {
             audio: arrayBufferToBase64(audioBuf),
             provider: "groq-orpheus",
-            voice: v,
+            voice: "Groq Orpheus (Troy)",
           };
-        } else {
-          console.warn(`Groq Orpheus TTS (${v}) error:`, orpheusResp.status, await orpheusResp.text());
         }
-      } catch (oErr) {
-        console.warn(`Orpheus fetch failed for ${v}:`, oErr);
       }
-    }
+    } catch (_e) { }
   }
 
   return null;
