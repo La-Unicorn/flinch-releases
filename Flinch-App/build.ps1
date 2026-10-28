@@ -61,6 +61,7 @@ Get-Process -Name Flinch -ErrorAction SilentlyContinue | Stop-Process -Force
 $srcFiles = @(
     (Join-Path $root 'src\Flinch.cs'),
     (Join-Path $root 'src\VisualExplain.cs'),
+    (Join-Path $root 'src\FlinchHub.cs'),
     $gen
 )
 & $csc /nologo /target:winexe /win32icon:$ico "/win32manifest:$manifest" "/resource:$ico,flinch.ico" "/resource:$catPng,cat_logo.png" /out:$appExe $wpf $sys $speech $srcFiles

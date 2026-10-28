@@ -3778,6 +3778,9 @@ namespace FlinchApp
         private readonly TextBlock _alertIconText;
         private readonly TextBlock _alertLabelText;
 
+        // Flinch Hub Window
+        private FlinchHubWindow _hubWindow = null;
+
         // Centered Error Display
         private readonly StackPanel _cardPanel;
         private readonly TextBlock _transcriptText;
@@ -5213,6 +5216,9 @@ namespace FlinchApp
             itemUser.Enabled = false;
             menu.Items.Add("-");
 
+            var itemHub = menu.Items.Add("⚡ Flinch Hub (Automations & Email)");
+            itemHub.Click += (s, e) => Dispatcher.Invoke(new Action(ToggleFlinchHub));
+
             var itemTalk = menu.Items.Add("🎙️ Listen Voice (Alt+V)");
             itemTalk.Click += (s, e) => Dispatcher.Invoke(new Action(ToggleVoiceRecording));
 
@@ -5303,6 +5309,14 @@ namespace FlinchApp
             itemQuit.Click += (s, e) => Dispatcher.Invoke(new Action(Close));
 
             _trayIcon.ContextMenuStrip = menu;
+
+            BackgroundAutomationsEngine.OnUrgentAlertTriggered += (alertMsg, sender, isUrgent) =>
+            {
+                Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    SetIslandState(IslandState.Alert, "Urgent Email Alert", alertMsg);
+                }));
+            };
         }
 
         private void OnWindowSourceInitialized(object sender, EventArgs e)
@@ -5367,7 +5381,7 @@ namespace FlinchApp
             else if (!_isBusy)
             {
                 StopAudioPlayback();
-                StartVoiceRecording();
+                ToggleFlinchHub();
             }
         }
 
@@ -5431,6 +5445,61 @@ namespace FlinchApp
             {
                 FlinchEnv.Log("Screen capture workflow error: " + ex.Message);
             }
+        }
+
+        public void ToggleFlinchHub()
+        {
+            if (_hubWindow != null && _hubWindow.IsVisible)
+            {
+                _hubWindow.Close();
+                _hubWindow = null;
+            }
+            else
+            {
+                try
+                {
+                    _hubWindow = new FlinchHubWindow(this);
+                    _hubWindow.Closed += (s, e) => { _hubWindow = null; };
+                    _hubWindow.Show();
+                    _hubWindow.Activate();
+                }
+                catch (Exception ex)
+                {
+                    FlinchEnv.Log("Failed to open Flinch Hub: " + ex.Message);
+                }
+            }
+        }
+
+        public void SpeakAnswer(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text)) return;
+            Task.Run(() =>
+            {
+                byte[] wav = GeminiClient.SynthesizeSpeechFast(text);
+                if (wav == null || wav.Length <= 44)
+                {
+                    wav = LocalSpeechEngine.SynthesizeToWav(text, FlinchEnv.VoiceName);
+                }
+                if (wav != null && wav.Length > 44)
+                {
+                    Dispatcher.BeginInvoke(new Action(() =>
+                    {
+                        SetIslandState(IslandState.Speaking, "", "");
+                        PlayRawWavOnChannel(wav);
+                        double dur = GetWavDurationSeconds(wav);
+                        Task.Delay((int)(dur * 1000) + 200).ContinueWith(_ =>
+                        {
+                            Dispatcher.BeginInvoke(new Action(() =>
+                            {
+                                if (_state == IslandState.Speaking)
+                                {
+                                    SetIslandState(IslandState.Idle, "", "");
+                                }
+                            }));
+                        });
+                    }));
+                }
+            });
         }
 
         private static bool IsVisualExplainIntent(string text, ActionPayload action)
@@ -5534,7 +5603,7 @@ namespace FlinchApp
             StartVoiceRecording();
         }
 
-        private void StartVoiceRecording()
+        public void StartVoiceRecording()
         {
             OverlayWindow.CloseCurrent();
             _autoCollapseTimer.Stop();
@@ -5688,6 +5757,29 @@ private void FinishRecordingAndSend()
                         _isBusy = false;
 
                         string lowerTrans = (transcript ?? "").ToLowerInvariant().Trim();
+
+                        // 0. Check for Open/Close Flinch Hub command
+                        if (lowerTrans == "open hub" || lowerTrans.Contains("open flinch hub") || lowerTrans.Contains("show hub") || lowerTrans.Contains("open integrations") || lowerTrans.Contains("show automations"))
+                        {
+                            ToggleFlinchHub();
+                            SpeakAnswer("Opening the Flinch Hub.");
+                            return;
+                        }
+                        if (_hubWindow != null && _hubWindow.IsVisible && (lowerTrans == "close hub" || lowerTrans.Contains("close flinch hub") || lowerTrans.Contains("dismiss hub")))
+                        {
+                            _hubWindow.Close();
+                            _hubWindow = null;
+                            SetIslandState(IslandState.Idle, "", "");
+                            return;
+                        }
+
+                        // Check for Email Check / Summary command
+                        if (lowerTrans.Contains("check email") || lowerTrans.Contains("check my email") || lowerTrans.Contains("any email") || lowerTrans.Contains("summarize email") || lowerTrans.Contains("read email") || lowerTrans.Contains("unread email"))
+                        {
+                            string emailSummary = BackgroundAutomationsEngine.GetSpokenEmailSummary();
+                            SpeakAnswer(emailSummary);
+                            return;
+                        }
 
                         // 1. Check for Close Whiteboard command
                         if (WhiteboardOverlayManager.IsOpen && (lowerTrans == "close" || lowerTrans.Contains("close whiteboard") || lowerTrans.Contains("dismiss whiteboard") || lowerTrans.Contains("close overlay")))
