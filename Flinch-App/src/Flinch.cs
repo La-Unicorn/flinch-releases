@@ -1905,6 +1905,8 @@ namespace FlinchApp
         public string title { get; set; }
         public string altAnswer { get; set; }
         public string altExplanation { get; set; }
+        public string imageUrl { get; set; }
+        public string subtitle { get; set; }
     }
 
     internal sealed class ScenePayload
@@ -2720,26 +2722,86 @@ namespace FlinchApp
 
             var mainStack = new StackPanel();
 
-            // Notebook Header: 📓 Math Notebook
+            // Card Header
             var headerRow = new DockPanel { LastChildFill = false, Margin = new Thickness(0, 0, 0, 10) };
             var headerStack = new StackPanel { Orientation = Orientation.Horizontal };
             headerStack.Children.Add(new TextBlock
             {
-                Text = "📓 ",
+                Text = !string.IsNullOrWhiteSpace(obj.imageUrl) ? "👤 " : "📓 ",
                 FontSize = 14,
                 VerticalAlignment = VerticalAlignment.Center
             });
             headerStack.Children.Add(new TextBlock
             {
-                Text = string.IsNullOrWhiteSpace(obj.title) ? "Flinch Math Notebook" : obj.title,
+                Text = string.IsNullOrWhiteSpace(obj.title) ? "Topic Overview" : obj.title,
                 Foreground = new SolidColorBrush(Color.FromRgb(0x3D, 0xDC, 0x84)),
                 FontWeight = FontWeights.Bold,
-                FontSize = 13.5,
+                FontSize = 14,
                 FontFamily = new FontFamily("Segoe UI Semibold, Segoe UI"),
                 VerticalAlignment = VerticalAlignment.Center
             });
             headerRow.Children.Add(headerStack);
             mainStack.Children.Add(headerRow);
+
+            // Wikimedia Portrait / Topic Image Row (if available)
+            if (!string.IsNullOrWhiteSpace(obj.imageUrl))
+            {
+                try
+                {
+                    var bioDock = new DockPanel { Margin = new Thickness(0, 0, 0, 12) };
+                    var bi = new System.Windows.Media.Imaging.BitmapImage();
+                    bi.BeginInit();
+                    bi.UriSource = new Uri(obj.imageUrl);
+                    bi.CacheOption = System.Windows.Media.Imaging.BitmapCacheOption.OnLoad;
+                    bi.EndInit();
+
+                    var img = new Image
+                    {
+                        Source = bi,
+                        Width = 92,
+                        Height = 92,
+                        Stretch = Stretch.UniformToFill,
+                        Clip = new RectangleGeometry(new Rect(0, 0, 92, 92), 10, 10)
+                    };
+                    var imgBorder = new Border
+                    {
+                        BorderBrush = new SolidColorBrush(Color.FromRgb(0x3D, 0xDC, 0x84)),
+                        BorderThickness = new Thickness(2),
+                        CornerRadius = new CornerRadius(12),
+                        Margin = new Thickness(0, 0, 14, 0),
+                        Effect = new DropShadowEffect { Color = Color.FromRgb(0x3D, 0xDC, 0x84), BlurRadius = 14, Opacity = 0.65, ShadowDepth = 2 },
+                        Child = img
+                    };
+                    DockPanel.SetDock(imgBorder, Dock.Left);
+                    bioDock.Children.Add(imgBorder);
+
+                    var bioTextStack = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
+                    bioTextStack.Children.Add(new TextBlock
+                    {
+                        Text = string.IsNullOrWhiteSpace(obj.title) ? "Overview" : obj.title,
+                        Foreground = Brushes.White,
+                        FontSize = 16,
+                        FontWeight = FontWeights.Bold,
+                        FontFamily = new FontFamily("Segoe UI Bold, Segoe UI")
+                    });
+                    if (!string.IsNullOrWhiteSpace(obj.subtitle))
+                    {
+                        bioTextStack.Children.Add(new TextBlock
+                        {
+                            Text = obj.subtitle,
+                            Foreground = new SolidColorBrush(Color.FromRgb(0x86, 0xEF, 0xAC)),
+                            FontSize = 12,
+                            FontWeight = FontWeights.SemiBold,
+                            FontFamily = new FontFamily("Segoe UI, Segoe UI Semibold"),
+                            Margin = new Thickness(0, 4, 0, 0),
+                            TextWrapping = TextWrapping.Wrap
+                        });
+                    }
+                    bioDock.Children.Add(bioTextStack);
+                    mainStack.Children.Add(bioDock);
+                }
+                catch { }
+            }
 
             // Divider line
             mainStack.Children.Add(new Border
@@ -3380,6 +3442,8 @@ namespace FlinchApp
                                                         title = oDict.ContainsKey("title") && oDict["title"] != null ? oDict["title"].ToString() : null,
                                                         altAnswer = oDict.ContainsKey("altAnswer") && oDict["altAnswer"] != null ? oDict["altAnswer"].ToString() : null,
                                                         altExplanation = oDict.ContainsKey("altExplanation") && oDict["altExplanation"] != null ? oDict["altExplanation"].ToString() : null,
+                                                        imageUrl = oDict.ContainsKey("imageUrl") && oDict["imageUrl"] != null ? oDict["imageUrl"].ToString() : null,
+                                                        subtitle = oDict.ContainsKey("subtitle") && oDict["subtitle"] != null ? oDict["subtitle"].ToString() : null,
                                                         step = oDict.ContainsKey("step") && oDict["step"] != null ? Convert.ToInt32(oDict["step"]) : (int?)null,
                                                         delayMs = oDict.ContainsKey("delayMs") && oDict["delayMs"] != null ? Convert.ToInt32(oDict["delayMs"]) : (int?)null,
                                                         radius = oDict.ContainsKey("radius") && oDict["radius"] != null ? Convert.ToDouble(oDict["radius"]) : (double?)null,
@@ -6720,14 +6784,15 @@ private void FinishRecordingAndSend()
                             return;
                         }
 
-                        // Autonomous Background Writing Tasks (e.g. "write an essay about sri lanka", "write a report on quantum computing")
-                        bool isWritingTask = (lowerTrans.Contains("write") || lowerTrans.Contains("generate") || lowerTrans.Contains("draft") || lowerTrans.Contains("create"))
-                            && (lowerTrans.Contains("essay") || lowerTrans.Contains("report") || lowerTrans.Contains("article") || lowerTrans.Contains("paper") || lowerTrans.Contains("document") || lowerTrans.Contains("story"));
+                        // Autonomous Background Writing & Presentation Tasks (e.g. "write an essay about sri lanka", "create a presentation about elon musk with voice")
+                        bool isWritingTask = (lowerTrans.Contains("write") || lowerTrans.Contains("generate") || lowerTrans.Contains("draft") || lowerTrans.Contains("create") || lowerTrans.Contains("make"))
+                            && (lowerTrans.Contains("essay") || lowerTrans.Contains("report") || lowerTrans.Contains("article") || lowerTrans.Contains("paper") || lowerTrans.Contains("document") || lowerTrans.Contains("story") || lowerTrans.Contains("presentation") || lowerTrans.Contains("slides") || lowerTrans.Contains("slide deck") || lowerTrans.Contains("slideshow"));
 
                         if (isWritingTask)
                         {
                             string docType = "essay";
-                            if (lowerTrans.Contains("report")) docType = "report";
+                            if (lowerTrans.Contains("presentation") || lowerTrans.Contains("slide")) docType = "presentation";
+                            else if (lowerTrans.Contains("report")) docType = "report";
                             else if (lowerTrans.Contains("article")) docType = "article";
                             else if (lowerTrans.Contains("paper")) docType = "paper";
                             else if (lowerTrans.Contains("story")) docType = "story";
@@ -6787,7 +6852,11 @@ private void FinishRecordingAndSend()
                             if (string.IsNullOrWhiteSpace(topic)) topic = "Sri Lanka";
 
                             string replyText;
-                            if (unsupportedApp != null)
+                            if (docType == "presentation")
+                            {
+                                replyText = string.Format("I will create an interactive presentation with voiceovers about {0} right now. I'll save it to your {1} and open it.", topic, targetDirName);
+                            }
+                            else if (unsupportedApp != null)
                             {
                                 replyText = string.Format("I will write an {0} about {1} right now. I can't send files directly to {2} yet, so I'll save it in your {3}.",
                                     docType, topic, unsupportedApp, targetDirName);

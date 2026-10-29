@@ -116,77 +116,130 @@ serve(async (req: Request) => {
       if (body.action === "write_document" || body.action === "generate_content") {
         const topic = String(body.topic || body.title || "").trim();
         const docType = String(body.type || "essay").trim();
-        const instructions = String(body.prompt || `Write a comprehensive, engaging, well-structured ${docType} about: ${topic}. Include an introduction, deep body paragraphs with historical, cultural, or factual details, and a thoughtful conclusion.`).trim();
+        const isPresentation = docType === "presentation" || docType === "slides";
 
-        const systemAuthorRule = `You are an expert author writing a comprehensive ${docType}.
+        let topicImageUrl = "";
+        try {
+          const wResp = await fetch(`https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(topic.replace(/\s+/g, "_"))}`, {
+            headers: { "User-Agent": "FlinchApp/1.0 (flinch@yasuntha.com)" }
+          });
+          if (wResp.ok) {
+            const wj = await wResp.json();
+            topicImageUrl = wj.thumbnail?.source || wj.originalimage?.source || "";
+          }
+        } catch (_w) {}
+
+        const systemAuthorRule = isPresentation
+          ? `You are an expert keynote creator. Create a modern 6-slide presentation with spoken voiceovers about: ${topic}.
+Return strictly a valid JSON object without markdown fences:
+{
+  "title": "Presentation Title",
+  "slides": [
+    {
+      "badge": "01 / Overview",
+      "heading": "Slide Heading",
+      "bullets": ["High-impact bullet point 1", "Point 2", "Point 3"],
+      "voiceover": "Natural, articulate spoken voiceover script that explains this slide aloud to the audience."
+    }
+  ]
+}`
+          : `You are an expert author writing a comprehensive ${docType}.
 CRITICAL INSTRUCTIONS:
 1. Output ONLY the document title, section headers, and body paragraphs of the ${docType}.
 2. NEVER include conversational chatter, greetings, user guidance, instructions on how to copy/paste text, or AI disclaimers (e.g. NEVER write "Since I am an AI...", "Here is the essay...", or mention Discord, WhatsApp, or saving files).
 3. Start directly with the title and content.`;
 
+        const userPrompt = isPresentation
+          ? `Create a 6-slide presentation with voiceover narration about: ${topic}. Include introduction, background, major achievements, current work, inspiring quotes, and future impact.`
+          : `Write a comprehensive, engaging, well-structured ${docType} about: ${topic}.`;
+
         let generatedContent = "";
 
-        // 1. Primary: Gemini 3 Flash Preview (Fast & high quality)
+        // 1. Primary: Gemini 3.5 Flash (Fast, reliable, high quality)
         if (geminiApiKey) {
-          try {
-            const gResp = await fetch(
-              `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${encodeURIComponent(geminiApiKey)}`,
-              {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                  systemInstruction: {
-                    parts: [{ text: systemAuthorRule }]
-                  },
-                  contents: [
-                    {
-                      role: "user",
-                      parts: [{ text: `Write a comprehensive, engaging, well-structured ${docType} about: ${topic}.` }]
+          const geminiModels = ["gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-2.5-flash"];
+          for (const gm of geminiModels) {
+            try {
+              const gResp = await fetch(
+                `https://generativelanguage.googleapis.com/v1beta/models/${gm}:generateContent?key=${encodeURIComponent(geminiApiKey)}`,
+                {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    systemInstruction: {
+                      parts: [{ text: systemAuthorRule }]
+                    },
+                    contents: [
+                      {
+                        role: "user",
+                        parts: [{ text: userPrompt }]
+                      }
+                    ],
+                    generationConfig: {
+                      temperature: 0.6,
+                      maxOutputTokens: 4096,
+                      ...(isPresentation ? { responseMimeType: "application/json" } : {})
                     }
-                  ],
-                  generationConfig: {
-                    temperature: 0.7,
-                    maxOutputTokens: 4096
-                  }
-                })
+                  })
+                }
+              );
+              if (gResp.ok) {
+                const gData = await gResp.json();
+                generatedContent = gData.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || "";
+                if (generatedContent) break;
               }
-            );
-            if (gResp.ok) {
-              const gData = await gResp.json();
-              generatedContent = gData.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || "";
-            }
-          } catch (_e) {}
+            } catch (_e) {}
+          }
         }
 
-        // 2. Fallback: Groq LPU (Llama 3.3 70B)
+        // 2. Fallback: Groq LPU (Qwen / Llama)
         if (!generatedContent && groqApiKey) {
-          try {
-            const grResp = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-              method: "POST",
-              headers: {
-                "Authorization": `Bearer ${groqApiKey}`,
-                "Content-Type": "application/json"
-              },
-              body: JSON.stringify({
-                model: "llama-3.3-70b-versatile",
-                messages: [
-                  { role: "system", content: systemAuthorRule },
-                  { role: "user", content: `Write a comprehensive, engaging, well-structured ${docType} about: ${topic}.` }
-                ],
-                temperature: 0.7,
-                max_tokens: 3500
-              })
-            });
-            if (grResp.ok) {
-              const grData = await grResp.json();
-              generatedContent = grData.choices?.[0]?.message?.content?.trim() || "";
-            }
-          } catch (_e) {}
+          for (const model of LLM_MODELS) {
+            try {
+              const grResp = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+                method: "POST",
+                headers: {
+                  "Authorization": `Bearer ${groqApiKey}`,
+                  "Content-Type": "application/json"
+                },
+                body: JSON.stringify({
+                  model: model,
+                  messages: [
+                    { role: "system", content: systemAuthorRule },
+                    { role: "user", content: userPrompt }
+                  ],
+                  temperature: 0.6,
+                  max_tokens: 3500
+                })
+              });
+              if (grResp.ok) {
+                const grData = await grResp.json();
+                generatedContent = grData.choices?.[0]?.message?.content?.trim() || "";
+                if (generatedContent) break;
+              }
+            } catch (_e) {}
+          }
         }
 
         if (generatedContent) {
-          // Strip any accidental AI preamble
-          generatedContent = generatedContent.replace(/^(Since I am an AI|As an AI|I cannot directly access|Here is the).*?\n+/gis, "").trim();
+          if (isPresentation) {
+            let deck: any = null;
+            try {
+              const cleanJson = generatedContent.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, "").trim();
+              deck = JSON.parse(cleanJson);
+            } catch {
+              deck = {
+                title: topic,
+                slides: [
+                  { badge: "01 / Overview", heading: topic, bullets: ["Key milestones and background", "Core achievements", "Impact and legacy"], voiceover: `Welcome to this presentation on ${topic}. Let us explore the key background, achievements, and future impact.` }
+                ]
+              };
+            }
+            generatedContent = buildHtmlPresentation(topic, topicImageUrl, deck);
+          } else {
+            generatedContent = generatedContent.replace(/^(Since I am an AI|As an AI|I cannot directly access|Here is the).*?\n+/gis, "").trim();
+          }
+
           return new Response(
             JSON.stringify({
               topic: topic,
@@ -444,6 +497,7 @@ RULES: Output ONLY the transformed text. No preamble, no quotes around it, no ma
     const isExplicitStaged = String(formData.get("staged") || "").toLowerCase() === "true";
     const clipboardText = ((formData.get("clipboard") as string) || "").slice(0, 4000).trim();
     const uiaText = ((formData.get("uia") as string) || "").slice(0, 4000).trim();
+    const directText = String(formData.get("text") || formData.get("transcript") || "").trim();
     let screenB64 = "";
     if (screenFile && screenFile instanceof Blob && screenFile.size > 500) {
       try {
@@ -454,7 +508,7 @@ RULES: Output ONLY the transformed text. No preamble, no quotes around it, no ma
       }
     }
 
-    if (!audioFile || !(audioFile instanceof Blob) || audioFile.size < MIN_AUDIO_BYTES) {
+    if (!directText && (!audioFile || !(audioFile instanceof Blob) || audioFile.size < MIN_AUDIO_BYTES)) {
       await refundQuota();
       return new Response(
         JSON.stringify({
@@ -491,11 +545,12 @@ RULES: Output ONLY the transformed text. No preamble, no quotes around it, no ma
       .order("created_at", { ascending: false })
       .limit(12);
 
-    let transcript = "";
-    const audioBytes = await audioFile.arrayBuffer();
+    let transcript = directText;
+    const audioBytes = audioFile && (audioFile instanceof Blob) ? await audioFile.arrayBuffer() : new Uint8Array(0);
     const tSttStart = performance.now();
 
-    for (const wModel of WHISPER_MODELS) {
+    if (!transcript && audioBytes.byteLength >= MIN_AUDIO_BYTES) {
+      for (const wModel of WHISPER_MODELS) {
       try {
         const whisperFormData = new FormData();
         const fileObj = new File([audioBytes], "audio.wav", { type: "audio/wav" });
@@ -524,9 +579,10 @@ RULES: Output ONLY the transformed text. No preamble, no quotes around it, no ma
         console.warn(`Groq Whisper ${wModel} fetch error:`, wErr);
       }
     }
+    }
 
     // High-accuracy fallback: Gemini Multimodal Audio transcription
-    if (!transcript && geminiApiKey) {
+    if (!transcript && geminiApiKey && audioBytes.byteLength >= MIN_AUDIO_BYTES) {
       const geminiAudioModels = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash", "gemini-flash-latest"];
       const b64Audio = arrayBufferToBase64(audioBytes);
       for (const gModel of geminiAudioModels) {
@@ -633,9 +689,43 @@ RULES: Output ONLY the transformed text. No preamble, no quotes around it, no ma
       );
     }
 
-    // 6. Optional Fast Live Web Search (Exa) if query mentions live events / prices / weather or search intent
+    // 6. Fast Real-Time Web Search (Exa) & Wikimedia Encyclopedic Lookup
     let webContext = "";
-    if (exaApiKey && (isLiveQuery(transcript) || transcript.toLowerCase().includes("search") || transcript.toLowerCase().includes("who is") || transcript.toLowerCase().includes("what is the current") || transcript.toLowerCase().includes("latest"))) {
+    let wikiCardData: any = null;
+
+    // Detect if user asks to explain a person or topic
+    const topicMatch = transcript.match(/\b(?:explain about|tell me about|who is|who was|biography of|info about|information about|what is|tell me who)\s+([a-zA-Z0-9\s.'"-]+)/i);
+    const candidateTopic = topicMatch ? topicMatch[1].replace(/\b(now|today|please|can you|could you)\b/gi, "").trim() : "";
+
+    // 6A. Wikipedia REST API for verified bio & high-res portrait image from Wikimedia Commons
+    if (candidateTopic && candidateTopic.length > 2) {
+      try {
+        const wikiCts = new AbortController();
+        const wikiTimer = setTimeout(() => wikiCts.abort(), 2500);
+        const wikiResp = await fetch(`https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(candidateTopic.replace(/\s+/g, "_"))}`, {
+          signal: wikiCts.signal,
+          headers: { "User-Agent": "FlinchApp/1.0 (flinch@yasuntha.com)" }
+        });
+        clearTimeout(wikiTimer);
+        if (wikiResp.ok) {
+          const wJson = await wikiResp.json();
+          if (wJson.type !== "disambiguation" && wJson.extract) {
+            wikiCardData = {
+              title: wJson.title,
+              description: wJson.description || "",
+              extract: wJson.extract,
+              thumbnail: wJson.thumbnail?.source || wJson.originalimage?.source || null
+            };
+          }
+        }
+      } catch (_wErr) {}
+    }
+
+    // 6B. Exa Live Web Search (Aggressive triggers: people, recent events, time, weather, prices, news)
+    const isExaTrigger = isLiveQuery(transcript) ||
+      /\b(who is|who was|who founded|explain about|tell me about|what time|time in|weather in|how old|net worth|news|latest|update|current|today|status of)\b/i.test(transcript);
+
+    if (exaApiKey && isExaTrigger) {
       try {
         const exaCts = new AbortController();
         const exaTimer = setTimeout(() => exaCts.abort(), 3500);
@@ -648,20 +738,20 @@ RULES: Output ONLY the transformed text. No preamble, no quotes around it, no ma
           },
           body: JSON.stringify({
             query: transcript,
-            numResults: 3,
-            type: "fast",
-            contents: { text: { maxCharacters: 400 } },
+            numResults: 5,
+            type: "auto",
+            contents: { text: { maxCharacters: 600 } },
           }),
         });
         clearTimeout(exaTimer);
         if (exaResp.ok) {
           const exaJson = await exaResp.json();
           const snippets = (exaJson.results || [])
-            .map((r: any) => r.text)
+            .map((r: any) => `${r.title ? `[${r.title}]: ` : ""}${r.text}`)
             .filter((t: any) => typeof t === "string" && t.trim().length > 0)
             .join("\n");
           if (snippets) {
-            webContext = snippets.slice(0, 1000);
+            webContext = snippets.slice(0, 1500);
           }
         }
       } catch (e) {
@@ -921,15 +1011,25 @@ If no visual overlay is needed, set "scene": null.`;
 
     if (!reply) {
       // 8. Ultra-fast LLM Answer Generation (Groq LPU)
+      const currentUtc = new Date().toUTCString();
+      const currentYear = 2026;
       const systemPrompt =
-        "You are Flinch, a friendly, ultra-fast desktop AI voice companion for PC.\n" +
-        "1. You have screen awareness, visual overlay drawing (arrows, outlines, callouts), live web search, timers, and clipboard intelligence.\n" +
-        "2. If the user greets you or says your name (e.g. 'Hey Flinch', 'Hello', 'Hi'), reply warmly and briefly (e.g. 'Hey there! What's on your mind?' or 'Hey! How can I help?').\n" +
-        "3. For real-time questions, you have live real-time internet search access. State the facts directly.\n" +
-        "4. Keep answers short, direct, and factual for the ear (1 to 2 sentences max). Make your FIRST sentence snappy and direct (4 to 8 words) so voice begins speaking immediately, followed by 1 helpful sentence. Never use markdown, bullet points, asterisks, or conversational filler.\n" +
-        "5. Conversational Memory: You have the recent conversation history in this chat. If the user asks what they just asked, what their previous question was, or refers to earlier topics, answer accurately based strictly on their immediate previous question in this chat history.";
+        `You are Flinch, a friendly, ultra-fast desktop AI voice companion for PC.\n` +
+        `Current Date & Time: ${currentUtc} (Current Year: ${currentYear}).\n` +
+        `1. You have screen awareness, visual overlay drawing, live Exa web search, timers, and clipboard intelligence.\n` +
+        `2. For time queries across different cities or timezones (e.g. London, Tokyo, New York, Sri Lanka, Sydney), calculate and state the exact current local time based strictly on the UTC time above.\n` +
+        `3. For real-time questions, you have live real-time internet access via Exa web search. State fresh facts as of ${currentYear}. NEVER claim your knowledge is outdated or cut off in the past.\n` +
+        `4. If the user greets you or says your name (e.g. 'Hey Flinch', 'Hello', 'Hi'), reply warmly and briefly (e.g. 'Hey there! What's on your mind?' or 'Hey! How can I help?').\n` +
+        `5. Keep answers short, direct, and factual for the ear (1 to 2 sentences max). Make your FIRST sentence snappy and direct (4 to 8 words) so voice begins speaking immediately, followed by 1 helpful sentence. Never use markdown, bullet points, asterisks, or conversational filler.\n` +
+        `6. Conversational Memory: You have the recent conversation history in this chat. If the user asks what they just asked or refers to earlier topics, answer accurately based strictly on previous turns.`;
 
       const messages: any[] = [{ role: "system", content: systemPrompt }];
+      if (wikiCardData) {
+        messages.push({
+          role: "system",
+          content: `VERIFIED ENCYCLOPEDIC PROFILE FOR "${wikiCardData.title}":\nDescription: ${wikiCardData.description}\nKey Facts: ${wikiCardData.extract}\nProvide a direct, inspiring 1-2 sentence spoken summary answering the user's question about ${wikiCardData.title}. State who they are, their birth/origin, and main companies/inventions clearly.`,
+        });
+      }
       if (permanentKnowledgePrompt) {
         messages.push({
           role: "system",
@@ -1133,6 +1233,24 @@ If no visual overlay is needed, set "scene": null.`;
 
     if (isHighlightOrDraw && (!sceneObj || !sceneObj.objects || sceneObj.objects.length === 0)) {
       sceneObj = generateFallbackVisualScene(transcript, uiaText, reply);
+    }
+
+    // Visual explainer / Bio card guarantee: if topic explanation was fetched with Wikimedia
+    if (wikiCardData && (!sceneObj || !sceneObj.objects || sceneObj.objects.length === 0)) {
+      sceneObj = {
+        durationMs: 25000,
+        objects: [
+          {
+            type: "notepad",
+            title: wikiCardData.title,
+            subtitle: wikiCardData.description,
+            imageUrl: wikiCardData.thumbnail,
+            text: formatBioPoints(wikiCardData.extract, wikiCardData.description),
+            color: "#3DDC84",
+            delayMs: 150
+          }
+        ]
+      };
     }
 
     // 9. Text-to-Speech (TTS) Synthesis with resilient multi-voice fallback (Cartesia Sonic -> Groq Orpheus)
@@ -1642,6 +1760,11 @@ function isLiveQuery(q: string): boolean {
     "today", "yesterday", "tomorrow", "tonight", "this morning", "this week",
     "this month", "this year", "right now", "currently", "current", "latest",
     "recent", "recently", "just happened", "now", "2024", "2025", "2026",
+    // People & Topics
+    "who is", "who was", "who founded", "who invented", "explain about", "tell me about",
+    "biography", "how old is", "where was", "when was", "net worth", "what did", "status of",
+    // World Clock & Timezones
+    "what time", "current time", "time in", "time now", "clock in", "timezone",
     // Weather
     "weather", "forecast", "temperature", "temp", "rain", "snow", "sunny",
     // Financial / Markets / Crypto
@@ -1654,10 +1777,19 @@ function isLiveQuery(q: string): boolean {
     // Leaders & Roles
     "president", "prime minister", "ceo", "governor", "election", "vote", "poll",
     // Search Intent
-    "search", "look up", "google", "find out", "check the web", "browse", "who is the current", "what is the current",
-    "what time is it", "time in"
+    "search", "look up", "google", "find out", "check the web", "browse", "who is the current", "what is the current"
   ];
   return triggers.some((t) => low.includes(t));
+}
+
+function formatBioPoints(extract: string, desc: string): string {
+  const points: string[] = [];
+  if (desc) points.push(`Role: ${desc}`);
+  const sents = (extract || "").split(/(?<=[.?!])\s+/).filter((s) => s.trim().length > 10);
+  for (let i = 0; i < Math.min(3, sents.length); i++) {
+    points.push(sents[i].trim());
+  }
+  return points.join("\n\n");
 }
 
 // Screen awareness query classifier (read screen, explain error, look at screen, point out, highlight)
@@ -1862,8 +1994,10 @@ function sanitizeScene(sceneRaw: any): any {
     const cleanObj: any = { type };
 
     if (type === "notepad" || type === "notebook") {
-      cleanObj.title = String(obj.title || "Math Notebook").slice(0, 150);
+      cleanObj.title = String(obj.title || "Topic Overview").slice(0, 150);
       cleanObj.text = String(obj.text || "").slice(0, 1000);
+      if (obj.subtitle) cleanObj.subtitle = String(obj.subtitle).slice(0, 200);
+      if (obj.imageUrl) cleanObj.imageUrl = String(obj.imageUrl).slice(0, 500);
       if (obj.altAnswer) cleanObj.altAnswer = String(obj.altAnswer).slice(0, 50);
       if (obj.altExplanation) cleanObj.altExplanation = String(obj.altExplanation).slice(0, 600);
       if (obj.rect) {
@@ -2019,4 +2153,333 @@ async function extractAndStoreKnowledge(
   } catch (err) {
     console.warn("extractAndStoreKnowledge failed:", err);
   }
+}
+
+function escapeHtml(str: string): string {
+  return String(str || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
+function escapeJs(str: string): string {
+  return String(str || "").replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\n/g, "\\n");
+}
+
+function buildHtmlPresentation(topic: string, imageUrl: string, deck: any): string {
+  const title = deck?.title || `Presentation: ${topic}`;
+  const slides = Array.isArray(deck?.slides) && deck.slides.length > 0 ? deck.slides : [
+    { badge: "01 / Overview", heading: topic, bullets: ["Key milestones and background", "Core achievements", "Impact and legacy"], voiceover: `Welcome to this presentation on ${topic}. Let us explore the key background, achievements, and future impact.` }
+  ];
+
+  const slidesJson = JSON.stringify(slides).replace(/</g, "\\u003c");
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>${escapeHtml(title)} - Flinch Presentation</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: #0f172a;
+    color: #f8fafc;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  header {
+    padding: 16px 28px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px solid rgba(255,255,255,0.08);
+    background: rgba(15, 23, 42, 0.8);
+    backdrop-filter: blur(12px);
+  }
+  .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; color: #3ddc84; font-size: 15px; }
+  .brand-dot { width: 10px; height: 10px; border-radius: 50%; background: #3ddc84; box-shadow: 0 0 10px #3ddc84; }
+  .deck-title { font-size: 14px; color: #94a3b8; }
+  
+  main {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 40px;
+    position: relative;
+  }
+  .slide-card {
+    width: 100%;
+    max-width: 960px;
+    min-height: 520px;
+    background: rgba(30, 41, 59, 0.7);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 20px;
+    padding: 44px 52px;
+    box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5), 0 0 40px rgba(61, 220, 132, 0.1);
+    backdrop-filter: blur(16px);
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    animation: fadeIn 0.35s ease;
+  }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+  
+  .badge {
+    display: inline-block;
+    padding: 4px 12px;
+    border-radius: 12px;
+    background: rgba(61, 220, 132, 0.15);
+    border: 1px solid rgba(61, 220, 132, 0.4);
+    color: #3ddc84;
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: 14px;
+  }
+  .slide-header {
+    display: flex;
+    justify-content: space-between;
+    gap: 30px;
+    align-items: flex-start;
+  }
+  .slide-heading {
+    font-size: 34px;
+    font-weight: 800;
+    line-height: 1.2;
+    background: linear-gradient(135deg, #ffffff 0%, #cbd5e1 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    margin-bottom: 22px;
+  }
+  .topic-img {
+    width: 130px;
+    height: 130px;
+    border-radius: 16px;
+    object-fit: cover;
+    border: 2px solid rgba(61, 220, 132, 0.5);
+    box-shadow: 0 10px 25px rgba(0,0,0,0.4);
+    flex-shrink: 0;
+  }
+  
+  .bullets {
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    margin: 10px 0 24px 0;
+  }
+  .bullets li {
+    font-size: 18px;
+    line-height: 1.5;
+    color: #e2e8f0;
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+  }
+  .bullets li::before {
+    content: "✦";
+    color: #3ddc84;
+    font-size: 16px;
+    line-height: 1.5;
+  }
+  
+  .voice-banner {
+    background: rgba(15, 23, 42, 0.6);
+    border: 1px solid rgba(61, 220, 132, 0.3);
+    border-radius: 12px;
+    padding: 14px 18px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    margin-top: auto;
+  }
+  .voice-indicator {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #3ddc84;
+    box-shadow: 0 0 12px #3ddc84;
+    animation: pulse 1.5s infinite;
+  }
+  @keyframes pulse { 0%, 100% { opacity: 0.4; } 50% { opacity: 1; } }
+  .voice-text {
+    font-size: 14px;
+    color: #94a3b8;
+    font-style: italic;
+    flex: 1;
+  }
+  
+  footer {
+    padding: 16px 32px;
+    background: rgba(15, 23, 42, 0.9);
+    border-top: 1px solid rgba(255,255,255,0.08);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 20px;
+  }
+  .controls {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  button {
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    color: #fff;
+    padding: 9px 18px;
+    border-radius: 10px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  button:hover {
+    background: rgba(61, 220, 132, 0.2);
+    border-color: #3ddc84;
+    color: #3ddc84;
+  }
+  button.primary {
+    background: #3ddc84;
+    color: #0f172a;
+    border-color: #3ddc84;
+  }
+  button.primary:hover {
+    background: #34c776;
+    color: #0f172a;
+  }
+  .progress-wrap {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    font-size: 13px;
+    color: #64748b;
+  }
+  .progress-bar {
+    width: 140px;
+    height: 6px;
+    border-radius: 3px;
+    background: rgba(255, 255, 255, 0.1);
+    overflow: hidden;
+  }
+  .progress-fill {
+    height: 100%;
+    background: #3ddc84;
+    transition: width 0.25s ease;
+  }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand"><div class="brand-dot"></div> FLINCH PRESENTATION ENGINE</div>
+  <div class="deck-title">${escapeHtml(title)}</div>
+</header>
+<main>
+  <div class="slide-card" id="slideCard"></div>
+</main>
+<footer>
+  <div class="controls">
+    <button onclick="prevSlide()">◄ Previous</button>
+    <button onclick="nextSlide()">Next ►</button>
+    <button class="primary" id="voiceBtn" onclick="toggleVoice()">🔊 Play Voiceover</button>
+  </div>
+  <div class="progress-wrap">
+    <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+      <input type="checkbox" id="autoVoice" checked> Auto-Narrate
+    </label>
+    <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
+    <span id="slideCounter">Slide 1 of 6</span>
+  </div>
+</footer>
+<script>
+  const slides = ${slidesJson};
+  const topicImage = "${escapeJs(imageUrl)}";
+  let cur = 0;
+  let isSpeaking = false;
+
+  function render() {
+    const s = slides[cur];
+    const card = document.getElementById("slideCard");
+    let imgHtml = (cur === 0 && topicImage) ? '<img class="topic-img" src="' + topicImage + '" alt="Topic" onerror="this.style.display=\'none\'">' : '';
+    let bulletsHtml = (s.bullets || []).map(b => '<li>' + b + '</li>').join('');
+    
+    card.innerHTML = '<div>'
+      + '<div class="badge">' + (s.badge || ('Slide ' + (cur + 1))) + '</div>'
+      + '<div class="slide-header">'
+      + '<h1 class="slide-heading">' + (s.heading || '') + '</h1>'
+      + imgHtml
+      + '</div>'
+      + '<ul class="bullets">' + bulletsHtml + '</ul>'
+      + '</div>'
+      + '<div class="voice-banner">'
+      + '<div class="voice-indicator"></div>'
+      + '<div class="voice-text">\"' + (s.voiceover || '') + '\"</div>'
+      + '</div>';
+    
+    document.getElementById("slideCounter").innerText = 'Slide ' + (cur + 1) + ' of ' + slides.length;
+    document.getElementById("progressFill").style.width = (((cur + 1) / slides.length) * 100) + '%';
+    
+    if (document.getElementById("autoVoice").checked) {
+      speakCurrent();
+    }
+  }
+
+  function speakCurrent() {
+    if (!window.speechSynthesis) return;
+    window.speechSynthesis.cancel();
+    const text = slides[cur].voiceover;
+    if (!text) return;
+    const u = new SpeechSynthesisUtterance(text);
+    u.rate = 1.0;
+    u.pitch = 1.0;
+    u.onstart = () => { isSpeaking = true; updateVoiceBtn(); };
+    u.onend = () => { isSpeaking = false; updateVoiceBtn(); };
+    u.onerror = () => { isSpeaking = false; updateVoiceBtn(); };
+    window.speechSynthesis.speak(u);
+  }
+
+  function toggleVoice() {
+    if (!window.speechSynthesis) return;
+    if (window.speechSynthesis.speaking) {
+      window.speechSynthesis.cancel();
+      isSpeaking = false;
+      updateVoiceBtn();
+    } else {
+      speakCurrent();
+    }
+  }
+
+  function updateVoiceBtn() {
+    const btn = document.getElementById("voiceBtn");
+    if (!window.speechSynthesis) return;
+    btn.innerText = window.speechSynthesis.speaking ? "⏸ Pause Voiceover" : "🔊 Play Voiceover";
+  }
+
+  function nextSlide() {
+    if (cur < slides.length - 1) { cur++; render(); }
+  }
+  function prevSlide() {
+    if (cur > 0) { cur--; render(); }
+  }
+
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "ArrowRight" || e.key === " " || e.key === "PageDown") nextSlide();
+    else if (e.key === "ArrowLeft" || e.key === "PageUp") prevSlide();
+  });
+
+  render();
+</script>
+</body>
+</html>`;
 }
