@@ -8780,6 +8780,78 @@ private void FinishRecordingAndSend()
             ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12;
             FlinchEnv.Load();
 
+            if (args != null && args.Length > 0 && args[0] == "--testdraw")
+            {
+                try
+                {
+                    var app = System.Windows.Application.Current ?? new System.Windows.Application();
+                    var ps = System.Windows.Forms.Screen.PrimaryScreen;
+                    var bounds = new NativeMethods.RECT
+                    {
+                        Left = ps.Bounds.Left,
+                        Top = ps.Bounds.Top,
+                        Right = ps.Bounds.Right,
+                        Bottom = ps.Bounds.Bottom
+                    };
+                    var scene = new ScenePayload
+                    {
+                        durationMs = 8000,
+                        objects = new List<SceneObjectPayload>
+                        {
+                            new SceneObjectPayload
+                            {
+                                type = "arrow",
+                                color = "#3DDC84",
+                                label = "Recycle Bin Target",
+                                from = new ScenePoint { x = 0.15, y = 0.15 },
+                                to = new ScenePoint { x = 0.035, y = 0.05 }
+                            },
+                            new SceneObjectPayload
+                            {
+                                type = "circle",
+                                color = "#38BDF8",
+                                label = "Target Icon",
+                                rect = new SceneRect { x = 0.015, y = 0.02, w = 0.05, h = 0.08 }
+                            }
+                        }
+                    };
+                    FlinchEnv.Log("Showing test drawing overlay on screen...");
+                    var win = new OverlayWindow(bounds, scene);
+                    win.Show();
+                    System.Windows.Forms.Application.DoEvents();
+                    Thread.Sleep(1200);
+                    System.Windows.Forms.Application.DoEvents();
+
+                    FlinchEnv.Log("OverlayWindow rendered and active on screen.");
+                    try
+                    {
+                        using (var bmp = new System.Drawing.Bitmap(ps.Bounds.Width, ps.Bounds.Height))
+                        {
+                            using (var g = System.Drawing.Graphics.FromImage(bmp))
+                            {
+                                g.CopyFromScreen(ps.Bounds.Left, ps.Bounds.Top, 0, 0, ps.Bounds.Size);
+                            }
+                            string outPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "screen_drawn_verified.png");
+                            bmp.Save(outPath, System.Drawing.Imaging.ImageFormat.Png);
+                            FlinchEnv.Log("Test draw screenshot saved: " + outPath);
+                        }
+                    }
+                    catch (Exception gdiEx)
+                    {
+                        FlinchEnv.Log("Desktop screenshot note (headless DC): " + gdiEx.Message);
+                    }
+                    Thread.Sleep(2500);
+                    win.Close();
+                    return 0;
+                }
+                catch (Exception ex)
+                {
+                    FlinchEnv.Log("TEST_DRAW_ERROR: " + ex.ToString());
+                    Console.WriteLine("TEST_DRAW_ERROR: " + ex.Message);
+                    return 1;
+                }
+            }
+
             if (args != null && args.Length > 0 && args[0] == "--selftest")
             {
                 try
@@ -8831,8 +8903,10 @@ private void FinishRecordingAndSend()
             bool createdNew;
             using (var mutex = new Mutex(true, "Global\\FlinchNativeIslandAppMutex", out createdNew))
             {
+                FlinchEnv.Log("Main mutex check: createdNew=" + createdNew);
                 if (!createdNew)
                 {
+                    FlinchEnv.Log("Another Flinch instance is already running (mutex locked). Exiting.");
                     return 0;
                 }
                 var app = new Application
