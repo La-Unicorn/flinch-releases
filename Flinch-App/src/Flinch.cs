@@ -6805,6 +6805,8 @@ private void FinishRecordingAndSend()
                                 if (idx >= 0)
                                 {
                                     topic = transcript.Substring(idx + tr.Length + 1).Trim();
+                                    topic = Regex.Replace(topic, @"\b(with\s+(?:voices?|voiceovers?|audio|speech|slides?)|and\s+voices?)\b.*$", "", RegexOptions.IgnoreCase).Trim();
+                                    topic = Regex.Replace(topic, @"[?.!,;:]+$", "").Trim();
                                     break;
                                 }
                             }

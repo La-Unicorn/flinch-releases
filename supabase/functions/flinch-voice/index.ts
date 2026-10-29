@@ -130,15 +130,15 @@ serve(async (req: Request) => {
         } catch (_w) {}
 
         const systemAuthorRule = isPresentation
-          ? `You are an expert keynote creator. Create a modern 6-slide presentation with spoken voiceovers about: ${topic}.
+          ? `You are an expert keynote creator. Create a clean, elegant 6-slide presentation with spoken voiceovers about: ${topic}.
+Do not include category badges, label tags, or AI slop.
 Return strictly a valid JSON object without markdown fences:
 {
   "title": "Presentation Title",
   "slides": [
     {
-      "badge": "01 / Overview",
       "heading": "Slide Heading",
-      "bullets": ["High-impact bullet point 1", "Point 2", "Point 3"],
+      "bullets": ["High-impact factual point 1", "Point 2", "Point 3"],
       "voiceover": "Natural, articulate spoken voiceover script that explains this slide aloud to the audience."
     }
   ]
@@ -231,7 +231,7 @@ CRITICAL INSTRUCTIONS:
               deck = {
                 title: topic,
                 slides: [
-                  { badge: "01 / Overview", heading: topic, bullets: ["Key milestones and background", "Core achievements", "Impact and legacy"], voiceover: `Welcome to this presentation on ${topic}. Let us explore the key background, achievements, and future impact.` }
+                  { heading: topic, bullets: ["Key milestones and background", "Core achievements", "Impact and legacy"], voiceover: `Welcome to this presentation on ${topic}. Let us explore the key background, achievements, and future impact.` }
                 ]
               };
             }
@@ -2171,7 +2171,7 @@ function escapeJs(str: string): string {
 function buildHtmlPresentation(topic: string, imageUrl: string, deck: any): string {
   const title = deck?.title || `Presentation: ${topic}`;
   const slides = Array.isArray(deck?.slides) && deck.slides.length > 0 ? deck.slides : [
-    { badge: "01 / Overview", heading: topic, bullets: ["Key milestones and background", "Core achievements", "Impact and legacy"], voiceover: `Welcome to this presentation on ${topic}. Let us explore the key background, achievements, and future impact.` }
+    { heading: topic, bullets: ["Key milestones and background", "Core achievements", "Impact and legacy"], voiceover: `Welcome to this presentation on ${topic}. Let us explore the key background, achievements, and future impact.` }
   ];
 
   const slidesJson = JSON.stringify(slides).replace(/</g, "\\u003c");
@@ -2181,30 +2181,32 @@ function buildHtmlPresentation(topic: string, imageUrl: string, deck: any): stri
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>${escapeHtml(title)} - Flinch Presentation</title>
+<title>${escapeHtml(title)}</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
-    background: #0f172a;
-    color: #f8fafc;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #f8fafc;
+    color: #0f172a;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     min-height: 100vh;
     display: flex;
     flex-direction: column;
     overflow: hidden;
   }
   header {
-    padding: 16px 28px;
+    padding: 16px 36px;
     display: flex;
     justify-content: space-between;
     align-items: center;
-    border-bottom: 1px solid rgba(255,255,255,0.08);
-    background: rgba(15, 23, 42, 0.8);
-    backdrop-filter: blur(12px);
+    border-bottom: 1px solid #e2e8f0;
+    background: #ffffff;
   }
-  .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; color: #3ddc84; font-size: 15px; }
-  .brand-dot { width: 10px; height: 10px; border-radius: 50%; background: #3ddc84; box-shadow: 0 0 10px #3ddc84; }
-  .deck-title { font-size: 14px; color: #94a3b8; }
+  .deck-title {
+    font-size: 15px;
+    font-weight: 600;
+    color: #0f172a;
+    letter-spacing: -0.01em;
+  }
   
   main {
     flex: 1;
@@ -2213,59 +2215,45 @@ function buildHtmlPresentation(topic: string, imageUrl: string, deck: any): stri
     justify-content: center;
     padding: 40px;
     position: relative;
+    background: #f1f5f9;
   }
   .slide-card {
     width: 100%;
     max-width: 960px;
     min-height: 520px;
-    background: rgba(30, 41, 59, 0.7);
-    border: 1px solid rgba(255, 255, 255, 0.12);
-    border-radius: 20px;
-    padding: 44px 52px;
-    box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5), 0 0 40px rgba(61, 220, 132, 0.1);
-    backdrop-filter: blur(16px);
+    background: #ffffff;
+    border: 1px solid #e2e8f0;
+    border-radius: 16px;
+    padding: 48px 56px;
+    box-shadow: 0 10px 30px -10px rgba(0, 0, 0, 0.08), 0 4px 6px -2px rgba(0, 0, 0, 0.03);
     display: flex;
     flex-direction: column;
     justify-content: space-between;
-    animation: fadeIn 0.35s ease;
+    animation: fadeIn 0.25s ease;
   }
-  @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
   
-  .badge {
-    display: inline-block;
-    padding: 4px 12px;
-    border-radius: 12px;
-    background: rgba(61, 220, 132, 0.15);
-    border: 1px solid rgba(61, 220, 132, 0.4);
-    color: #3ddc84;
-    font-size: 12px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    margin-bottom: 14px;
-  }
   .slide-header {
     display: flex;
     justify-content: space-between;
-    gap: 30px;
+    gap: 32px;
     align-items: flex-start;
   }
   .slide-heading {
     font-size: 34px;
-    font-weight: 800;
-    line-height: 1.2;
-    background: linear-gradient(135deg, #ffffff 0%, #cbd5e1 100%);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    margin-bottom: 22px;
+    font-weight: 700;
+    line-height: 1.25;
+    color: #0f172a;
+    letter-spacing: -0.02em;
+    margin-bottom: 24px;
   }
   .topic-img {
     width: 130px;
     height: 130px;
-    border-radius: 16px;
+    border-radius: 14px;
     object-fit: cover;
-    border: 2px solid rgba(61, 220, 132, 0.5);
-    box-shadow: 0 10px 25px rgba(0,0,0,0.4);
+    border: 1px solid #cbd5e1;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.08);
     flex-shrink: 0;
   }
   
@@ -2273,29 +2261,30 @@ function buildHtmlPresentation(topic: string, imageUrl: string, deck: any): stri
     list-style: none;
     display: flex;
     flex-direction: column;
-    gap: 14px;
-    margin: 10px 0 24px 0;
+    gap: 16px;
+    margin: 12px 0 28px 0;
   }
   .bullets li {
-    font-size: 18px;
-    line-height: 1.5;
-    color: #e2e8f0;
+    font-size: 19px;
+    line-height: 1.55;
+    color: #334155;
     display: flex;
     align-items: flex-start;
-    gap: 12px;
+    gap: 14px;
   }
   .bullets li::before {
-    content: "✦";
-    color: #3ddc84;
-    font-size: 16px;
-    line-height: 1.5;
+    content: "•";
+    color: #0284c7;
+    font-size: 24px;
+    line-height: 1;
+    margin-top: 2px;
   }
   
   .voice-banner {
-    background: rgba(15, 23, 42, 0.6);
-    border: 1px solid rgba(61, 220, 132, 0.3);
-    border-radius: 12px;
-    padding: 14px 18px;
+    background: #f8fafc;
+    border-left: 3px solid #0284c7;
+    border-radius: 8px;
+    padding: 14px 20px;
     display: flex;
     align-items: center;
     gap: 14px;
@@ -2305,22 +2294,24 @@ function buildHtmlPresentation(topic: string, imageUrl: string, deck: any): stri
     width: 8px;
     height: 8px;
     border-radius: 50%;
-    background: #3ddc84;
-    box-shadow: 0 0 12px #3ddc84;
+    background: #0284c7;
+    box-shadow: 0 0 8px #0284c7;
     animation: pulse 1.5s infinite;
+    flex-shrink: 0;
   }
-  @keyframes pulse { 0%, 100% { opacity: 0.4; } 50% { opacity: 1; } }
+  @keyframes pulse { 0%, 100% { opacity: 0.3; } 50% { opacity: 1; } }
   .voice-text {
     font-size: 14px;
-    color: #94a3b8;
+    color: #64748b;
     font-style: italic;
+    line-height: 1.45;
     flex: 1;
   }
   
   footer {
-    padding: 16px 32px;
-    background: rgba(15, 23, 42, 0.9);
-    border-top: 1px solid rgba(255,255,255,0.08);
+    padding: 16px 36px;
+    background: #ffffff;
+    border-top: 1px solid #e2e8f0;
     display: flex;
     justify-content: space-between;
     align-items: center;
@@ -2329,14 +2320,14 @@ function buildHtmlPresentation(topic: string, imageUrl: string, deck: any): stri
   .controls {
     display: flex;
     align-items: center;
-    gap: 12px;
+    gap: 10px;
   }
   button {
-    background: rgba(255, 255, 255, 0.08);
-    border: 1px solid rgba(255, 255, 255, 0.15);
-    color: #fff;
+    background: #ffffff;
+    border: 1px solid #cbd5e1;
+    color: #1e293b;
     padding: 9px 18px;
-    border-radius: 10px;
+    border-radius: 8px;
     font-size: 13px;
     font-weight: 600;
     cursor: pointer;
@@ -2346,18 +2337,16 @@ function buildHtmlPresentation(topic: string, imageUrl: string, deck: any): stri
     gap: 6px;
   }
   button:hover {
-    background: rgba(61, 220, 132, 0.2);
-    border-color: #3ddc84;
-    color: #3ddc84;
+    background: #f1f5f9;
+    border-color: #94a3b8;
   }
   button.primary {
-    background: #3ddc84;
-    color: #0f172a;
-    border-color: #3ddc84;
+    background: #0f172a;
+    color: #ffffff;
+    border-color: #0f172a;
   }
   button.primary:hover {
-    background: #34c776;
-    color: #0f172a;
+    background: #1e293b;
   }
   .progress-wrap {
     display: flex;
@@ -2370,19 +2359,18 @@ function buildHtmlPresentation(topic: string, imageUrl: string, deck: any): stri
     width: 140px;
     height: 6px;
     border-radius: 3px;
-    background: rgba(255, 255, 255, 0.1);
+    background: #e2e8f0;
     overflow: hidden;
   }
   .progress-fill {
     height: 100%;
-    background: #3ddc84;
+    background: #0284c7;
     transition: width 0.25s ease;
   }
 </style>
 </head>
 <body>
 <header>
-  <div class="brand"><div class="brand-dot"></div> FLINCH PRESENTATION ENGINE</div>
   <div class="deck-title">${escapeHtml(title)}</div>
 </header>
 <main>
@@ -2411,25 +2399,57 @@ function buildHtmlPresentation(topic: string, imageUrl: string, deck: any): stri
   function render() {
     const s = slides[cur];
     const card = document.getElementById("slideCard");
-    let imgHtml = (cur === 0 && topicImage) ? '<img class="topic-img" src="' + topicImage + '" alt="Topic" onerror="this.style.display=\'none\'">' : '';
-    let bulletsHtml = (s.bullets || []).map(b => '<li>' + b + '</li>').join('');
-    
-    card.innerHTML = '<div>'
-      + '<div class="badge">' + (s.badge || ('Slide ' + (cur + 1))) + '</div>'
-      + '<div class="slide-header">'
-      + '<h1 class="slide-heading">' + (s.heading || '') + '</h1>'
-      + imgHtml
-      + '</div>'
-      + '<ul class="bullets">' + bulletsHtml + '</ul>'
-      + '</div>'
-      + '<div class="voice-banner">'
-      + '<div class="voice-indicator"></div>'
-      + '<div class="voice-text">\"' + (s.voiceover || '') + '\"</div>'
-      + '</div>';
-    
-    document.getElementById("slideCounter").innerText = 'Slide ' + (cur + 1) + ' of ' + slides.length;
-    document.getElementById("progressFill").style.width = (((cur + 1) / slides.length) * 100) + '%';
-    
+    card.innerHTML = "";
+
+    const contentDiv = document.createElement("div");
+
+    const headerDiv = document.createElement("div");
+    headerDiv.className = "slide-header";
+
+    const heading = document.createElement("h1");
+    heading.className = "slide-heading";
+    heading.textContent = s.heading || "";
+    headerDiv.appendChild(heading);
+
+    if (cur === 0 && topicImage) {
+      const img = document.createElement("img");
+      img.className = "topic-img";
+      img.src = topicImage;
+      img.alt = "Topic";
+      img.onerror = function() { this.style.display = "none"; };
+      headerDiv.appendChild(img);
+    }
+    contentDiv.appendChild(headerDiv);
+
+    const ul = document.createElement("ul");
+    ul.className = "bullets";
+    (s.bullets || []).forEach(function(b) {
+      const li = document.createElement("li");
+      li.textContent = b;
+      ul.appendChild(li);
+    });
+    contentDiv.appendChild(ul);
+    card.appendChild(contentDiv);
+
+    if (s.voiceover) {
+      const voiceBanner = document.createElement("div");
+      voiceBanner.className = "voice-banner";
+
+      const indicator = document.createElement("div");
+      indicator.className = "voice-indicator";
+      voiceBanner.appendChild(indicator);
+
+      const voiceText = document.createElement("div");
+      voiceText.className = "voice-text";
+      voiceText.textContent = '"' + s.voiceover + '"';
+      voiceBanner.appendChild(voiceText);
+
+      card.appendChild(voiceBanner);
+    }
+
+    document.getElementById("slideCounter").textContent = "Slide " + (cur + 1) + " of " + slides.length;
+    document.getElementById("progressFill").style.width = (((cur + 1) / slides.length) * 100) + "%";
+
     if (document.getElementById("autoVoice").checked) {
       speakCurrent();
     }
@@ -2438,14 +2458,14 @@ function buildHtmlPresentation(topic: string, imageUrl: string, deck: any): stri
   function speakCurrent() {
     if (!window.speechSynthesis) return;
     window.speechSynthesis.cancel();
-    const text = slides[cur].voiceover;
+    const text = slides[cur] && slides[cur].voiceover;
     if (!text) return;
     const u = new SpeechSynthesisUtterance(text);
     u.rate = 1.0;
     u.pitch = 1.0;
-    u.onstart = () => { isSpeaking = true; updateVoiceBtn(); };
-    u.onend = () => { isSpeaking = false; updateVoiceBtn(); };
-    u.onerror = () => { isSpeaking = false; updateVoiceBtn(); };
+    u.onstart = function() { isSpeaking = true; updateVoiceBtn(); };
+    u.onend = function() { isSpeaking = false; updateVoiceBtn(); };
+    u.onerror = function() { isSpeaking = false; updateVoiceBtn(); };
     window.speechSynthesis.speak(u);
   }
 
@@ -2473,7 +2493,7 @@ function buildHtmlPresentation(topic: string, imageUrl: string, deck: any): stri
     if (cur > 0) { cur--; render(); }
   }
 
-  window.addEventListener("keydown", (e) => {
+  window.addEventListener("keydown", function(e) {
     if (e.key === "ArrowRight" || e.key === " " || e.key === "PageDown") nextSlide();
     else if (e.key === "ArrowLeft" || e.key === "PageUp") prevSlide();
   });
