@@ -354,21 +354,11 @@ namespace FlinchApp
         }
 
         // =====================================================================
-        // 5. PROACTIVE NUDGES: ERROR DIALOGS & LONG STRETCH BREAKS
+        // 5. PROACTIVE NUDGES: ERROR DIALOGS
         // =====================================================================
-        private static DateTime _lastNudgeUtc = DateTime.MinValue;
+        private static DateTime _lastNudgeUtc = DateTime.UtcNow;
         private static string _lastNudgedErrorTitle = "";
         private static Timer _nudgeTimer;
-
-        [StructLayout(LayoutKind.Sequential)]
-        private struct LASTINPUTINFO
-        {
-            public uint cbSize;
-            public uint dwTime;
-        }
-
-        [DllImport("user32.dll")]
-        private static extern bool GetLastInputInfo(ref LASTINPUTINFO plii);
 
         [DllImport("user32.dll")]
         private static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
@@ -386,9 +376,9 @@ namespace FlinchApp
             try
             {
                 if (IsFocusModeActive) return; // Muted during Pomodoro focus mode!
-                if ((DateTime.UtcNow - _lastNudgeUtc).TotalSeconds < 180) return; // At most one nudge per 3 minutes
+                if ((DateTime.UtcNow - _lastNudgeUtc).TotalSeconds < 300) return; // At most one nudge per 5 minutes
 
-                // A. Check for error dialogs on screen
+                // Check for error dialogs on screen
                 string errorFound = null;
                 EnumWindows(delegate(IntPtr hWnd, IntPtr lParam)
                 {
@@ -418,23 +408,6 @@ namespace FlinchApp
                         ShowNudgeAlert("Error Dialog Detected", "I noticed: \"" + errorFound + "\". Want me to help analyze it?");
                     }
                     return;
-                }
-
-                // B. Ergonomic check: continuous work stretch for > 50 minutes without a break
-                var lii = new LASTINPUTINFO();
-                lii.cbSize = (uint)Marshal.SizeOf(typeof(LASTINPUTINFO));
-                if (GetLastInputInfo(ref lii))
-                {
-                    uint idleMs = (uint)Environment.TickCount - lii.dwTime;
-                    // If user is actively typing (idle < 15s) and last break was over 50 minutes ago
-                    if (idleMs < 15000 && (DateTime.UtcNow - _lastNudgeUtc).TotalMinutes > 50)
-                    {
-                        _lastNudgeUtc = DateTime.UtcNow;
-                        if (ShowNudgeAlert != null)
-                        {
-                            ShowNudgeAlert("Take a Quick Break", "You've been active for nearly an hour. Remember to stretch and hydrate!");
-                        }
-                    }
                 }
             }
             catch { }
