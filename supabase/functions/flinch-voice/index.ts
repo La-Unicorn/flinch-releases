@@ -671,7 +671,7 @@ If no visual overlay is needed, set "scene": null.`;
                   ],
                   generationConfig: {
                     temperature: 0.1,
-                    maxOutputTokens: 2048,
+                    maxOutputTokens: 4096,
                     responseMimeType: "application/json",
                   },
                 }),
@@ -682,21 +682,13 @@ If no visual overlay is needed, set "scene": null.`;
             if (visionResp.ok) {
               const vJson = await visionResp.json();
               const rawText = vJson.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || "";
-              try {
-                const parsed = JSON.parse(rawText);
-                if (parsed.answer) reply = parsed.answer.trim();
-                if (parsed.scene) sceneObj = sanitizeScene(parsed.scene);
-                if (reply) {
-                  modelUsed = `${vModel}-vision`;
-                  console.log(`Gemini Vision (${vModel}) generated reply and scene.`);
-                  break;
-                }
-              } catch {
-                reply = rawText;
-                if (reply) {
-                  modelUsed = `${vModel}-vision`;
-                  break;
-                }
+              const parsedVision = parseVisionOutput(rawText);
+              if (parsedVision.answer) reply = parsedVision.answer;
+              if (parsedVision.scene) sceneObj = sanitizeScene(parsedVision.scene);
+              if (reply) {
+                modelUsed = `${vModel}-vision`;
+                console.log(`Gemini Vision (${vModel}) generated reply and scene.`);
+                break;
               }
             } else {
               console.warn(`Vision model ${vModel} error:`, visionResp.status, await visionResp.text());
@@ -748,20 +740,12 @@ If no visual overlay is needed, set "scene": null.`;
             if (gvResp.ok) {
               const gvJson = await gvResp.json();
               const rawText = gvJson.choices?.[0]?.message?.content?.trim() || "";
-              try {
-                const parsed = JSON.parse(rawText);
-                if (parsed.answer) reply = parsed.answer.trim();
-                if (parsed.scene) sceneObj = sanitizeScene(parsed.scene);
-                if (reply) {
-                  modelUsed = `${gvModel}-vision`;
-                  break;
-                }
-              } catch {
-                if (rawText) {
-                  reply = rawText;
-                  modelUsed = `${gvModel}-vision`;
-                  break;
-                }
+              const parsedGv = parseVisionOutput(rawText);
+              if (parsedGv.answer) reply = parsedGv.answer;
+              if (parsedGv.scene) sceneObj = sanitizeScene(parsedGv.scene);
+              if (reply) {
+                modelUsed = `${gvModel}-vision`;
+                break;
               }
             }
           } catch (_e) {
@@ -971,6 +955,14 @@ If no visual overlay is needed, set "scene": null.`;
         reply = "First, evaluate parentheses: 1 plus 2 is 3. Next, working left to right, 6 divided by 2 is 3. Finally, 3 times 3 gives 9.";
       }
     }
+
+    // Safety net: never let raw JSON / coordinates / field names reach the voice engine
+    if (looksLikeStructuredOutput(reply)) {
+      const salvaged = parseVisionOutput(reply);
+      if (salvaged.scene && !sceneObj) sceneObj = sanitizeScene(salvaged.scene);
+      reply = salvaged.answer || (sceneObj ? "Here, let me show you right on your screen." : "Sorry, could you ask that again?");
+    }
+    reply = stripSpokenNoise(reply);
 
     // 9. Text-to-Speech (TTS) Synthesis with resilient multi-voice fallback (Cartesia Sonic -> Groq Orpheus)
     const tTtsStart = performance.now();
@@ -1506,6 +1498,89 @@ function isScreenAwarenessQuery(q: string): boolean {
     "math", "pemdas", "bodmas", "cajori", "why do people get", "why do they get", "calculate", "evaluate", "what answer", "order of operations"
   ];
   return triggers.some((t) => low.includes(t));
+}
+
+// Detects replies that are really raw JSON / drawing data (must never be spoken aloud)
+function looksLikeStructuredOutput(t: string): boolean {
+  const s = (t || "").trim();
+  if (!s) return false;
+  if (s.startsWith("{") || s.startsWith("```") || s.startsWith("[")) return true;
+  return /"(answer|scene|objects|rect|altAnswer|delayMs|step)"\s*:/.test(s) ||
+    /\b(x|y|w|h)"?\s*:\s*0?\.\d+/.test(s);
+}
+
+// Removes leftover field names / coordinates / code fences from spoken text
+function stripSpokenNoise(t: string): string {
+  return (t || "")
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/"?(answer|scene|objects|rect|altAnswer|delayMs|strokeWidth)"?\s*:\s*/gi, " ")
+    .replace(/[{}\[\]]/g, " ")
+    .replace(/\b[xywh]\s*[:=]\s*-?\d*\.?\d+/gi, " ")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
+// Robustly extracts { answer, scene } from model output, even if it is wrapped in
+// code fences, has extra prose, or was truncated mid-JSON.
+function parseVisionOutput(raw: string): { answer: string; scene: any } {
+  let txt = (raw || "").trim()
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/```\s*$/, "")
+    .trim();
+
+  const finish = (p: any) => ({
+    answer: typeof p?.answer === "string" ? p.answer.trim() : "",
+    scene: p?.scene && typeof p.scene === "object" ? p.scene : null,
+  });
+
+  try { return finish(JSON.parse(txt)); } catch { /* fall through */ }
+
+  const a = txt.indexOf("{");
+  const b = txt.lastIndexOf("}");
+  if (a >= 0 && b > a) {
+    try { return finish(JSON.parse(txt.slice(a, b + 1))); } catch { /* fall through */ }
+  }
+
+  // Truncated / malformed JSON: salvage the spoken answer via regex
+  let answer = "";
+  const m = txt.match(/"answer"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+  if (m) {
+    try { answer = JSON.parse('"' + m[1] + '"'); } catch { answer = m[1]; }
+  } else if (!/[{}]|"scene"|"objects"/.test(txt)) {
+    answer = txt; // plain prose, safe to speak
+  }
+
+  // Salvage every complete drawing object from a truncated "objects" array
+  let scene: any = null;
+  const oi = txt.indexOf('"objects"');
+  if (oi >= 0) {
+    const arrStart = txt.indexOf("[", oi);
+    if (arrStart >= 0) {
+      const objs: any[] = [];
+      let depth = 0, start = -1, inStr = false, esc = false;
+      for (let i = arrStart + 1; i < txt.length; i++) {
+        const c = txt[i];
+        if (inStr) {
+          if (esc) esc = false;
+          else if (c === "\\") esc = true;
+          else if (c === '"') inStr = false;
+          continue;
+        }
+        if (c === '"') inStr = true;
+        else if (c === "{") { if (depth === 0) start = i; depth++; }
+        else if (c === "}") {
+          depth--;
+          if (depth === 0 && start >= 0) {
+            try { objs.push(JSON.parse(txt.slice(start, i + 1))); } catch { /* skip */ }
+            start = -1;
+          }
+        } else if (c === "]" && depth === 0) break;
+      }
+      if (objs.length > 0) scene = { objects: objs };
+    }
+  }
+
+  return { answer: answer.trim(), scene };
 }
 
 // Validates, bounds-checks, and sanitizes AI-generated overlay scenes
