@@ -263,6 +263,80 @@ RULES: Output ONLY the transformed text. No preamble, no quotes around it, no ma
         );
       }
 
+      if (body.action === "translate_screen") {
+        const base64Image = String(body.screen || "").trim();
+        const targetLanguage = String(body.target_language || "English").trim();
+        if (!base64Image) {
+          return new Response(JSON.stringify({ error: "missing_screen" }), { status: 400, headers: corsHeaders });
+        }
+        let translatedText = "";
+        const promptText = `Read the prominent text or article visible on this screen/page and translate it accurately and naturally into ${targetLanguage}. Keep it conversational and suitable for text-to-speech. Provide 1 to 3 concise, clear sentences capturing the translation. Output ONLY the translation. No preamble, no disclaimers.`;
+
+        // 1. Gemini Flash Vision
+        if (geminiApiKey) {
+          try {
+            const gResp = await fetch(
+              `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(geminiApiKey)}`,
+              {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  contents: [
+                    {
+                      parts: [
+                        { text: promptText },
+                        { inline_data: { mime_type: "image/jpeg", data: base64Image } }
+                      ]
+                    }
+                  ],
+                  generationConfig: { temperature: 0.2, maxOutputTokens: 600 }
+                })
+              }
+            );
+            if (gResp.ok) {
+              const gData = await gResp.json();
+              translatedText = gData.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || "";
+            }
+          } catch (_e) {}
+        }
+
+        // 2. Fallback Groq Llama 3.2 Vision
+        if (!translatedText && groqApiKey) {
+          try {
+            const grResp = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+              method: "POST",
+              headers: { "Authorization": `Bearer ${groqApiKey}`, "Content-Type": "application/json" },
+              body: JSON.stringify({
+                model: "llama-3.2-11b-vision-preview",
+                messages: [
+                  {
+                    role: "user",
+                    content: [
+                      { type: "text", text: promptText },
+                      { type: "image_url", image_url: { url: `data:image/jpeg;base64,${base64Image}` } }
+                    ]
+                  }
+                ],
+                temperature: 0.2,
+                max_tokens: 600
+              })
+            });
+            if (grResp.ok) {
+              const grData = await grResp.json();
+              translatedText = grData.choices?.[0]?.message?.content?.trim() || "";
+            }
+          } catch (_e) {}
+        }
+
+        if (translatedText) {
+          return new Response(JSON.stringify({ result: translatedText, language: targetLanguage }), {
+            status: 200,
+            headers: corsHeaders
+          });
+        }
+        return new Response(JSON.stringify({ error: "translation_failed" }), { status: 502, headers: corsHeaders });
+      }
+
       if (body.action === "tts" || body.text) {
         const textToSpeak = String(body.text || "").trim();
         const voiceName = String(body.voice || "troy").toLowerCase();
@@ -617,6 +691,29 @@ RULES: Output ONLY the transformed text. No preamble, no quotes around it, no ma
             role: m.role === "assistant" ? "assistant" : "user",
             content: String(m.content || "").trim(),
           }));
+      }
+
+      // If user is inquiring about yesterday's chat memory specifically, fetch yesterday's turns
+      if (/\b(yesterday|previous day|last session)\b/i.test(transcript)) {
+        try {
+          const now = new Date();
+          const yesterdayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1, 0, 0, 0).toISOString();
+          const yesterdayEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1, 23, 59, 59).toISOString();
+          const { data: yHistory } = await adminClient
+            .from("chat_messages")
+            .select("role, content, created_at")
+            .eq("user_id", user.id)
+            .gte("created_at", yesterdayStart)
+            .lte("created_at", yesterdayEnd)
+            .order("created_at", { ascending: true })
+            .limit(20);
+          if (yHistory && yHistory.length > 0) {
+            historyMessages = yHistory.map((m: any) => ({
+              role: m.role === "assistant" ? "assistant" : "user",
+              content: String(m.content || "").trim(),
+            }));
+          }
+        } catch (_yErr) {}
       }
     } catch (histErr) {
       console.warn("Failed to read conversation history:", histErr);
@@ -1252,7 +1349,15 @@ async function synthesizeSpeech(
   groqKey: string,
   _geminiKey: string
 ): Promise<{ audio: string; provider: string; voice: string } | null> {
-  const low = (voice || "troy").toLowerCase().trim();
+  let low = (voice || "troy").toLowerCase().trim();
+
+  // Voice and emotion picker per mood:
+  // Orpheus for casual chat, Deepgram for crisp reading, switched automatically!
+  if (low === "auto") {
+    const isTechnicalOrReading = text.length > 150 || /\b(error|code|function|class|file|stack trace|traceback|line \d+|step \d+|calculate|according to|summary|chapter|paragraph)\b/i.test(text);
+    low = isTechnicalOrReading ? "zeus" : "troy";
+  }
+
   const isGroqVoice = low === "troy" || low === "daniel" || low === "autumn" || low === "diana" || low === "austin" || low === "hannah";
 
   // 1. If user selected an expressive Groq Orpheus voice (Troy, Daniel, Autumn), synthesize via CanopyLabs Orpheus on Groq!

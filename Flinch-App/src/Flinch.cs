@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -5559,12 +5559,30 @@ namespace FlinchApp
                 }));
             };
 
-            // Flinch Skills hooks (clipboard / reminders / files)
+            // Flinch Skills hooks (clipboard / reminders / files / pomodoro / nudges / voice)
             FlinchSkills.Speak = (t) => SpeakWhenIdle(t);
             FlinchSkills.StartReminderInSeconds = (secs, text) => Dispatcher.BeginInvoke(new Action(() =>
                 StartTimerOrReminder(secs, "reminder", text, "Reminder: " + text)));
             FlinchSkills.FireContextReminder = (text) => Dispatcher.BeginInvoke(new Action(() =>
                 ShowAlert("reminder", text, "Reminder: " + text)));
+            FlinchSkills.StartFocusTimer = (secs, label) => Dispatcher.BeginInvoke(new Action(() =>
+                StartTimerOrReminder(secs, "pomodoro", "Focus Session: stay in the zone", label)));
+            FlinchSkills.StopFocusTimer = () => Dispatcher.BeginInvoke(new Action(() =>
+            {
+                lock (_timerLock) { _activeTimers.RemoveAll(t => t.Type == "pomodoro"); }
+                UpdateMultitaskDisplay();
+                RefreshTasksExpandedUI();
+            }));
+            FlinchSkills.ShowNudgeAlert = (title, msg) => Dispatcher.BeginInvoke(new Action(() =>
+            {
+                if (FlinchSkills.IsFocusModeActive) return;
+                ShowAlert("alert", msg, title);
+            }));
+            FlinchSkills.SetPreferredVoice = (voice) =>
+            {
+                FlinchEnv.VoiceName = voice;
+                Task.Run(() => SupabaseAuthClient.UpdatePreferredVoiceAsync(voice));
+            };
             FlinchSkills.Start();
 
             BackgroundTaskManager.OnTasksUpdated += () =>
@@ -6204,10 +6222,17 @@ namespace FlinchApp
                                     s.Contains("calculation") || s.Contains("algebra") || s.Contains("fraction") ||
                                     s.Contains("derivative") || s.Contains("integral");
 
-            if (hasSolveOrExplain && hasMathOrProblem)
+            bool hasCodeOrError = s.Contains("code") || s.Contains("stack trace") || s.Contains("stacktrace") ||
+                                  s.Contains("traceback") || s.Contains("failing line") || s.Contains("compiler error") ||
+                                  s.Contains("exception") || s.Contains("syntax error") || s.Contains("bug") ||
+                                  s.Contains("debug") || s.Contains("crash");
+
+            if (hasSolveOrExplain && (hasMathOrProblem || hasCodeOrError))
                 return true;
 
-            if (s.Contains("solve this") || s.Contains("solve it") || s.Contains("explain this") || s.Contains("explain it"))
+            if (s.Contains("solve this") || s.Contains("solve it") || s.Contains("explain this") || s.Contains("explain it") ||
+                s.Contains("debug this") || s.Contains("fix this bug") || s.Contains("highlight the failing line") ||
+                s.Contains("why is this failing") || s.Contains("draw arrows on this error"))
                 return true;
 
             return false;
@@ -6437,13 +6462,26 @@ private void FinishRecordingAndSend()
 
                     if (!ok)
                     {
-                        Dispatcher.BeginInvoke(new Action(() =>
+                        // Offline Fallback: Handles timers, clock, date, pomodoro, system controls offline!
+                        string offTx, offAns;
+                        if (OfflineBrain.TryProcess(wavBytes, out offTx, out offAns))
                         {
-                            if (_playbackSessionId != mySession) return;
-                            _isBusy = false;
-                            SetIslandState(IslandState.Error, "", error);
-                        }));
-                        return;
+                            transcript = offTx;
+                            answer = offAns;
+                            action = null;
+                            scene = null;
+                            ok = true;
+                        }
+                        else
+                        {
+                            Dispatcher.BeginInvoke(new Action(() =>
+                            {
+                                if (_playbackSessionId != mySession) return;
+                                _isBusy = false;
+                                SetIslandState(IslandState.Error, "", error);
+                            }));
+                            return;
+                        }
                     }
 
                     if (string.IsNullOrWhiteSpace(transcript) && string.IsNullOrWhiteSpace(answer))
@@ -6643,6 +6681,7 @@ private void FinishRecordingAndSend()
                         string skillSpeech = FlinchSkills.TryHandle(transcript, lowerTrans);
                         if (skillSpeech != null)
                         {
+                            FlinchSkills.RecordTurn(transcript, skillSpeech);
                             if (skillSpeech.Length > 0) SpeakAnswer(skillSpeech);
                             return;
                         }
@@ -6765,6 +6804,7 @@ private void FinishRecordingAndSend()
                             }
                         }
 
+                        FlinchSkills.RecordTurn(transcript, answer);
                         if (audioWav != null && audioWav.Length > 44)
                         {
                             if (_state != IslandState.Countdown)

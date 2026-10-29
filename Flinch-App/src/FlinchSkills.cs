@@ -5,6 +5,7 @@ using System.IO;
 using System.IO.Compression;
 using System.Linq;
 using System.Net.Http;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
@@ -15,9 +16,14 @@ namespace FlinchApp
 {
     // =========================================================================
     // Flinch Skills: local voice-command skills that run on the desktop.
-    //   1. Clipboard actions   ("summarize what I copied", "translate what I copied to French")
-    //   2. Smart reminders     ("remind me at 5 pm to call mom", "remind me when I open Chrome to ...")
-    //   3. Voice file work     ("find my sri lanka essay", "zip my flinch folder", "rename my latest download to ...")
+    //   1. Clipboard actions         ("summarize what I copied", "reply to this email")
+    //   2. Daily push-to-talk memory ("what did we talk about yesterday?", "what did I ask earlier?")
+    //   3. Smart context reminders   ("remind me when I open Chrome to...", "remind me at 5 to call mom")
+    //   4. Pomodoro and focus mode   ("start pomodoro", "focus for 25 minutes", "stop focus")
+    //   5. Voice-driven file work    ("find my Sri Lanka essay", "zip my Flinch folder", "rename latest download")
+    //   6. Proactive nudges          (error dialog detection, long idle/work stretch breaks)
+    //   7. Quick screen translate    ("translate this page to Sinhala", "translate this screen to French")
+    //   8. Voice & emotion picker    ("switch voice to Autumn", "change voice to Daniel", "set voice to auto")
     // NOTE: compiled with the .NET Framework 4 C# compiler (C# 5): no ?., no $"", no out var.
     // =========================================================================
     internal static class FlinchSkills
@@ -26,6 +32,13 @@ namespace FlinchApp
         public static Action<string> Speak;                         // speak when the pill is idle
         public static Action<int, string> StartReminderInSeconds;   // seconds, reminder text
         public static Action<string> FireContextReminder;           // reminder text -> alert + speech
+        public static Action<int, string> StartFocusTimer;          // seconds, focus label
+        public static Action StopFocusTimer;                        // cancel focus mode
+        public static Action<string, string> ShowNudgeAlert;        // title, message
+        public static Action<string> SetPreferredVoice;             // update voice name
+
+        public static bool IsFocusModeActive { get; set; }
+        public static DateTime FocusModeEndUtc { get; set; }
 
         private static readonly JavaScriptSerializer Json = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
         private static readonly HttpClient Http = new HttpClient { Timeout = TimeSpan.FromSeconds(40) };
@@ -40,9 +53,13 @@ namespace FlinchApp
             low = low.Trim().TrimEnd('.', '!', '?', ' ');
 
             string r;
-            r = TryReminder(transcript, low);       if (r != null) return r;
-            r = TryClipboard(transcript, low);      if (r != null) return r;
-            r = TryFiles(transcript, low);          if (r != null) return r;
+            r = TryPomodoro(transcript, low);        if (r != null) return r;
+            r = TryVoicePicker(transcript, low);     if (r != null) return r;
+            r = TryMemory(transcript, low);          if (r != null) return r;
+            r = TryScreenTranslate(transcript, low); if (r != null) return r;
+            r = TryReminder(transcript, low);        if (r != null) return r;
+            r = TryClipboard(transcript, low);       if (r != null) return r;
+            r = TryFiles(transcript, low);           if (r != null) return r;
             return null;
         }
 
@@ -50,10 +67,381 @@ namespace FlinchApp
         {
             LoadContextReminders();
             _watchTimer = new Timer(delegate { WatchContextReminders(); }, null, 4000, 3000);
+            _nudgeTimer = new Timer(delegate { WatchNudges(); }, null, 15000, 10000);
         }
 
         // =====================================================================
-        // 1. CLIPBOARD ACTIONS
+        // 1. POMODORO AND FOCUS MODE
+        // =====================================================================
+        private static string TryPomodoro(string transcript, string low)
+        {
+            bool isStop = Regex.IsMatch(low, @"\b(stop|cancel|end|quit|turn off)\b.*\b(pomodoro|focus|focus mode)\b");
+            if (isStop)
+            {
+                if (!IsFocusModeActive) return "Focus mode is not currently running.";
+                IsFocusModeActive = false;
+                if (StopFocusTimer != null) StopFocusTimer();
+                return "Focus mode ended. Notifications are unmuted.";
+            }
+
+            bool isStart = Regex.IsMatch(low, @"\b(start|begin|set|put me in|turn on)\b.*\b(pomodoro|focus|focus mode)\b")
+                           || low == "pomodoro" || low == "focus mode" || low.StartsWith("pomodoro ") || low.StartsWith("focus for ");
+            if (!isStart) return null;
+
+            int minutes = 25;
+            Match m = Regex.Match(low, @"(\d+)\s*(minute|min|hr|hour)s?");
+            if (m.Success)
+            {
+                int val;
+                if (int.TryParse(m.Groups[1].Value, out val) && val > 0)
+                {
+                    minutes = m.Groups[2].Value.StartsWith("hr") || m.Groups[2].Value.StartsWith("hour") ? val * 60 : val;
+                }
+            }
+
+            int totalSec = minutes * 60;
+            IsFocusModeActive = true;
+            FocusModeEndUtc = DateTime.UtcNow.AddSeconds(totalSec);
+
+            if (StartFocusTimer != null)
+            {
+                StartFocusTimer(totalSec, "Focus Mode (" + minutes + "m)");
+            }
+
+            return "Focus mode started for " + minutes + " minutes. Distractions and notifications are muted. Let's get to work.";
+        }
+
+        // =====================================================================
+        // 2. DAILY PUSH-TO-TALK MEMORY
+        // =====================================================================
+        private sealed class HistoryTurn
+        {
+            public string t { get; set; } // ISO 8601 timestamp
+            public string u { get; set; } // user transcript
+            public string a { get; set; } // assistant answer
+        }
+
+        private static string HistoryFilePath
+        {
+            get
+            {
+                string dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Flinch");
+                if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
+                return Path.Combine(dir, "history.jsonl");
+            }
+        }
+
+        public static void RecordTurn(string transcript, string reply)
+        {
+            if (string.IsNullOrWhiteSpace(transcript) || string.IsNullOrWhiteSpace(reply)) return;
+            try
+            {
+                var entry = new HistoryTurn
+                {
+                    t = DateTime.UtcNow.ToString("o"),
+                    u = transcript.Trim(),
+                    a = reply.Trim()
+                };
+                string line = Json.Serialize(entry);
+                lock (_ctxLock)
+                {
+                    File.AppendAllText(HistoryFilePath, line + Environment.NewLine, Encoding.UTF8);
+                }
+            }
+            catch { }
+        }
+
+        private static List<HistoryTurn> LoadRecentHistory()
+        {
+            var list = new List<HistoryTurn>();
+            try
+            {
+                string file = HistoryFilePath;
+                if (!File.Exists(file)) return list;
+                string[] lines = File.ReadAllLines(file, Encoding.UTF8);
+                for (int i = Math.Max(0, lines.Length - 100); i < lines.Length; i++)
+                {
+                    string ln = lines[i].Trim();
+                    if (string.IsNullOrEmpty(ln)) continue;
+                    try
+                    {
+                        var t = Json.Deserialize<HistoryTurn>(ln);
+                        if (t != null) list.Add(t);
+                    }
+                    catch { }
+                }
+            }
+            catch { }
+            return list;
+        }
+
+        private static string TryMemory(string transcript, string low)
+        {
+            bool isMemoryQuery = low.Contains("what did we talk about") || low.Contains("what did we discuss")
+                                 || low.Contains("what did i ask") || low.Contains("what was my previous")
+                                 || low.Contains("what was the last thing") || low.Contains("recap our")
+                                 || low.Contains("recap yesterday") || low.Contains("what did i just say");
+            if (!isMemoryQuery) return null;
+
+            var history = LoadRecentHistory();
+            if (history.Count == 0)
+            {
+                return "I don't have any past conversations recorded in your local memory yet.";
+            }
+
+            // A. "What did we talk about yesterday?"
+            if (low.Contains("yesterday"))
+            {
+                DateTime yesterday = DateTime.UtcNow.Date.AddDays(-1);
+                var yesterdayTurns = new List<HistoryTurn>();
+                foreach (var turn in history)
+                {
+                    DateTime parsed;
+                    if (DateTime.TryParse(turn.t, out parsed))
+                    {
+                        if (parsed.ToUniversalTime().Date == yesterday) yesterdayTurns.Add(turn);
+                    }
+                }
+
+                if (yesterdayTurns.Count == 0)
+                {
+                    return "We didn't have any recorded conversations yesterday. But I'm ready to help you today.";
+                }
+
+                var topics = new List<string>();
+                foreach (var y in yesterdayTurns)
+                {
+                    string q = y.u.TrimEnd('.', '?', '!');
+                    if (q.Length > 40) q = q.Substring(0, 40) + "...";
+                    if (!topics.Contains(q)) topics.Add(q);
+                    if (topics.Count >= 3) break;
+                }
+
+                if (topics.Count == 1)
+                {
+                    return "Yesterday, we talked about " + topics[0] + ".";
+                }
+                return "Yesterday, we discussed " + string.Join(", ", topics.Take(topics.Count - 1).ToArray()) + ", and " + topics.Last() + ".";
+            }
+
+            // B. "What did I just say?" / "What was my previous question?"
+            if (low.Contains("just say") || low.Contains("previous question") || low.Contains("last thing") || low.Contains("earlier"))
+            {
+                // Grab the second to last or last entry
+                HistoryTurn prev = history.Count > 1 ? history[history.Count - 2] : history[history.Count - 1];
+                return "Earlier, you asked: \"" + prev.u + "\", and I answered: \"" + prev.a + "\".";
+            }
+
+            // C. General recap
+            int count = Math.Min(3, history.Count);
+            var recents = history.Skip(history.Count - count).Select(h => h.u).ToArray();
+            return "Recently, we talked about: " + string.Join(", and ", recents) + ".";
+        }
+
+        // =====================================================================
+        // 3. VOICE AND EMOTION PICKER PER MOOD
+        // =====================================================================
+        private static string TryVoicePicker(string transcript, string low)
+        {
+            Match vMatch = Regex.Match(low, @"\b(?:switch|change|set|use)\s+(?:the\s+)?voice\s+(?:to|as)\s+([a-z]+)");
+            if (!vMatch.Success)
+            {
+                if (low == "auto voice" || low == "use auto voice" || low == "enable auto voice")
+                {
+                    vMatch = Regex.Match("switch voice to auto", @"switch voice to ([a-z]+)");
+                }
+            }
+
+            if (!vMatch.Success) return null;
+
+            string target = vMatch.Groups[1].Value.ToLowerInvariant().Trim();
+            string[] validVoices = new[] { "troy", "daniel", "autumn", "zeus", "orion", "arcas", "asteria", "luna", "athena", "hera", "auto" };
+
+            if (!validVoices.Contains(target))
+            {
+                return "I support Troy, Daniel, Autumn, Zeus, Orion, Asteria, Luna, and Auto mood switching. Which one would you prefer?";
+            }
+
+            if (SetPreferredVoice != null) SetPreferredVoice(target);
+
+            if (target == "auto")
+            {
+                return "Automatic voice mode enabled. I'll switch between expressive Orpheus for casual chat and crisp Deepgram for technical reading.";
+            }
+
+            return "Voice switched to " + Capitalize(target) + ". How does this sound?";
+        }
+
+        // =====================================================================
+        // 4. QUICK TRANSLATE AND READ-ALOUD OF SCREEN
+        // =====================================================================
+        private static string TryScreenTranslate(string transcript, string low)
+        {
+            Match m = Regex.Match(low, @"translate\s+(?:this\s+)?(?:page|screen|window|document|article|text\s+on\s+screen)\s+(?:in)?to\s+([a-z]+)");
+            if (!m.Success)
+            {
+                m = Regex.Match(low, @"read\s+(?:this\s+)?(?:page|screen)\s+in\s+([a-z]+)");
+            }
+            if (!m.Success) return null;
+
+            string targetLang = Capitalize(m.Groups[1].Value.Trim());
+            Task.Run(delegate
+            {
+                try
+                {
+                    var cap = new WindowsScreenCaptureService();
+                    var primary = System.Windows.Forms.Screen.PrimaryScreen;
+                    var pBounds = new NativeMethods.RECT
+                    {
+                        Left = primary.Bounds.Left,
+                        Top = primary.Bounds.Top,
+                        Right = primary.Bounds.Right,
+                        Bottom = primary.Bounds.Bottom
+                    };
+                    CapturedFrame frame = cap.CaptureBounds(pBounds, "Display");
+                    if (frame == null || frame.JpegBytes == null || frame.JpegBytes.Length == 0)
+                    {
+                        SpeakSafe("I could not capture your screen to translate.");
+                        return;
+                    }
+
+                    string base64 = Convert.ToBase64String(frame.JpegBytes);
+                    frame.Dispose();
+
+                    string endpoint = FlinchEnv.SupabaseUrl.TrimEnd('/') + "/functions/v1/flinch-voice";
+                    var payload = new Dictionary<string, object>
+                    {
+                        { "action", "translate_screen" },
+                        { "screen", base64 },
+                        { "target_language", targetLang }
+                    };
+
+                    using (var req = new HttpRequestMessage(HttpMethod.Post, endpoint))
+                    {
+                        if (SupabaseAuthClient.CurrentSession != null)
+                        {
+                            req.Headers.TryAddWithoutValidation("Authorization", "Bearer " + SupabaseAuthClient.CurrentSession.AccessToken);
+                        }
+                        req.Headers.TryAddWithoutValidation("apikey", FlinchEnv.SupabaseAnonKey);
+                        req.Content = new StringContent(Json.Serialize(payload), Encoding.UTF8, "application/json");
+
+                        using (var resp = Http.SendAsync(req).GetAwaiter().GetResult())
+                        {
+                            if (!resp.IsSuccessStatusCode)
+                            {
+                                SpeakSafe("Sorry, I could not complete the translation right now.");
+                                return;
+                            }
+                            string respBody = resp.Content.ReadAsStringAsync().GetAwaiter().GetResult();
+                            var dict = Json.Deserialize<Dictionary<string, object>>(respBody);
+                            object resObj;
+                            if (dict != null && dict.TryGetValue("result", out resObj) && resObj != null)
+                            {
+                                string translated = resObj.ToString();
+                                SpeakSafe(translated);
+                            }
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    FlinchEnv.Log("Screen translate error: " + ex.Message);
+                    SpeakSafe("Sorry, screen translation encountered an error.");
+                }
+            });
+
+            return "Translating your screen into " + targetLang + " right now.";
+        }
+
+        // =====================================================================
+        // 5. PROACTIVE NUDGES: ERROR DIALOGS & LONG STRETCH BREAKS
+        // =====================================================================
+        private static DateTime _lastNudgeUtc = DateTime.MinValue;
+        private static string _lastNudgedErrorTitle = "";
+        private static Timer _nudgeTimer;
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct LASTINPUTINFO
+        {
+            public uint cbSize;
+            public uint dwTime;
+        }
+
+        [DllImport("user32.dll")]
+        private static extern bool GetLastInputInfo(ref LASTINPUTINFO plii);
+
+        [DllImport("user32.dll")]
+        private static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
+        private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+
+        [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+        private static extern int GetWindowText(IntPtr hWnd, StringBuilder lpString, int nMaxCount);
+
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool IsWindowVisible(IntPtr hWnd);
+
+        private static void WatchNudges()
+        {
+            try
+            {
+                if (IsFocusModeActive) return; // Muted during Pomodoro focus mode!
+                if ((DateTime.UtcNow - _lastNudgeUtc).TotalSeconds < 180) return; // At most one nudge per 3 minutes
+
+                // A. Check for error dialogs on screen
+                string errorFound = null;
+                EnumWindows(delegate(IntPtr hWnd, IntPtr lParam)
+                {
+                    if (!IsWindowVisible(hWnd)) return true;
+                    var sb = new StringBuilder(256);
+                    GetWindowText(hWnd, sb, 256);
+                    string title = sb.ToString().Trim();
+                    if (title.Length > 2)
+                    {
+                        string lowT = title.ToLowerInvariant();
+                        if (lowT.Contains("error") || lowT.Contains("exception") || lowT.Contains("crash")
+                            || lowT.Contains("failed to") || lowT.Contains("fatal error") || lowT.Contains("unhandled exception"))
+                        {
+                            errorFound = title;
+                            return false; // Stop enumeration
+                        }
+                    }
+                    return true;
+                }, IntPtr.Zero);
+
+                if (!string.IsNullOrEmpty(errorFound) && errorFound != _lastNudgedErrorTitle)
+                {
+                    _lastNudgeUtc = DateTime.UtcNow;
+                    _lastNudgedErrorTitle = errorFound;
+                    if (ShowNudgeAlert != null)
+                    {
+                        ShowNudgeAlert("Error Dialog Detected", "I noticed: \"" + errorFound + "\". Want me to help analyze it?");
+                    }
+                    return;
+                }
+
+                // B. Ergonomic check: continuous work stretch for > 50 minutes without a break
+                var lii = new LASTINPUTINFO();
+                lii.cbSize = (uint)Marshal.SizeOf(typeof(LASTINPUTINFO));
+                if (GetLastInputInfo(ref lii))
+                {
+                    uint idleMs = (uint)Environment.TickCount - lii.dwTime;
+                    // If user is actively typing (idle < 15s) and last break was over 50 minutes ago
+                    if (idleMs < 15000 && (DateTime.UtcNow - _lastNudgeUtc).TotalMinutes > 50)
+                    {
+                        _lastNudgeUtc = DateTime.UtcNow;
+                        if (ShowNudgeAlert != null)
+                        {
+                            ShowNudgeAlert("Take a Quick Break", "You've been active for nearly an hour. Remember to stretch and hydrate!");
+                        }
+                    }
+                }
+            }
+            catch { }
+        }
+
+        // =====================================================================
+        // 6. CLIPBOARD ACTIONS
         // =====================================================================
         private static string TryClipboard(string transcript, string low)
         {
@@ -201,7 +589,7 @@ namespace FlinchApp
         }
 
         // =====================================================================
-        // 2. SMART REMINDERS
+        // 7. SMART REMINDERS
         // =====================================================================
         private sealed class ContextReminder
         {
@@ -248,87 +636,61 @@ namespace FlinchApp
             }
 
             // c) "remind me at 5:30 pm to <text>"
-            Match at = Regex.Match(low, @"remind me\s+(?:at|by)\s+(\d{1,2})(?::(\d{2}))?\s*(a\.?m\.?|p\.?m\.?)?\s*(?:to|that|about)\s+(.+)$");
-            if (at.Success)
+            Match abs = Regex.Match(low, @"remind me\s+at\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s+(?:to|that|about)\s+(.+)$");
+            if (abs.Success)
             {
-                int hour = int.Parse(at.Groups[1].Value);
-                int min = at.Groups[2].Success ? int.Parse(at.Groups[2].Value) : 0;
-                string mer = at.Groups[3].Success ? at.Groups[3].Value.Replace(".", "") : "";
-                string what = ToSecondPerson(at.Groups[4].Value.Trim());
-                if (hour > 23 || min > 59) return null;
+                int hr = int.Parse(abs.Groups[1].Value);
+                int min = abs.Groups[2].Success ? int.Parse(abs.Groups[2].Value) : 0;
+                string ampm = abs.Groups[3].Success ? abs.Groups[3].Value.ToLowerInvariant() : "";
+
+                if (ampm == "pm" && hr < 12) hr += 12;
+                if (ampm == "am" && hr == 12) hr = 0;
+                if (ampm == "" && hr < 8) hr += 12; // "at 5" -> 5 pm
 
                 DateTime now = DateTime.Now;
-                DateTime target = DateTime.MinValue;
-                if (mer == "pm" && hour < 12) hour += 12;
-                else if (mer == "am" && hour == 12) hour = 0;
-
-                if (mer.Length > 0 || hour > 12)
-                {
-                    target = new DateTime(now.Year, now.Month, now.Day, hour, min, 0);
-                    if (target <= now) target = target.AddDays(1);
-                }
-                else
-                {
-                    // No am/pm: pick the soonest upcoming of the two readings
-                    int h12 = hour % 12;
-                    DateTime amT = new DateTime(now.Year, now.Month, now.Day, h12, min, 0);
-                    DateTime pmT = new DateTime(now.Year, now.Month, now.Day, h12 + 12, min, 0);
-                    if (amT <= now) amT = amT.AddDays(1);
-                    if (pmT <= now) pmT = pmT.AddDays(1);
-                    target = amT < pmT ? amT : pmT;
-                }
+                DateTime target = new DateTime(now.Year, now.Month, now.Day, hr, min, 0);
+                if (target <= now) target = target.AddDays(1);
 
                 int secs = (int)Math.Max(5, (target - now).TotalSeconds);
+                string what = ToSecondPerson(abs.Groups[4].Value.Trim());
                 if (StartReminderInSeconds != null) StartReminderInSeconds(secs, what);
-                string when = target.ToString("h:mm tt").Replace(":00 ", " ");
-                string day = target.Date == now.Date ? "" : " tomorrow";
-                return "Okay, I'll remind you at " + when + day + " to " + what + ".";
+                return "Scheduled. I'll remind you at " + target.ToString("h:mm tt") + " to " + what + ".";
             }
 
             return null;
         }
 
-        // "save my work" -> "save your work" so reminders read naturally when spoken back
         private static string ToSecondPerson(string s)
         {
             if (string.IsNullOrEmpty(s)) return s;
-            s = Regex.Replace(s, @"\bmyself\b", "yourself", RegexOptions.IgnoreCase);
             s = Regex.Replace(s, @"\bmy\b", "your", RegexOptions.IgnoreCase);
-            s = Regex.Replace(s, @"\bi'm\b", "you're", RegexOptions.IgnoreCase);
-            s = Regex.Replace(s, @"\bi am\b", "you are", RegexOptions.IgnoreCase);
             s = Regex.Replace(s, @"\bme\b", "you", RegexOptions.IgnoreCase);
+            s = Regex.Replace(s, @"\bmyself\b", "yourself", RegexOptions.IgnoreCase);
             s = Regex.Replace(s, @"\bi\b", "you", RegexOptions.IgnoreCase);
-            return s;
+            return s.Trim();
         }
 
         private static string MapAppToProcess(string app)
         {
-            string a = (app ?? "").ToLowerInvariant().Trim();
-            switch (a)
-            {
-                case "chrome": case "google chrome": return "chrome";
-                case "edge": case "microsoft edge": return "msedge";
-                case "brave": case "brave browser": return "brave";
-                case "firefox": return "firefox";
-                case "spotify": return "Spotify";
-                case "discord": return "Discord";
-                case "code": case "vs code": case "vscode": case "visual studio code": return "Code";
-                case "notepad": return "notepad";
-                case "word": case "microsoft word": return "WINWORD";
-                case "excel": case "microsoft excel": return "EXCEL";
-                case "powerpoint": return "POWERPNT";
-                case "whatsapp": return "WhatsApp";
-                case "telegram": return "Telegram";
-                case "steam": return "steam";
-                case "terminal": case "windows terminal": return "WindowsTerminal";
-                case "calculator": return "CalculatorApp";
-                case "explorer": case "file explorer": return "explorer";
-                case "teams": case "microsoft teams": return "ms-teams";
-                case "slack": return "slack";
-                case "zoom": return "Zoom";
-                case "obs": case "obs studio": return "obs64";
-            }
-            return Regex.Replace(a, @"[^a-z0-9]", "");
+            string low = (app ?? "").ToLowerInvariant().Trim();
+            if (low.Contains("chrome")) return "chrome";
+            if (low.Contains("edge")) return "msedge";
+            if (low.Contains("firefox")) return "firefox";
+            if (low.Contains("code") || low.Contains("vs code") || low.Contains("vscode")) return "Code";
+            if (low.Contains("visual studio")) return "devenv";
+            if (low.Contains("notepad")) return "notepad";
+            if (low.Contains("spotify")) return "Spotify";
+            if (low.Contains("discord")) return "Discord";
+            if (low.Contains("slack")) return "slack";
+            if (low.Contains("terminal") || low.Contains("powershell")) return "powershell";
+            if (low.Contains("cmd") || low.Contains("command prompt")) return "cmd";
+            if (low.Contains("word")) return "WINWORD";
+            if (low.Contains("excel")) return "EXCEL";
+            if (low.Contains("powerpoint")) return "POWERPNT";
+            if (low.Contains("steam")) return "steam";
+            if (low.Contains("outlook")) return "OUTLOOK";
+            if (low.Contains("explorer") || low.Contains("files") || low.Contains("file manager")) return "explorer";
+            return low.Replace(" ", "");
         }
 
         private static bool IsProcessRunning(string proc)
@@ -339,35 +701,32 @@ namespace FlinchApp
 
         private static void WatchContextReminders()
         {
-            List<ContextReminder> fire = new List<ContextReminder>();
-            try
+            List<ContextReminder> toFire = new List<ContextReminder>();
+            lock (_ctxLock)
             {
-                lock (_ctxLock)
+                for (int i = _contextReminders.Count - 1; i >= 0; i--)
                 {
-                    for (int i = _contextReminders.Count - 1; i >= 0; i--)
+                    var r = _contextReminders[i];
+                    bool running = IsProcessRunning(r.Process);
+                    if (running && !r.WasRunning)
                     {
-                        var cr = _contextReminders[i];
-                        bool running = IsProcessRunning(cr.Process);
-                        if (running && !cr.WasRunning)
-                        {
-                            fire.Add(cr);
-                            _contextReminders.RemoveAt(i);
-                        }
-                        else
-                        {
-                            cr.WasRunning = running;
-                        }
+                        toFire.Add(r);
+                        _contextReminders.RemoveAt(i);
+                    }
+                    else
+                    {
+                        r.WasRunning = running;
                     }
                 }
             }
-            catch { }
 
-            if (fire.Count > 0)
+            if (toFire.Count > 0)
             {
                 SaveContextReminders();
-                foreach (var cr in fire)
+                foreach (var item in toFire)
                 {
-                    if (FireContextReminder != null) FireContextReminder(cr.Text);
+                    string msg = "You just opened " + Capitalize(item.App) + ". Don't forget to " + item.Text + ".";
+                    if (FireContextReminder != null) FireContextReminder(msg);
                 }
             }
         }
@@ -376,8 +735,8 @@ namespace FlinchApp
         {
             get
             {
-                string dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Flinch");
-                try { Directory.CreateDirectory(dir); } catch { }
+                string dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Flinch");
+                if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
                 return Path.Combine(dir, "context_reminders.json");
             }
         }
@@ -386,105 +745,106 @@ namespace FlinchApp
         {
             try
             {
-                List<Dictionary<string, string>> rows = new List<Dictionary<string, string>>();
                 lock (_ctxLock)
                 {
-                    foreach (var cr in _contextReminders)
-                    {
-                        rows.Add(new Dictionary<string, string> { { "app", cr.App }, { "process", cr.Process }, { "text", cr.Text } });
-                    }
+                    string json = Json.Serialize(_contextReminders);
+                    File.WriteAllText(ReminderFile, json, Encoding.UTF8);
                 }
-                File.WriteAllText(ReminderFile, Json.Serialize(rows), Encoding.UTF8);
             }
-            catch { }
+            catch (Exception ex) { FlinchEnv.Log("SaveContextReminders error: " + ex.Message); }
         }
 
         private static void LoadContextReminders()
         {
             try
             {
-                if (!File.Exists(ReminderFile)) return;
-                var rows = Json.Deserialize<List<Dictionary<string, string>>>(File.ReadAllText(ReminderFile, Encoding.UTF8));
-                if (rows == null) return;
-                lock (_ctxLock)
+                string f = ReminderFile;
+                if (!File.Exists(f)) return;
+                string json = File.ReadAllText(f, Encoding.UTF8);
+                if (string.IsNullOrWhiteSpace(json)) return;
+                var list = Json.Deserialize<List<ContextReminder>>(json);
+                if (list != null)
                 {
-                    foreach (var row in rows)
+                    lock (_ctxLock)
                     {
-                        string proc;
-                        if (!row.TryGetValue("process", out proc) || string.IsNullOrWhiteSpace(proc)) continue;
-                        string app; row.TryGetValue("app", out app);
-                        string text; row.TryGetValue("text", out text);
-                        _contextReminders.Add(new ContextReminder { App = app, Process = proc, Text = text, WasRunning = IsProcessRunning(proc) });
+                        _contextReminders.Clear();
+                        foreach (var it in list)
+                        {
+                            it.WasRunning = IsProcessRunning(it.Process);
+                            _contextReminders.Add(it);
+                        }
                     }
                 }
             }
-            catch { }
+            catch (Exception ex) { FlinchEnv.Log("LoadContextReminders error: " + ex.Message); }
         }
 
         // =====================================================================
-        // 3. VOICE FILE WORK
+        // 8. VOICE FILE MANAGEMENT
         // =====================================================================
         private static string TryFiles(string transcript, string low)
         {
-            // --- open / show latest download or screenshot ---
-            Match latest = Regex.Match(low, @"\b(?:open|show|reveal)\s+(?:me\s+)?(?:my\s+|the\s+)?(?:latest|last|most recent|newest)\s+(download|downloaded file|screenshot)");
-            if (latest.Success)
+            // a) "zip my <folder>"
+            Match zip = Regex.Match(low, @"\b(zip|compress|archive)\b\s+(?:my\s+)?(.+?)(?:\s+folder|\s+directory)?$");
+            if (zip.Success)
             {
-                bool shot = latest.Groups[1].Value.StartsWith("screen");
-                string path = NewestFile(shot);
-                if (path == null) return shot ? "I couldn't find any screenshots." : "Your Downloads folder is empty.";
-                RevealInExplorer(path);
-                return "Here's your latest " + (shot ? "screenshot" : "download") + ": " + Path.GetFileName(path) + ".";
+                string target = zip.Groups[2].Value.Trim();
+                string resolvedFolder;
+                string folderLabel;
+                if (ResolveKnownFolder(target, out resolvedFolder, out folderLabel))
+                {
+                    Task.Run(delegate { ZipFolder(resolvedFolder, folderLabel); });
+                    return "Zipping your " + folderLabel + " folder now. I'll save it to your Desktop.";
+                }
             }
 
-            // --- rename latest download ---
-            Match ren = Regex.Match(low, @"\brename\s+(?:my\s+|the\s+)?(?:latest|last|most recent|newest)\s+(download|downloaded file|file|screenshot)\s+(?:in\s+(?:my\s+)?downloads\s+)?to\s+(.+)$");
+            // b) "open latest download" / "open my last screenshot"
+            if (low.Contains("open") && (low.Contains("latest download") || low.Contains("last download") || low.Contains("recent download")))
+            {
+                string newest = NewestFile(false);
+                if (newest == null) return "You don't have any recent downloads.";
+                RevealInExplorer(newest);
+                return "Here is your latest download: " + Path.GetFileName(newest) + ".";
+            }
+            if (low.Contains("open") && (low.Contains("latest screenshot") || low.Contains("last screenshot") || low.Contains("recent screenshot")))
+            {
+                string newest = NewestFile(true);
+                if (newest == null) return "No recent screenshots found.";
+                RevealInExplorer(newest);
+                return "Here is your latest screenshot: " + Path.GetFileName(newest) + ".";
+            }
+
+            // c) "rename latest download to <new name>"
+            Match ren = Regex.Match(low, @"rename\s+(?:my\s+)?(?:latest|last|recent)?\s*(?:download|file)\s+(?:in)?to\s+(.+)$");
             if (ren.Success)
             {
-                bool shot = ren.Groups[1].Value.StartsWith("screen");
-                string path = NewestFile(shot);
-                if (path == null) return "I couldn't find a file to rename.";
-                string newBase = Regex.Replace(ren.Groups[2].Value.Trim(), @"[\\/:*?""<>|]", "").Trim();
-                if (newBase.Length == 0) return "What should I rename it to?";
-                string ext = Path.GetExtension(path);
-                string dest = Path.Combine(Path.GetDirectoryName(path), newBase + ext);
-                if (File.Exists(dest)) return "A file called " + newBase + " already exists there, so I didn't rename anything.";
-                try { File.Move(path, dest); }
-                catch (Exception ex) { return "I couldn't rename it: " + ex.Message; }
-                RevealInExplorer(dest);
-                return "Renamed it to " + newBase + ext + ".";
-            }
-
-            // --- zip a known folder ---
-            if (Regex.IsMatch(low, @"\b(zip|compress|archive)\b"))
-            {
-                string folder, label;
-                if (ResolveKnownFolder(low, out folder, out label))
+                string newName = ren.Groups[1].Value.Trim().Trim('"', '\'', '.');
+                string target = NewestFile(false);
+                if (target == null) return "No recent download found to rename.";
+                try
                 {
-                    Task.Run(delegate { ZipFolder(folder, label); });
-                    return "Zipping your " + label + " folder now. I'll tell you when it's done.";
+                    string ext = Path.GetExtension(target);
+                    if (!newName.EndsWith(ext, StringComparison.OrdinalIgnoreCase)) newName += ext;
+                    string dest = Path.Combine(Path.GetDirectoryName(target), newName);
+                    if (File.Exists(dest)) return "A file with that name already exists in your Downloads.";
+                    File.Move(target, dest);
+                    RevealInExplorer(dest);
+                    return "Renamed your latest download to " + newName + ".";
                 }
-                if (low.Contains("folder")) return "I can zip your Flinch, Desktop, Documents, or Downloads folder. Which one?";
-                return null;
+                catch (Exception ex)
+                {
+                    return "Sorry, I couldn't rename the file. " + ex.Message;
+                }
             }
 
-            // --- find a file ---
-            Match find = Regex.Match(low, @"^(?:please\s+)?(?:can you\s+)?(?:find|locate|search for|look for|where(?:'s| is))\s+(?:me\s+)?(?:my\s+|the\s+)?(.+)$");
+            // d) "find my <name> essay / file / document"
+            Match find = Regex.Match(low, @"\b(find|locate|search for|where is|where's)\b\s+(?:my\s+)?(.+?)(?:\s+file|\s+document|\s+essay|\s+notes)?$");
             if (find.Success)
             {
-                string q = find.Groups[1].Value.Trim();
-                bool fileish = Regex.IsMatch(low, @"\b(file|essay|document|report|pdf|folder|download|screenshot|photo|image|picture|spreadsheet|presentation|doc|docx|txt|story|paper)\b")
-                               || Regex.IsMatch(low, @"\bon my (pc|computer|laptop|desktop)\b");
-                if (!fileish) return null;
-
-                q = Regex.Replace(q, @"\b(on|in|from)\s+my\s+(pc|computer|laptop|desktop|documents|downloads)\b", "").Trim();
-                q = Regex.Replace(q, @"\b(file|files|document|folder|please)\b", "").Trim();
-                q = Regex.Replace(q, @"\s{2,}", " ");
-                if (q.Length < 2) return "What file should I look for?";
-
-                string query = q;
+                string query = find.Groups[2].Value.Trim();
+                if (query.Length < 3 || query == "file" || query == "document" || query == "it" || query == "folder") return null;
                 Task.Run(delegate { FindAndReveal(query); });
-                return "Searching for " + query + ".";
+                return "Searching for your " + query + " file now.";
             }
 
             return null;
@@ -492,101 +852,104 @@ namespace FlinchApp
 
         private static IEnumerable<string> SearchRoots()
         {
+            var roots = new List<string>();
             string profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-            yield return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "Flinch");
-            yield return Environment.GetFolderPath(Environment.SpecialFolder.Desktop);
-            yield return Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
-            yield return Path.Combine(profile, "Downloads");
-            yield return Environment.GetFolderPath(Environment.SpecialFolder.MyPictures);
+            roots.Add(Path.Combine(profile, "Downloads"));
+            roots.Add(Environment.GetFolderPath(Environment.SpecialFolder.Desktop));
+            roots.Add(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments));
+            roots.Add(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "Flinch"));
+            return roots.Where(Directory.Exists);
         }
 
         private static void FindAndReveal(string query)
         {
             try
             {
-                string[] words = query.ToLowerInvariant().Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
-                List<FileInfo> hits = new List<FileInfo>();
-                int scanned = 0;
-                HashSet<string> seenRoots = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                string bestMatch = null;
+                DateTime bestDate = DateTime.MinValue;
+                string qClean = query.ToLowerInvariant().Replace(" ", "").Replace("_", "").Replace("-", "");
 
                 foreach (string root in SearchRoots())
                 {
-                    if (!Directory.Exists(root) || !seenRoots.Add(root)) continue;
-                    Stack<KeyValuePair<string, int>> stack = new Stack<KeyValuePair<string, int>>();
-                    stack.Push(new KeyValuePair<string, int>(root, 0));
-                    while (stack.Count > 0 && scanned < 30000)
+                    try
                     {
-                        var cur = stack.Pop();
-                        try
+                        foreach (string file in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories))
                         {
-                            foreach (string f in Directory.GetFiles(cur.Key))
+                            try
                             {
-                                scanned++;
-                                string n = Path.GetFileName(f).ToLowerInvariant();
-                                bool all = true;
-                                foreach (string w in words) { if (!n.Contains(w)) { all = false; break; } }
-                                if (all) hits.Add(new FileInfo(f));
-                            }
-                            if (cur.Value < 3)
-                            {
-                                foreach (string d in Directory.GetDirectories(cur.Key))
+                                string name = Path.GetFileName(file);
+                                if (name.StartsWith(".") || name.EndsWith(".tmp", StringComparison.OrdinalIgnoreCase)) continue;
+                                string nClean = Path.GetFileNameWithoutExtension(file).ToLowerInvariant().Replace(" ", "").Replace("_", "").Replace("-", "");
+                                if (nClean.Contains(qClean))
                                 {
-                                    string dn = Path.GetFileName(d);
-                                    if (dn.StartsWith(".") || dn.Equals("node_modules", StringComparison.OrdinalIgnoreCase)) continue;
-                                    stack.Push(new KeyValuePair<string, int>(d, cur.Value + 1));
+                                    DateTime dt = File.GetLastWriteTime(file);
+                                    if (dt > bestDate)
+                                    {
+                                        bestDate = dt;
+                                        bestMatch = file;
+                                    }
                                 }
                             }
+                            catch { }
                         }
-                        catch { }
                     }
+                    catch { }
                 }
 
-                if (hits.Count == 0)
+                if (bestMatch != null)
                 {
-                    SpeakSafe("I couldn't find anything matching " + query + ".");
-                    return;
+                    RevealInExplorer(bestMatch);
+                    SpeakSafe("Found it. Here is " + Path.GetFileName(bestMatch) + ".");
                 }
-
-                hits = hits.OrderByDescending(h => h.LastWriteTime).ToList();
-                FileInfo best = hits[0];
-                RevealInExplorer(best.FullName);
-                string where = Path.GetFileName(best.DirectoryName);
-                if (hits.Count == 1)
-                    SpeakSafe("Found it: " + best.Name + ", in your " + where + " folder. I've opened it in File Explorer.");
                 else
-                    SpeakSafe("I found " + hits.Count + " matches. Showing the newest one, " + best.Name + ", in your " + where + " folder.");
+                {
+                    SpeakSafe("I couldn't find any file matching " + query + " in your Documents, Desktop, or Downloads.");
+                }
             }
             catch (Exception ex)
             {
                 FlinchEnv.Log("FindAndReveal error: " + ex.Message);
-                SpeakSafe("Sorry, the file search failed.");
+                SpeakSafe("Sorry, I ran into an error while searching for your file.");
             }
         }
 
         private static bool ResolveKnownFolder(string low, out string folder, out string label)
         {
-            folder = null; label = null;
+            folder = null;
+            label = null;
+            low = (low ?? "").ToLowerInvariant().Trim();
+
+            string profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
             if (low.Contains("flinch"))
             {
-                folder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "Flinch");
-                label = "Flinch";
+                string candidate = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "Flinch");
+                if (Directory.Exists(candidate)) { folder = candidate; label = "Flinch"; return true; }
             }
-            else if (low.Contains("desktop"))
+            if (low.Contains("desktop"))
             {
                 folder = Environment.GetFolderPath(Environment.SpecialFolder.Desktop);
                 label = "Desktop";
+                return true;
             }
-            else if (low.Contains("document"))
+            if (low.Contains("download"))
+            {
+                folder = Path.Combine(profile, "Downloads");
+                label = "Downloads";
+                return true;
+            }
+            if (low.Contains("document"))
             {
                 folder = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
                 label = "Documents";
+                return true;
             }
-            else if (low.Contains("download"))
+            if (low.Contains("picture") || low.Contains("screenshot"))
             {
-                folder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads");
-                label = "Downloads";
+                folder = Environment.GetFolderPath(Environment.SpecialFolder.MyPictures);
+                label = "Pictures";
+                return true;
             }
-            return folder != null;
+            return false;
         }
 
         private static void ZipFolder(string folder, string label)
@@ -595,7 +958,7 @@ namespace FlinchApp
             {
                 if (!Directory.Exists(folder))
                 {
-                    SpeakSafe("Your " + label + " folder doesn't exist yet.");
+                    SpeakSafe("I couldn't find the " + label + " folder.");
                     return;
                 }
 
@@ -667,6 +1030,95 @@ namespace FlinchApp
         {
             if (string.IsNullOrEmpty(s)) return s;
             return char.ToUpper(s[0]) + s.Substring(1);
+        }
+    }
+
+    // =========================================================================
+    // Offline Fallback Brain: Handles local timers, clock, date, pomodoro,
+    // and offline system tasks via System.Speech.Recognition & SpeechSynthesizer
+    // when network is down or cloud brain is unreachable.
+    // =========================================================================
+    internal static class OfflineBrain
+    {
+        public static bool TryProcess(byte[] wavBytes, out string transcript, out string answer)
+        {
+            transcript = "";
+            answer = "";
+            if (wavBytes == null || wavBytes.Length <= 44) return false;
+
+            try
+            {
+                using (var sre = new System.Speech.Recognition.SpeechRecognitionEngine())
+                using (var ms = new MemoryStream(wavBytes))
+                {
+                    var choices = new System.Speech.Recognition.Choices();
+                    choices.Add(new string[] {
+                        "what time is it", "tell me the time", "what is the time", "time",
+                        "what is today's date", "what is the date", "what day is it", "today's date",
+                        "start pomodoro", "start focus mode", "focus for 25 minutes", "stop focus", "stop pomodoro",
+                        "battery", "battery status", "system status",
+                        "lock my pc", "lock the computer", "lock pc",
+                        "set a timer for 1 minute", "set a timer for 5 minutes", "set a timer for 10 minutes",
+                        "set a timer for 15 minutes", "set a timer for 25 minutes", "set a timer for 30 minutes"
+                    });
+                    var gb = new System.Speech.Recognition.GrammarBuilder(choices);
+                    var g = new System.Speech.Recognition.Grammar(gb);
+                    sre.LoadGrammar(g);
+
+                    try
+                    {
+                        var dict = new System.Speech.Recognition.DictationGrammar();
+                        sre.LoadGrammar(dict);
+                    }
+                    catch { }
+
+                    sre.SetInputToWaveStream(ms);
+                    var reco = sre.Recognize(TimeSpan.FromSeconds(3));
+                    if (reco != null && !string.IsNullOrWhiteSpace(reco.Text) && reco.Confidence >= 0.15f)
+                    {
+                        transcript = reco.Text;
+                        string low = transcript.ToLowerInvariant().Trim();
+
+                        string skillResp = FlinchSkills.TryHandle(transcript, low);
+                        if (skillResp != null)
+                        {
+                            answer = skillResp;
+                            return true;
+                        }
+
+                        if (low.Contains("time"))
+                        {
+                            answer = "The time is " + DateTime.Now.ToString("h:mm tt") + ".";
+                            return true;
+                        }
+                        if (low.Contains("date") || low.Contains("day"))
+                        {
+                            answer = "Today is " + DateTime.Now.ToString("dddd, MMMM d, yyyy") + ".";
+                            return true;
+                        }
+                        if (low.Contains("battery"))
+                        {
+                            var p = System.Windows.Forms.SystemInformation.PowerStatus;
+                            answer = string.Format("Battery is at {0} percent.", (int)(p.BatteryLifePercent * 100));
+                            return true;
+                        }
+                        if (low.Contains("lock"))
+                        {
+                            Process.Start(new ProcessStartInfo("rundll32.exe", "user32.dll,LockWorkStation") { UseShellExecute = true });
+                            answer = "Locking your computer.";
+                            return true;
+                        }
+
+                        answer = "You're currently offline. Your local timers, clock, and focus mode are active.";
+                        return true;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                FlinchEnv.Log("OfflineBrain error: " + ex.Message);
+            }
+            return false;
         }
     }
 }
