@@ -5559,6 +5559,14 @@ namespace FlinchApp
                 }));
             };
 
+            // Flinch Skills hooks (clipboard / reminders / files)
+            FlinchSkills.Speak = (t) => SpeakWhenIdle(t);
+            FlinchSkills.StartReminderInSeconds = (secs, text) => Dispatcher.BeginInvoke(new Action(() =>
+                StartTimerOrReminder(secs, "reminder", text, "Reminder: " + text)));
+            FlinchSkills.FireContextReminder = (text) => Dispatcher.BeginInvoke(new Action(() =>
+                ShowAlert("reminder", text, "Reminder: " + text)));
+            FlinchSkills.Start();
+
             BackgroundTaskManager.OnTasksUpdated += () =>
             {
                 Dispatcher.BeginInvoke(new Action(() =>
@@ -5751,6 +5759,31 @@ namespace FlinchApp
                     FlinchEnv.Log("Failed to open Flinch Hub: " + ex.Message);
                 }
             }
+        }
+
+        private void SpeakWhenIdle(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text)) return;
+            Task.Run(() =>
+            {
+                for (int i = 0; i < 60; i++)
+                {
+                    bool busy = false;
+                    try
+                    {
+                        Dispatcher.Invoke(new Action(() =>
+                        {
+                            busy = _state == IslandState.Listening || _state == IslandState.Thinking ||
+                                   _state == IslandState.Speaking || _state == IslandState.Countdown ||
+                                   _isBusy || _recorder.IsRecording;
+                        }));
+                    }
+                    catch { }
+                    if (!busy) break;
+                    Thread.Sleep(500);
+                }
+                Dispatcher.BeginInvoke(new Action(() => SpeakAnswer(text)));
+            });
         }
 
         public void SpeakAnswer(string text)
@@ -6604,6 +6637,14 @@ private void FinishRecordingAndSend()
                                 SpeakAnswer(string.Format("Starting a {0} {1} timer right now.", num, unit.StartsWith("min") ? "minute" : (unit.StartsWith("hour") ? "hour" : "second")));
                                 return;
                             }
+                        }
+
+                        // Local Skills: clipboard actions, smart reminders, voice file work
+                        string skillSpeech = FlinchSkills.TryHandle(transcript, lowerTrans);
+                        if (skillSpeech != null)
+                        {
+                            if (skillSpeech.Length > 0) SpeakAnswer(skillSpeech);
+                            return;
                         }
 
                         // Autonomous Background Writing Tasks (e.g. "write an essay about sri lanka", "write a report on quantum computing")

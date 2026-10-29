@@ -41,7 +41,7 @@ namespace FlinchApp { internal static class BuildConfig {
 "@ | Set-Content -Path $gen -Encoding UTF8
 
 $wpf = @('PresentationCore','PresentationFramework','WindowsBase','UIAutomationClient','UIAutomationTypes') | ForEach-Object { "/r:$fw\WPF\$_.dll" }
-$sys = @('System.Xaml','System.Windows.Forms','System.Drawing','System.Web.Extensions','System.Net.Http','System.Security') | ForEach-Object { "/r:$fw\$_.dll" }
+$sys = @('System.Xaml','System.Windows.Forms','System.Drawing','System.Web.Extensions','System.Net.Http','System.Security','System.IO.Compression','System.IO.Compression.FileSystem') | ForEach-Object { "/r:$fw\$_.dll" }
 $speechDll = (Get-ChildItem -Path "C:\Windows\Microsoft.NET\assembly\GAC_MSIL\System.Speech" -Filter "System.Speech.dll" -Recurse | Select-Object -First 1).FullName
 $speech = "/r:$speechDll"
 
@@ -62,6 +62,7 @@ $srcFiles = @(
     (Join-Path $root 'src\Flinch.cs'),
     (Join-Path $root 'src\VisualExplain.cs'),
     (Join-Path $root 'src\FlinchHub.cs'),
+    (Join-Path $root 'src\FlinchSkills.cs'),
     $gen
 )
 & $csc /nologo /target:winexe /win32icon:$ico "/win32manifest:$manifest" "/resource:$ico,flinch.ico" "/resource:$catPng,cat_logo.png" /out:$appExe $wpf $sys $speech $srcFiles

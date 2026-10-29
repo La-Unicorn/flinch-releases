@@ -203,6 +203,66 @@ CRITICAL INSTRUCTIONS:
         );
       }
 
+      if (body.action === "transform_text") {
+        const srcText = String(body.text_input || "").slice(0, 8000).trim();
+        const instruction = String(body.instruction || "Summarize this text.").slice(0, 400).trim();
+        if (!srcText) {
+          return new Response(JSON.stringify({ error: "empty_text" }), { status: 400, headers: corsHeaders });
+        }
+        const sysRule = `You transform text for the user exactly as instructed.
+RULES: Output ONLY the transformed text. No preamble, no quotes around it, no markdown, no explanations, no "Here is". Keep the original language unless asked to translate.`;
+        let out = "";
+        if (groqApiKey) {
+          try {
+            const gr = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+              method: "POST",
+              headers: { "Authorization": `Bearer ${groqApiKey}`, "Content-Type": "application/json" },
+              body: JSON.stringify({
+                model: "llama-3.3-70b-versatile",
+                messages: [
+                  { role: "system", content: sysRule },
+                  { role: "user", content: `INSTRUCTION: ${instruction}\n\nTEXT:\n"""\n${srcText}\n"""` },
+                ],
+                temperature: 0.3,
+                max_tokens: 1800,
+              }),
+            });
+            if (gr.ok) {
+              const gj = await gr.json();
+              out = (gj.choices?.[0]?.message?.content || "").trim();
+            }
+          } catch (_e) { /* fall through to Gemini */ }
+        }
+        if (!out && geminiApiKey) {
+          try {
+            const gm = await fetch(
+              `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${encodeURIComponent(geminiApiKey)}`,
+              {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  systemInstruction: { parts: [{ text: sysRule }] },
+                  contents: [{ role: "user", parts: [{ text: `INSTRUCTION: ${instruction}\n\nTEXT:\n"""\n${srcText}\n"""` }] }],
+                  generationConfig: { temperature: 0.3, maxOutputTokens: 1800 },
+                }),
+              }
+            );
+            if (gm.ok) {
+              const gj = await gm.json();
+              out = (gj.candidates?.[0]?.content?.parts?.[0]?.text || "").trim();
+            }
+          } catch (_e) { /* ignore */ }
+        }
+        out = out.replace(/^```[a-z]*\s*/i, "").replace(/```\s*$/, "").trim();
+        if (out) {
+          return new Response(JSON.stringify({ result: out }), { status: 200, headers: corsHeaders });
+        }
+        return new Response(
+          JSON.stringify({ error: "transform_failed", message: "Could not transform the text." }),
+          { status: 502, headers: corsHeaders }
+        );
+      }
+
       if (body.action === "tts" || body.text) {
         const textToSpeak = String(body.text || "").trim();
         const voiceName = String(body.voice || "troy").toLowerCase();
