@@ -795,9 +795,15 @@ Return your output strictly as a JSON object:
 }
 If no visual overlay is needed, set "scene": null.`;
 
-      // 1. High-Precision Vision via Google Gemini 3 Flash (Fast & Validated)
+      // 1. High-Precision Vision via Google Gemini Flash (Multi-tier resilient fallback)
       if (geminiApiKey) {
-        const candidateVisionModels = ["gemini-3-flash-preview"];
+        const candidateVisionModels = [
+          "gemini-3.5-flash",
+          "gemini-3.5-flash-lite",
+          "gemini-3.6-flash",
+          "gemini-2.5-flash",
+          "gemini-3-flash-preview"
+        ];
 
         for (const vModel of candidateVisionModels) {
           const controller = new AbortController();
@@ -1120,6 +1126,14 @@ If no visual overlay is needed, set "scene": null.`;
       reply = salvaged.answer || (sceneObj ? "Here, let me show you right on your screen." : "Sorry, could you ask that again?");
     }
     reply = stripSpokenNoise(reply);
+
+    // Visual scene guarantee: if user asked to highlight/circle/point or answer claims something is highlighted
+    const isHighlightOrDraw = /\b(highlight|circle|point to|point at|arrow|draw|where is|show me|box|outline|spotlight)\b/i.test(transcript) ||
+      /\b(highlighted|circled|pointed to|drawn on screen)\b/i.test(reply);
+
+    if (isHighlightOrDraw && (!sceneObj || !sceneObj.objects || sceneObj.objects.length === 0)) {
+      sceneObj = generateFallbackVisualScene(transcript, uiaText, reply);
+    }
 
     // 9. Text-to-Speech (TTS) Synthesis with resilient multi-voice fallback (Cartesia Sonic -> Groq Orpheus)
     const tTtsStart = performance.now();
@@ -1685,6 +1699,83 @@ function stripSpokenNoise(t: string): string {
     .trim();
 }
 
+// Generates a guaranteed visual overlay targeting requested element when vision model omits it
+function generateFallbackVisualScene(transcript: string, uiaText: string | undefined, reply: string): any {
+  let label = "Target";
+  let rect = { x: 0.40, y: 0.38, w: 0.20, h: 0.16 };
+  let found = false;
+
+  const m = transcript.match(/\b(?:highlight|circle|point to|point at|draw|where is|show me)\s+(?:the\s+)?([a-z0-9 _\-]+)/i);
+  if (m && m[1]) {
+    label = m[1].replace(/\b(on|my|the|screen|desktop|display|window)\b/gi, "").trim();
+    if (!label) label = "Target";
+  }
+
+  if (uiaText) {
+    const lines = uiaText.split("\n");
+    for (const l of lines) {
+      if (label && label.length > 2 && l.toLowerCase().includes(label.toLowerCase())) {
+        const mCoord = l.match(/\[\s*(-?\d*\.?\d+)\s*,\s*(-?\d*\.?\d+)\s*,\s*(-?\d*\.?\d+)\s*,\s*(-?\d*\.?\d+)\s*\]/);
+        if (mCoord) {
+          const x = Math.max(0, Math.min(0.95, parseFloat(mCoord[1])));
+          const y = Math.max(0, Math.min(0.95, parseFloat(mCoord[2])));
+          const w = Math.max(0.02, Math.min(0.8, parseFloat(mCoord[3])));
+          const h = Math.max(0.02, Math.min(0.8, parseFloat(mCoord[4])));
+          rect = { x, y, w, h };
+          found = true;
+          break;
+        }
+      }
+    }
+  }
+
+  if (!found) {
+    const lowTarget = label.toLowerCase();
+    if (lowTarget.includes("recycle") || lowTarget.includes("bin") || lowTarget.includes("trash")) {
+      label = "Recycle Bin";
+      rect = { x: 0.02, y: 0.035, w: 0.065, h: 0.085 };
+    } else if (lowTarget.includes("taskbar") || lowTarget.includes("start")) {
+      label = "Taskbar / Start";
+      rect = { x: 0.015, y: 0.94, w: 0.06, h: 0.05 };
+    } else if (lowTarget.includes("clock") || lowTarget.includes("time") || lowTarget.includes("date")) {
+      label = "System Clock";
+      rect = { x: 0.91, y: 0.945, w: 0.08, h: 0.05 };
+    }
+  }
+
+  const arrowFrom = {
+    x: Math.min(0.95, rect.x + rect.w + 0.10),
+    y: Math.min(0.95, rect.y + rect.h / 2)
+  };
+  const arrowTo = {
+    x: Math.min(0.95, rect.x + rect.w + 0.01),
+    y: Math.min(0.95, rect.y + rect.h / 2)
+  };
+
+  return {
+    durationMs: 15000,
+    objects: [
+      {
+        type: "highlight",
+        rect: rect,
+        label: label,
+        color: "#FACC15",
+        step: 1,
+        delayMs: 0
+      },
+      {
+        type: "arrow",
+        from: arrowFrom,
+        to: arrowTo,
+        label: label,
+        color: "#3DDC84",
+        step: 2,
+        delayMs: 500
+      }
+    ]
+  };
+}
+
 // Robustly extracts { answer, scene } from model output, even if it is wrapped in
 // code fences, has extra prose, or was truncated mid-JSON.
 function parseVisionOutput(raw: string): { answer: string; scene: any } {
@@ -1861,8 +1952,8 @@ function sanitizeScene(sceneRaw: any): any {
 
   if (cleanObjects.length === 0) return null;
 
-  let durationMs = 8000;
-  if (typeof sceneRaw.durationMs === "number" && sceneRaw.durationMs >= 2000 && sceneRaw.durationMs <= 30000) {
+  let durationMs = 15000;
+  if (typeof sceneRaw.durationMs === "number" && sceneRaw.durationMs >= 2000 && sceneRaw.durationMs <= 45000) {
     durationMs = Math.round(sceneRaw.durationMs);
   }
 

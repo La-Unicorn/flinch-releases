@@ -268,9 +268,9 @@ serve(async (req: Request) => {
     let structuredResult: any = null;
     let upstreamError: string | null = null;
 
-    // Strategy 1: Google Gemini Flash (gemini-3-flash-preview) with responseSchema
+    // Strategy 1: Google Gemini Flash (Multi-tier resilient fallback)
     if (geminiApiKey) {
-      const candidateModels = ["gemini-3-flash-preview"];
+      const candidateModels = ["gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.6-flash", "gemini-2.5-flash", "gemini-3-flash-preview"];
       const geminiSchema = {
         type: "OBJECT",
         properties: {

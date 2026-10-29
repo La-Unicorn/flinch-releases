@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -104,6 +104,10 @@ namespace FlinchApp
 
         [DllImport("dwmapi.dll")]
         public static extern int DwmGetWindowAttribute(IntPtr hwnd, int dwAttribute, out RECT pvAttribute, int cbAttribute);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
 
         public static void MakeToolWindow(IntPtr hwnd)
         {
@@ -1926,27 +1930,50 @@ namespace FlinchApp
 
         public static void ShowScene(NativeMethods.RECT targetBounds, ScenePayload scene)
         {
-            if (scene == null || scene.objects == null || scene.objects.Count == 0) return;
+            if (scene == null || scene.objects == null || scene.objects.Count == 0)
+            {
+                FlinchEnv.Log("[OverlayWindow] ShowScene ignored: scene is null or has 0 objects.");
+                return;
+            }
+
+            FlinchEnv.Log(string.Format("[OverlayWindow] ShowScene invoked with {0} objects.", scene.objects.Count));
 
             Application.Current.Dispatcher.BeginInvoke(new Action(() =>
             {
-                CloseCurrent();
-
-                var ps = System.Windows.Forms.Screen.PrimaryScreen;
-                targetBounds = new NativeMethods.RECT
+                try
                 {
-                    Left = ps.Bounds.Left,
-                    Top = ps.Bounds.Top,
-                    Right = ps.Bounds.Right,
-                    Bottom = ps.Bounds.Bottom
-                };
+                    CloseCurrent();
 
-                var win = new OverlayWindow(targetBounds, scene);
-                lock (_instanceLock)
-                {
-                    _activeInstance = win;
+                    var ps = System.Windows.Forms.Screen.PrimaryScreen;
+                    targetBounds = new NativeMethods.RECT
+                    {
+                        Left = ps.Bounds.Left,
+                        Top = ps.Bounds.Top,
+                        Right = ps.Bounds.Right,
+                        Bottom = ps.Bounds.Bottom
+                    };
+
+                    var win = new OverlayWindow(targetBounds, scene);
+                    lock (_instanceLock)
+                    {
+                        _activeInstance = win;
+                    }
+                    win.Show();
+                    win.Activate();
+
+                    IntPtr hwnd = new WindowInteropHelper(win).Handle;
+                    if (hwnd != IntPtr.Zero)
+                    {
+                        NativeMethods.MakeToolWindow(hwnd);
+                        NativeMethods.SetWindowPos(hwnd, new IntPtr(-1), 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0040); // HWND_TOPMOST | SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW
+                    }
+
+                    FlinchEnv.Log(string.Format("[OverlayWindow] Window active on screen at ({0},{1}) {2}x{3}", win.Left, win.Top, win.Width, win.Height));
                 }
-                win.Show();
+                catch (Exception ex)
+                {
+                    FlinchEnv.Log("[OverlayWindow] ShowScene exception: " + ex.ToString());
+                }
             }));
         }
 
@@ -1972,6 +1999,7 @@ namespace FlinchApp
             Background = Brushes.Transparent;
             Topmost = true;
             ShowInTaskbar = false;
+            ShowActivated = true;
 
             Left = targetBounds.Left;
             Top = targetBounds.Top;
@@ -1989,13 +2017,13 @@ namespace FlinchApp
             // 1. Top-right floating dismiss pill: [ ✕ Dismiss (Esc) ]
             var dismissBorder = new Border
             {
-                Background = new SolidColorBrush(Color.FromArgb(230, 24, 28, 38)),
-                BorderBrush = new SolidColorBrush(Color.FromArgb(140, 148, 163, 184)),
-                BorderThickness = new Thickness(1),
+                Background = new SolidColorBrush(Color.FromArgb(240, 24, 28, 38)),
+                BorderBrush = new SolidColorBrush(Color.FromArgb(180, 148, 163, 184)),
+                BorderThickness = new Thickness(1.5),
                 CornerRadius = new CornerRadius(14),
-                Padding = new Thickness(10, 5, 12, 5),
+                Padding = new Thickness(12, 6, 14, 6),
                 Cursor = Cursors.Hand,
-                Effect = new DropShadowEffect { BlurRadius = 12, Opacity = 0.6, ShadowDepth = 2 }
+                Effect = new DropShadowEffect { BlurRadius = 14, Opacity = 0.7, ShadowDepth = 2 }
             };
             var dismissStack = new StackPanel { Orientation = Orientation.Horizontal };
             dismissStack.Children.Add(new TextBlock
@@ -2003,20 +2031,22 @@ namespace FlinchApp
                 Text = "✕",
                 Foreground = new SolidColorBrush(Color.FromRgb(248, 113, 113)),
                 FontWeight = FontWeights.Bold,
-                Margin = new Thickness(0, 0, 6, 0)
+                FontSize = 13,
+                Margin = new Thickness(0, 0, 7, 0)
             });
             dismissStack.Children.Add(new TextBlock
             {
                 Text = "Dismiss Overlay (Esc)",
                 Foreground = Brushes.White,
-                FontSize = 11.5,
+                FontSize = 12,
+                FontWeight = FontWeights.SemiBold,
                 FontFamily = new FontFamily("Segoe UI Semibold, Segoe UI")
             });
             dismissBorder.Child = dismissStack;
             dismissBorder.MouseLeftButtonDown += (s, e) => DismissWithAnimation();
 
-            Canvas.SetRight(dismissBorder, 18);
-            Canvas.SetTop(dismissBorder, 18);
+            Canvas.SetRight(dismissBorder, 22);
+            Canvas.SetTop(dismissBorder, 22);
             _canvas.Children.Add(dismissBorder);
 
             // 2. Render each scene object onto the Canvas
@@ -2027,8 +2057,8 @@ namespace FlinchApp
             var fadeIn = new System.Windows.Media.Animation.DoubleAnimation(0.0, 1.0, new Duration(TimeSpan.FromMilliseconds(220)));
             BeginAnimation(UIElement.OpacityProperty, fadeIn);
 
-            // 4. Auto-dismiss timer
-            int duration = scene.durationMs >= 2000 ? scene.durationMs : 8000;
+            // 4. Auto-dismiss timer (default 15 seconds so user has time to view)
+            int duration = scene.durationMs >= 4000 ? scene.durationMs : 15000;
             _autoDismissTimer = new DispatcherTimer
             {
                 Interval = TimeSpan.FromMilliseconds(duration)
@@ -2040,7 +2070,7 @@ namespace FlinchApp
             };
             _autoDismissTimer.Start();
 
-            // 5. Keyboard & mouse dismissal
+            // 5. Keyboard dismissal & double click on empty canvas
             KeyDown += (s, e) =>
             {
                 if (e.Key == Key.Escape) DismissWithAnimation();
@@ -2048,7 +2078,7 @@ namespace FlinchApp
 
             _canvas.MouseLeftButtonDown += (s, e) =>
             {
-                if (e.OriginalSource == _canvas) DismissWithAnimation();
+                if (e.OriginalSource == _canvas && e.ClickCount >= 2) DismissWithAnimation();
             };
         }
 
@@ -2260,19 +2290,19 @@ namespace FlinchApp
             if (obj.rect == null) return;
             double rx = Math.Max(0.0, Math.Min(1.0, obj.rect.x)) * Width;
             double ry = Math.Max(0.0, Math.Min(1.0, obj.rect.y)) * Height;
-            double rw = Math.Max(20, Math.Min(1.0, obj.rect.w) * Width);
-            double rh = Math.Max(16, Math.Min(1.0, obj.rect.h) * Height);
+            double rw = Math.Max(32, Math.Min(1.0, obj.rect.w) * Width);
+            double rh = Math.Max(24, Math.Min(1.0, obj.rect.h) * Height);
 
             Color fillCol = ParseSceneColor(obj.color, Color.FromRgb(0xFA, 0xCC, 0x15));
             var highlightBox = new Border
             {
                 Width = 0.0,
                 Height = rh,
-                Background = new SolidColorBrush(Color.FromArgb(85, fillCol.R, fillCol.G, fillCol.B)),
-                BorderBrush = new SolidColorBrush(Color.FromArgb(200, fillCol.R, fillCol.G, fillCol.B)),
-                BorderThickness = new Thickness(1.5),
-                CornerRadius = new CornerRadius(4),
-                Effect = new DropShadowEffect { Color = fillCol, BlurRadius = 16, Opacity = 0.8, ShadowDepth = 0 }
+                Background = new SolidColorBrush(Color.FromArgb(115, fillCol.R, fillCol.G, fillCol.B)),
+                BorderBrush = new SolidColorBrush(fillCol),
+                BorderThickness = new Thickness(2.8),
+                CornerRadius = new CornerRadius(6),
+                Effect = new DropShadowEffect { Color = fillCol, BlurRadius = 24, Opacity = 0.95, ShadowDepth = 0 }
             };
             Canvas.SetLeft(highlightBox, rx);
             Canvas.SetTop(highlightBox, ry);
@@ -2289,22 +2319,23 @@ namespace FlinchApp
                 string labelText = !string.IsNullOrWhiteSpace(obj.label) ? obj.label : obj.text;
                 var tag = new Border
                 {
-                    Background = new SolidColorBrush(Color.FromArgb(240, 15, 23, 42)),
+                    Background = new SolidColorBrush(Color.FromArgb(245, 15, 23, 42)),
                     BorderBrush = new SolidColorBrush(fillCol),
-                    BorderThickness = new Thickness(1.5),
-                    CornerRadius = new CornerRadius(5),
-                    Padding = new Thickness(7, 3, 7, 3),
+                    BorderThickness = new Thickness(2.0),
+                    CornerRadius = new CornerRadius(6),
+                    Padding = new Thickness(9, 4, 9, 4),
                     Child = new TextBlock
                     {
                         Text = labelText,
                         Foreground = Brushes.White,
-                        FontSize = 11.5,
+                        FontSize = 12.5,
                         FontFamily = new FontFamily("Segoe UI Bold, Segoe UI")
                     },
+                    Effect = new DropShadowEffect { Color = fillCol, BlurRadius = 14, Opacity = 0.85, ShadowDepth = 2 },
                     Opacity = 0.0
                 };
                 Canvas.SetLeft(tag, rx);
-                Canvas.SetTop(tag, Math.Max(0, ry - 24));
+                Canvas.SetTop(tag, Math.Max(0, ry - 30));
                 _canvas.Children.Add(tag);
 
                 var tagFade = new System.Windows.Media.Animation.DoubleAnimation(0.0, 1.0, new Duration(TimeSpan.FromMilliseconds(220)))
@@ -3410,6 +3441,9 @@ namespace FlinchApp
                                             scene = parsedScene;
                                         }
                                     }
+
+                                    FlinchEnv.Log(string.Format("[GeminiClient] Cloud turn completed: tx='{0}', ans='{1}', sceneObjects={2}",
+                                        transcript, answer, (scene != null && scene.objects != null ? scene.objects.Count : 0)));
 
                                     return true;
                                 }
@@ -6787,7 +6821,12 @@ private void FinishRecordingAndSend()
 
                         if (scene != null && scene.objects != null && scene.objects.Count > 0)
                         {
+                            FlinchEnv.Log(string.Format("[Flinch] Displaying visual overlay with {0} objects for transcript: '{1}'", scene.objects.Count, transcript));
                             OverlayWindow.ShowScene(GeminiClient.LastActiveTargetBounds, scene);
+                        }
+                        else
+                        {
+                            FlinchEnv.Log("[Flinch] Turn had no visual scene objects. Overlay not shown.");
                         }
 
                         if (action != null)
@@ -8913,9 +8952,21 @@ private void FinishRecordingAndSend()
                 {
                     ShutdownMode = ShutdownMode.OnExplicitShutdown
                 };
+                app.DispatcherUnhandledException += (s, e) =>
+                {
+                    FlinchEnv.Log("DISPATCHER_UNHANDLED_EXCEPTION: " + e.Exception.ToString());
+                };
+                AppDomain.CurrentDomain.UnhandledException += (s, e) =>
+                {
+                    FlinchEnv.Log("APPDOMAIN_UNHANDLED_EXCEPTION: " + (e.ExceptionObject != null ? e.ExceptionObject.ToString() : "null"));
+                };
 
                 var win = new DynamicIslandWindow();
-                win.Closed += (s, e) => app.Shutdown();
+                win.Closed += (s, e) =>
+                {
+                    FlinchEnv.Log("DynamicIslandWindow win.Closed fired! StackTrace: " + Environment.StackTrace);
+                    app.Shutdown();
+                };
                 app.MainWindow = win;
                 win.Show();
 
