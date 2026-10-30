@@ -414,18 +414,26 @@ namespace FlinchApp
         }
 
         // =====================================================================
-        // 6. CLIPBOARD ACTIONS
+        // 6. CLIPBOARD & INSTANT HIGHLIGHT-AND-SPEAK ACTIONS
         // =====================================================================
         private static string TryClipboard(string transcript, string low)
         {
             bool mentionsClip = low.Contains("copied") || low.Contains("clipboard") || low.Contains("what i just copied")
-                                || low.Contains("the text i copied") || low.Contains("this text i copied");
-            if (!mentionsClip) return null;
+                                || low.Contains("the text i copied") || low.Contains("this text i copied")
+                                || low.Contains("selected text") || low.Contains("highlighted text") || low.Contains("what i highlighted");
+
+            bool isInlineSelectionCmd = Regex.IsMatch(low, @"^(?:please\s+|can you\s+)?(?:rewrite|rephrase|reword|proofread|shorten|condense)\s+(?:this|that|it)\b")
+                                        || Regex.IsMatch(low, @"\b(?:fix|correct)\s+(?:the\s+)?(?:grammar|spelling|typos)\s+(?:in|on)\s+(?:this|that)\b")
+                                        || Regex.IsMatch(low, @"\b(?:make\s+this|rewrite\s+this\s+to\s+be)\s+(?:more\s+)?(?:professional|formal|casual|friendly|polite|concise|shorter|clearer)\b")
+                                        || Regex.IsMatch(low, @"\b(?:refactor|optimize|clean up)\s+this\s+(?:code|function|method|selection)\b");
+
+            if (!mentionsClip && !isInlineSelectionCmd) return null;
 
             string instruction = null;
             bool speakResult = false;
+            bool pasteInline = isInlineSelectionCmd && !mentionsClip;
 
-            Match tr = Regex.Match(low, @"translate\s+(?:it\s+|this\s+|that\s+|what\s+i\s+copied\s+|my\s+clipboard\s+)?(?:in)?to\s+([a-z]+)");
+            Match tr = Regex.Match(low, @"translate\s+(?:it\s+|this\s+|that\s+|what\s+i\s+copied\s+|my\s+clipboard\s+|selected\s+text\s+)?(?:in)?to\s+([a-z]+)");
             if (tr.Success)
             {
                 instruction = "Translate the text into " + Capitalize(tr.Groups[1].Value) + ".";
@@ -434,14 +442,19 @@ namespace FlinchApp
             {
                 instruction = "Summarize this in 2 to 3 short sentences.";
                 speakResult = true;
+                pasteInline = false;
             }
             else if (Regex.IsMatch(low, @"\b(fix|proofread|correct)\b.*\b(grammar|spelling|typos|mistakes)\b") || low.Contains("proofread"))
             {
-                instruction = "Fix all spelling and grammar mistakes. Keep the same tone and meaning.";
+                instruction = "Fix all spelling and grammar mistakes. Keep the same tone and meaning. Output only the corrected text.";
             }
-            else if (Regex.IsMatch(low, @"\b(shorten|shorter|make it short|condense)\b"))
+            else if (Regex.IsMatch(low, @"\b(refactor|optimize|clean up)\s+this\s+(?:code|function|method|selection)\b"))
             {
-                instruction = "Make this much shorter while keeping the key meaning.";
+                instruction = "Refactor and clean up this code while preserving its exact behavior. Output only the code without markdown fences.";
+            }
+            else if (Regex.IsMatch(low, @"\b(shorten|shorter|make it short|condense|concise)\b"))
+            {
+                instruction = "Make this much shorter and more concise while keeping the key meaning. Output only the shortened text.";
             }
             else if (Regex.IsMatch(low, @"\b(bullet|bullets|bullet points)\b"))
             {
@@ -451,48 +464,71 @@ namespace FlinchApp
             {
                 instruction = "Write a polite, concise reply to this message. Output only the reply text.";
             }
-            else if (Regex.IsMatch(low, @"\b(rewrite|rephrase|reword|make it)\b"))
+            else if (Regex.IsMatch(low, @"\b(rewrite|rephrase|reword|make it|make this)\b"))
             {
                 string tone = "clearer and more natural";
                 if (low.Contains("professional") || low.Contains("formal")) tone = "professional and formal";
                 else if (low.Contains("casual") || low.Contains("friendly")) tone = "casual and friendly";
                 else if (low.Contains("polite")) tone = "polite";
                 else if (low.Contains("confident")) tone = "confident";
-                instruction = "Rewrite this to be " + tone + ". Keep the meaning.";
+                instruction = "Rewrite this to be " + tone + ". Keep the meaning and output only the rewritten text.";
             }
             else if (Regex.IsMatch(low, @"\b(explain|simplify|what does this mean)\b"))
             {
                 instruction = "Explain this in simple words in 2 to 3 sentences.";
                 speakResult = true;
+                pasteInline = false;
             }
 
             if (instruction == null) return null;
 
+            // If user invoked an inline highlight command, copy the active selection via Ctrl+C first
+            if (isInlineSelectionCmd)
+            {
+                try
+                {
+                    System.Windows.Forms.SendKeys.SendWait("^c");
+                    Thread.Sleep(120);
+                }
+                catch { }
+            }
+
             string clip = GetClipboardText();
             if (string.IsNullOrWhiteSpace(clip))
             {
-                return "Your clipboard is empty. Copy some text first, then ask me again.";
+                return "Highlight or copy some text first, then ask me again.";
             }
 
             string instr = instruction;
             bool say = speakResult;
+            bool doPaste = pasteInline;
             Task.Run(delegate
             {
                 string result = TransformText(clip, instr);
                 if (string.IsNullOrWhiteSpace(result))
                 {
-                    SpeakSafe("Sorry, I couldn't process your clipboard right now.");
+                    SpeakSafe("Sorry, I couldn't process that text right now.");
                     return;
                 }
                 SetClipboardText(result);
-                if (say)
+                if (doPaste)
+                {
+                    try
+                    {
+                        Thread.Sleep(80);
+                        System.Windows.Forms.SendKeys.SendWait("^v");
+                    }
+                    catch { }
+                    SpeakSafe("Updated your selection and copied it to your clipboard.");
+                }
+                else if (say)
                 {
                     string preview = result.Length > 260 ? result.Substring(0, 260) + "..." : result;
                     SpeakSafe(preview.Replace("\r", " ").Replace("\n", " ") + " It's on your clipboard too.");
                 }
                 else
                 {
-                    SpeakSafe("Done. The new version is on your clipboard, just paste it.");
+                    SpeakSafe("Done. The new version is on your clipboard, ready to paste.");
                 }
             });
 
@@ -753,10 +789,14 @@ namespace FlinchApp
         }
 
         // =====================================================================
-        // 8. VOICE FILE MANAGEMENT
+        // 8. VOICE FILE MANAGEMENT, DESKTOP ORGANIZER & SMART FILE MOVER
         // =====================================================================
         private static string TryFiles(string transcript, string low)
         {
+            // 0) Smart Folder Organizer & File Mover ("organize my desktop", "clean up my downloads", "grab PDFs and put them in Documents", "move screenshots to Pictures")
+            string orgResp = TryOrganizeOrMoveFiles(transcript, low);
+            if (orgResp != null) return orgResp;
+
             // a) "zip my <folder>"
             Match zip = Regex.Match(low, @"\b(zip|compress|archive)\b\s+(?:my\s+)?(.+?)(?:\s+folder|\s+directory)?$");
             if (zip.Success)
@@ -821,6 +861,485 @@ namespace FlinchApp
             }
 
             return null;
+        }
+
+        private sealed class PlannedFileMove
+        {
+            public string SourcePath { get; set; }
+            public string DestDirectory { get; set; }
+            public string CategoryName { get; set; }
+        }
+
+        private static string TryOrganizeOrMoveFiles(string transcript, string low)
+        {
+            // 1. Full Folder Organize ("organize my desktop", "clean up my desktop", "sort my downloads", "tidy up my desktop", "organize messy files")
+            bool isOrganizeCmd = Regex.IsMatch(low, @"\b(organi[sz]e|clean\s*up|tidy\s*up|declutter|sort)\b.*\b(desktop|downloads?|documents?|files|folders?)\b")
+                                 || Regex.IsMatch(low, @"\b(put|move|group|sort)\b.*\bmessy\s+files\b");
+
+            if (isOrganizeCmd)
+            {
+                string targetFolder = Environment.GetFolderPath(Environment.SpecialFolder.Desktop);
+                string folderLabel = "Desktop";
+                if (low.Contains("download"))
+                {
+                    targetFolder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads");
+                    folderLabel = "Downloads";
+                }
+                else if (low.Contains("document") && !low.Contains("desktop"))
+                {
+                    targetFolder = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+                    folderLabel = "Documents";
+                }
+
+                return StageFolderOrganization(targetFolder, folderLabel);
+            }
+
+            // 2. Targeted Grab & Move ("grab the PDFs from Downloads and put them on my Desktop", "move all screenshots on my desktop to Screenshots", "put images into Pictures")
+            Match moveMatch = Regex.Match(low, @"\b(?:grab|move|put|transfer|collect)\s+(?:all\s+)?(?:the\s+|my\s+)?(.+?)\s+(?:and\s+(?:put|move|place)\s+(?:them|it)\s+)?(?:in|into|to|on|onto)\s+(?:my\s+|the\s+|a\s+folder\s+called\s+|a\s+folder\s+named\s+)?(.+)$");
+            if (moveMatch.Success)
+            {
+                string whatSpec = moveMatch.Groups[1].Value.Trim();
+                string destSpec = moveMatch.Groups[2].Value.Trim().Trim('.', '!', '?', '"', '\'');
+
+                // Ignore non-file commands like "put me in focus mode"
+                if (whatSpec == "me" || destSpec.Contains("focus") || destSpec.Contains("pomodoro") || destSpec.Contains("clipboard"))
+                    return null;
+
+                return StageGrabAndMoveFiles(whatSpec, destSpec);
+            }
+
+            return null;
+        }
+
+        private static string CategorizeFileForOrganizer(string filePath)
+        {
+            string nameLow = Path.GetFileName(filePath).ToLowerInvariant();
+            string ext = Path.GetExtension(filePath).ToLowerInvariant();
+
+            // Never touch shortcuts or system files on Desktop
+            if (ext == ".lnk" || ext == ".url" || ext == ".ini" || ext == ".sys" || ext == ".dll" || ext == ".tmp" || ext == ".crdownload" || ext == ".part")
+                return null;
+
+            if ((nameLow.Contains("screenshot") || nameLow.Contains("screen_shot") || nameLow.Contains("capture") || nameLow.StartsWith("snip"))
+                && (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".webp" || ext == ".bmp"))
+            {
+                return "Screenshots";
+            }
+
+            switch (ext)
+            {
+                case ".png":
+                case ".jpg":
+                case ".jpeg":
+                case ".webp":
+                case ".gif":
+                case ".svg":
+                case ".bmp":
+                case ".ico":
+                case ".heic":
+                    return "Images";
+
+                case ".pdf":
+                case ".doc":
+                case ".docx":
+                case ".txt":
+                case ".md":
+                case ".rtf":
+                case ".odt":
+                case ".epub":
+                    return "Documents";
+
+                case ".xls":
+                case ".xlsx":
+                case ".csv":
+                case ".tsv":
+                case ".json":
+                case ".xml":
+                    return "Spreadsheets & Data";
+
+                case ".ppt":
+                case ".pptx":
+                case ".key":
+                case ".html":
+                case ".htm":
+                    return "Presentations";
+
+                case ".zip":
+                case ".rar":
+                case ".7z":
+                case ".tar":
+                case ".gz":
+                case ".exe":
+                case ".msi":
+                case ".iso":
+                    return "Archives & Installers";
+
+                case ".cs":
+                case ".ts":
+                case ".tsx":
+                case ".js":
+                case ".jsx":
+                case ".py":
+                case ".ps1":
+                case ".bat":
+                case ".sh":
+                case ".sql":
+                case ".cpp":
+                case ".c":
+                case ".h":
+                case ".java":
+                case ".go":
+                case ".rs":
+                    return "Code & Scripts";
+
+                case ".mp3":
+                case ".wav":
+                case ".m4a":
+                case ".flac":
+                case ".ogg":
+                case ".mp4":
+                case ".mov":
+                case ".mkv":
+                case ".avi":
+                case ".webm":
+                    return "Audio & Media";
+
+                default:
+                    return "Other Files";
+            }
+        }
+
+        private static string StageFolderOrganization(string targetFolder, string folderLabel)
+        {
+            try
+            {
+                if (!Directory.Exists(targetFolder))
+                {
+                    return "I couldn't find your " + folderLabel + " folder.";
+                }
+
+                var plans = new List<PlannedFileMove>();
+                var catCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+
+                foreach (string file in Directory.GetFiles(targetFolder, "*", SearchOption.TopDirectoryOnly))
+                {
+                    try
+                    {
+                        var fi = new FileInfo(file);
+                        if ((fi.Attributes & FileAttributes.Hidden) != 0 || (fi.Attributes & FileAttributes.System) != 0)
+                            continue;
+
+                        string cat = CategorizeFileForOrganizer(file);
+                        if (string.IsNullOrEmpty(cat)) continue;
+
+                        string destDir = Path.Combine(targetFolder, cat);
+                        plans.Add(new PlannedFileMove
+                        {
+                            SourcePath = file,
+                            DestDirectory = destDir,
+                            CategoryName = cat
+                        });
+
+                        int cur;
+                        catCounts.TryGetValue(cat, out cur);
+                        catCounts[cat] = cur + 1;
+                    }
+                    catch { }
+                }
+
+                if (plans.Count == 0)
+                {
+                    return "Your " + folderLabel + " is already clean—there are no loose files to organize.";
+                }
+
+                var summaryParts = new List<string>();
+                foreach (var kv in catCounts.OrderByDescending(k => k.Value))
+                {
+                    summaryParts.Add(string.Format("{0} ({1})", kv.Key, kv.Value));
+                }
+                string breakdown = string.Join(" · ", summaryParts.ToArray());
+
+                var approvalAction = new ActionPayload
+                {
+                    type = "organize_folder",
+                    target = targetFolder,
+                    name = string.Format("organize {0} ({1} files)", folderLabel, plans.Count),
+                    requires_approval = true,
+                    description = string.Format("Moves {0} loose file{1} in {2} into clean folders while keeping all desktop app shortcuts untouched.", plans.Count, plans.Count == 1 ? "" : "s", folderLabel),
+                    command = breakdown
+                };
+
+                if (System.Windows.Application.Current != null && System.Windows.Application.Current.Dispatcher != null)
+                {
+                    System.Windows.Application.Current.Dispatcher.BeginInvoke(new Action(delegate
+                    {
+                        ActionApprovalWindow.ShowApproval(
+                            approvalAction,
+                            delegate
+                            {
+                                int moved = ExecutePlannedFileMoves(plans);
+                                try { Process.Start(new ProcessStartInfo("explorer.exe", "\"" + targetFolder + "\"") { UseShellExecute = false }); } catch { }
+                                SpeakSafe(string.Format("Done. I organized {0} file{1} on your {2} into {3} folder{4}.",
+                                    moved, moved == 1 ? "" : "s", folderLabel, catCounts.Count, catCounts.Count == 1 ? "" : "s"));
+                            },
+                            delegate
+                            {
+                                SpeakSafe("Cancelled organizing your " + folderLabel + ".");
+                            });
+                    }));
+                }
+
+                return string.Format("I found {0} loose file{1} on your {2}. Please approve on screen or say yes to sort them into folders.",
+                    plans.Count, plans.Count == 1 ? "" : "s", folderLabel);
+            }
+            catch (Exception ex)
+            {
+                FlinchEnv.Log("StageFolderOrganization error: " + ex.Message);
+                return "Sorry, I ran into an error scanning your " + folderLabel + ".";
+            }
+        }
+
+        private static string StageGrabAndMoveFiles(string whatSpec, string destSpec)
+        {
+            try
+            {
+                string profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+                string desktop = Environment.GetFolderPath(Environment.SpecialFolder.Desktop);
+                string downloads = Path.Combine(profile, "Downloads");
+                string documents = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+                string pictures = Environment.GetFolderPath(Environment.SpecialFolder.MyPictures);
+
+                // Determine source folder(s) from whatSpec ("pdfs from my downloads", "screenshots on my desktop")
+                var sourceFolders = new List<string>();
+                string filterSpec = whatSpec.ToLowerInvariant();
+
+                if (filterSpec.Contains("from my desktop") || filterSpec.Contains("on my desktop") || filterSpec.Contains("from desktop") || filterSpec.Contains("on desktop"))
+                {
+                    sourceFolders.Add(desktop);
+                    filterSpec = Regex.Replace(filterSpec, @"\b(from|on|in)\s+(?:my\s+|the\s+)?desktop\b", "").Trim();
+                }
+                else if (filterSpec.Contains("from my download") || filterSpec.Contains("in my download") || filterSpec.Contains("from download") || filterSpec.Contains("in download"))
+                {
+                    sourceFolders.Add(downloads);
+                    filterSpec = Regex.Replace(filterSpec, @"\b(from|on|in)\s+(?:my\s+|the\s+)?downloads?\b", "").Trim();
+                }
+                else if (filterSpec.Contains("from my document") || filterSpec.Contains("in my document") || filterSpec.Contains("from document"))
+                {
+                    sourceFolders.Add(documents);
+                    filterSpec = Regex.Replace(filterSpec, @"\b(from|on|in)\s+(?:my\s+|the\s+)?documents?\b", "").Trim();
+                }
+                else
+                {
+                    // Search Desktop first, then Downloads
+                    sourceFolders.Add(desktop);
+                    sourceFolders.Add(downloads);
+                }
+
+                // Determine destination directory
+                string destDir = null;
+                string destLabel = destSpec;
+                string destLow = destSpec.ToLowerInvariant().Trim();
+
+                if (destLow == "desktop" || destLow == "my desktop")
+                {
+                    destDir = desktop;
+                    destLabel = "Desktop";
+                }
+                else if (destLow == "downloads" || destLow == "my downloads" || destLow == "download folder")
+                {
+                    destDir = downloads;
+                    destLabel = "Downloads";
+                }
+                else if (destLow == "documents" || destLow == "my documents" || destLow == "documents folder")
+                {
+                    destDir = documents;
+                    destLabel = "Documents";
+                }
+                else if (destLow == "pictures" || destLow == "my pictures" || destLow == "photos")
+                {
+                    destDir = pictures;
+                    destLabel = "Pictures";
+                }
+                else if (destLow == "screenshots" || destLow == "screenshots folder")
+                {
+                    destDir = Path.Combine(desktop, "Screenshots");
+                    destLabel = "Desktop\\Screenshots";
+                }
+                else
+                {
+                    string cleanFolder = Regex.Replace(destSpec, @"\b(folder|directory|on\s+my\s+desktop|on\s+desktop)\b", "", RegexOptions.IgnoreCase).Trim();
+                    foreach (char c in Path.GetInvalidFileNameChars()) cleanFolder = cleanFolder.Replace(c.ToString(), "");
+                    if (string.IsNullOrWhiteSpace(cleanFolder)) cleanFolder = "Organized Files";
+                    cleanFolder = Capitalize(cleanFolder);
+                    destDir = Path.Combine(desktop, cleanFolder);
+                    destLabel = "Desktop\\" + cleanFolder;
+                }
+
+                // Match files against filterSpec
+                var matchedFiles = new List<string>();
+                foreach (string srcDir in sourceFolders.Where(Directory.Exists))
+                {
+                    foreach (string file in Directory.GetFiles(srcDir, "*", SearchOption.TopDirectoryOnly))
+                    {
+                        try
+                        {
+                            if (string.Equals(Path.GetDirectoryName(file), destDir, StringComparison.OrdinalIgnoreCase))
+                                continue;
+
+                            string ext = Path.GetExtension(file).ToLowerInvariant();
+                            string nameLow = Path.GetFileName(file).ToLowerInvariant();
+                            if (ext == ".lnk" || ext == ".url" || ext == ".ini" || ext == ".tmp" || ext == ".crdownload")
+                                continue;
+
+                            bool isMatch = false;
+                            if (filterSpec.Contains("screenshot") || filterSpec.Contains("screen shot") || filterSpec.Contains("snip"))
+                            {
+                                isMatch = (nameLow.Contains("screenshot") || nameLow.Contains("screen_shot") || nameLow.Contains("capture") || nameLow.StartsWith("snip"))
+                                          && (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".webp" || ext == ".bmp");
+                            }
+                            else if (filterSpec.Contains("pdf"))
+                            {
+                                isMatch = ext == ".pdf";
+                            }
+                            else if (filterSpec.Contains("image") || filterSpec.Contains("photo") || filterSpec.Contains("picture") || filterSpec.Contains("png") || filterSpec.Contains("jpg"))
+                            {
+                                isMatch = ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".webp" || ext == ".gif" || ext == ".svg" || ext == ".bmp";
+                            }
+                            else if (filterSpec.Contains("zip") || filterSpec.Contains("archive") || filterSpec.Contains("installer"))
+                            {
+                                isMatch = ext == ".zip" || ext == ".rar" || ext == ".7z" || ext == ".exe" || ext == ".msi";
+                            }
+                            else if (filterSpec.Contains("document") || filterSpec.Contains("essay") || filterSpec.Contains("word") || filterSpec.Contains("text") || filterSpec.Contains("note"))
+                            {
+                                isMatch = ext == ".pdf" || ext == ".docx" || ext == ".doc" || ext == ".txt" || ext == ".md" || ext == ".rtf";
+                            }
+                            else if (filterSpec.Contains("presentation") || filterSpec.Contains("slide"))
+                            {
+                                isMatch = ext == ".pptx" || ext == ".ppt" || ext == ".html";
+                            }
+                            else if (filterSpec.Contains("video") || filterSpec.Contains("audio") || filterSpec.Contains("recording") || filterSpec.Contains("mp4") || filterSpec.Contains("mp3"))
+                            {
+                                isMatch = ext == ".mp4" || ext == ".mov" || ext == ".mkv" || ext == ".mp3" || ext == ".wav" || ext == ".m4a";
+                            }
+                            else if (filterSpec.Contains("messy") || filterSpec.Contains("loose") || filterSpec == "files" || filterSpec == "all files" || filterSpec == "everything")
+                            {
+                                isMatch = CategorizeFileForOrganizer(file) != null;
+                            }
+                            else
+                            {
+                                string keyword = Regex.Replace(filterSpec, @"\b(files?|documents?|items?|named|called)\b", "").Trim();
+                                if (keyword.Length >= 2 && nameLow.Contains(keyword))
+                                {
+                                    isMatch = true;
+                                }
+                            }
+
+                            if (isMatch)
+                            {
+                                matchedFiles.Add(file);
+                            }
+                        }
+                        catch { }
+                    }
+                }
+
+                if (matchedFiles.Count == 0)
+                {
+                    return "I couldn't find any matching " + filterSpec + " to move.";
+                }
+
+                var plans = matchedFiles.Select(f => new PlannedFileMove
+                {
+                    SourcePath = f,
+                    DestDirectory = destDir,
+                    CategoryName = destLabel
+                }).ToList();
+
+                string filePreview = string.Join(", ", matchedFiles.Take(3).Select(Path.GetFileName).ToArray());
+                if (matchedFiles.Count > 3) filePreview += string.Format(" (+{0} more)", matchedFiles.Count - 3);
+
+                var approvalAction = new ActionPayload
+                {
+                    type = "move_files",
+                    target = destDir,
+                    name = string.Format("move {0} file{1} to {2}", matchedFiles.Count, matchedFiles.Count == 1 ? "" : "s", destLabel),
+                    requires_approval = true,
+                    description = string.Format("Moves {0} matching file{1} ({2}) into {3}.", matchedFiles.Count, matchedFiles.Count == 1 ? "" : "s", filePreview, destLabel),
+                    command = string.Format("{0} -> {1}", filePreview, destDir)
+                };
+
+                if (System.Windows.Application.Current != null && System.Windows.Application.Current.Dispatcher != null)
+                {
+                    System.Windows.Application.Current.Dispatcher.BeginInvoke(new Action(delegate
+                    {
+                        ActionApprovalWindow.ShowApproval(
+                            approvalAction,
+                            delegate
+                            {
+                                int moved = ExecutePlannedFileMoves(plans);
+                                try { Process.Start(new ProcessStartInfo("explorer.exe", "\"" + destDir + "\"") { UseShellExecute = false }); } catch { }
+                                SpeakSafe(string.Format("Done. I moved {0} file{1} to {2}.", moved, moved == 1 ? "" : "s", destLabel));
+                            },
+                            delegate
+                            {
+                                SpeakSafe("Cancelled moving those files.");
+                            });
+                    }));
+                }
+
+                return string.Format("Found {0} matching file{1}. Please confirm on screen or say yes to move them to {2}.",
+                    matchedFiles.Count, matchedFiles.Count == 1 ? "" : "s", destLabel);
+            }
+            catch (Exception ex)
+            {
+                FlinchEnv.Log("StageGrabAndMoveFiles error: " + ex.Message);
+                return "Sorry, I couldn't prepare that file move.";
+            }
+        }
+
+        private static int ExecutePlannedFileMoves(List<PlannedFileMove> plans)
+        {
+            int moved = 0;
+            if (plans == null) return 0;
+
+            foreach (var p in plans)
+            {
+                try
+                {
+                    if (!File.Exists(p.SourcePath)) continue;
+                    if (!Directory.Exists(p.DestDirectory))
+                    {
+                        Directory.CreateDirectory(p.DestDirectory);
+                    }
+
+                    string fileName = Path.GetFileName(p.SourcePath);
+                    string destPath = Path.Combine(p.DestDirectory, fileName);
+
+                    if (string.Equals(p.SourcePath, destPath, StringComparison.OrdinalIgnoreCase))
+                        continue;
+
+                    // Collision-safe naming so existing files are never overwritten
+                    if (File.Exists(destPath))
+                    {
+                        string baseName = Path.GetFileNameWithoutExtension(fileName);
+                        string ext = Path.GetExtension(fileName);
+                        int counter = 2;
+                        while (File.Exists(destPath))
+                        {
+                            destPath = Path.Combine(p.DestDirectory, string.Format("{0} ({1}){2}", baseName, counter, ext));
+                            counter++;
+                        }
+                    }
+
+                    File.Move(p.SourcePath, destPath);
+                    moved++;
+                }
+                catch (Exception ex)
+                {
+                    FlinchEnv.Log("ExecutePlannedFileMoves item error: " + ex.Message);
+                }
+            }
+            return moved;
         }
 
         private static IEnumerable<string> SearchRoots()

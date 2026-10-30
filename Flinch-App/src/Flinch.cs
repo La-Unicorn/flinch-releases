@@ -41,10 +41,16 @@ namespace FlinchApp
     {
         public const int WM_HOTKEY = 0x0312;
         public const uint MOD_ALT = 0x0001;
+        public const uint MOD_CONTROL = 0x0002;
+        public const uint MOD_SHIFT = 0x0004;
         public const uint MOD_NOREPEAT = 0x4000;
         public const int VK_MENU = 0x12;
         public const int VK_LMENU = 0xA4;
         public const int VK_RMENU = 0xA5;
+        public const int VK_CONTROL = 0x11;
+        public const int VK_SHIFT = 0x10;
+        public const int VK_SPACE = 0x20;
+        public const int VK_F8 = 0x77;
         public const int VK_V = 0x56;
 
         public const int GWL_EXSTYLE = -20;
@@ -135,12 +141,45 @@ namespace FlinchApp
 
         public static bool IsAnyHotkeyDown()
         {
+            string mode = (FlinchEnv.HotkeyMode ?? "Alt+V").Trim();
+            if (string.Equals(mode, "Alt+Space", StringComparison.OrdinalIgnoreCase))
+            {
+                bool alt = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0
+                        || (GetAsyncKeyState(VK_LMENU) & 0x8000) != 0
+                        || (GetAsyncKeyState(VK_RMENU) & 0x8000) != 0;
+                bool sp = (GetAsyncKeyState(VK_SPACE) & 0x8000) != 0;
+                return alt && sp;
+            }
+            if (string.Equals(mode, "Ctrl+Shift+Space", StringComparison.OrdinalIgnoreCase))
+            {
+                bool ctrl = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+                bool shift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+                bool sp = (GetAsyncKeyState(VK_SPACE) & 0x8000) != 0;
+                return ctrl && shift && sp;
+            }
+            if (string.Equals(mode, "F8", StringComparison.OrdinalIgnoreCase))
+            {
+                return (GetAsyncKeyState(VK_F8) & 0x8000) != 0;
+            }
             return IsAltVDown();
         }
 
         // WinMM WaveIn API for direct 16kHz 16-bit Mono PCM microphone capture
         public const int CALLBACK_FUNCTION = 0x00030000;
         public const int WIM_DATA = 0x3C0;
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Auto)]
+        public struct WAVEINCAPS
+        {
+            public ushort wMid;
+            public ushort wPid;
+            public uint vDriverVersion;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)]
+            public string szPname;
+            public uint dwFormats;
+            public ushort wChannels;
+            public ushort wReserved1;
+        }
 
         [StructLayout(LayoutKind.Sequential)]
         public struct WAVEFORMATEX
@@ -171,6 +210,9 @@ namespace FlinchApp
 
         [DllImport("winmm.dll")]
         public static extern int waveInGetNumDevs();
+
+        [DllImport("winmm.dll", CharSet = CharSet.Auto)]
+        public static extern int waveInGetDevCaps(IntPtr uDeviceID, out WAVEINCAPS pwic, uint cbwic);
 
         [DllImport("winmm.dll")]
         public static extern int waveInOpen(out IntPtr phwi, int uDeviceID, ref WAVEFORMATEX pwfx, WaveInProc dwCallback, IntPtr dwInstance, int fdwOpen);
@@ -256,7 +298,15 @@ namespace FlinchApp
                     cbSize = 0
                 };
 
-                int rc = NativeMethods.waveInOpen(out _hWaveIn, -1, ref fmt, _callback, IntPtr.Zero, NativeMethods.CALLBACK_FUNCTION);
+                int devId = FlinchEnv.MicDeviceId;
+                int numDevs = NativeMethods.waveInGetNumDevs();
+                if (devId < -1 || devId >= numDevs) devId = -1;
+
+                int rc = NativeMethods.waveInOpen(out _hWaveIn, devId, ref fmt, _callback, IntPtr.Zero, NativeMethods.CALLBACK_FUNCTION);
+                if ((rc != 0 || _hWaveIn == IntPtr.Zero) && devId != -1)
+                {
+                    rc = NativeMethods.waveInOpen(out _hWaveIn, -1, ref fmt, _callback, IntPtr.Zero, NativeMethods.CALLBACK_FUNCTION);
+                }
                 if (rc != 0 || _hWaveIn == IntPtr.Zero)
                 {
                     error = "Could not open microphone (waveInOpen error " + rc + ").";
@@ -580,6 +630,18 @@ namespace FlinchApp
         public static string GitHubRepo = "La-Unicorn/flinch-releases";
         public static string BuildVersion = "0.1.0";
         public static string BuildTimeUtc = "";
+        public static int MicDeviceId = -1;
+        public static string HotkeyMode = "Alt+V";
+
+        private static string PrefsFilePath
+        {
+            get
+            {
+                string dir = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Flinch");
+                if (!System.IO.Directory.Exists(dir)) System.IO.Directory.CreateDirectory(dir);
+                return System.IO.Path.Combine(dir, "device_prefs.json");
+            }
+        }
 
         // Zero-footprint: no .env, no RULES.md, no log file. Only the public Supabase URL + anon key are compiled in.
         public static void Load()
@@ -589,6 +651,64 @@ namespace FlinchApp
             GitHubRepo = BuildConfig.GitHubRepo;
             BuildVersion = BuildConfig.BuildVersion;
             BuildTimeUtc = BuildConfig.BuildTimeUtc;
+            LoadDevicePrefs();
+        }
+
+        public static void LoadDevicePrefs()
+        {
+            try
+            {
+                string f = PrefsFilePath;
+                if (!System.IO.File.Exists(f)) return;
+                string json = System.IO.File.ReadAllText(f, Encoding.UTF8);
+                var jss = new JavaScriptSerializer();
+                var dict = jss.Deserialize<Dictionary<string, object>>(json);
+                if (dict != null)
+                {
+                    if (dict.ContainsKey("mic_device_id") && dict["mic_device_id"] != null)
+                        int.TryParse(dict["mic_device_id"].ToString(), out MicDeviceId);
+                    if (dict.ContainsKey("hotkey_mode") && dict["hotkey_mode"] != null)
+                        HotkeyMode = dict["hotkey_mode"].ToString();
+                }
+            }
+            catch { }
+        }
+
+        public static void SaveDevicePrefs()
+        {
+            try
+            {
+                var jss = new JavaScriptSerializer();
+                var dict = new Dictionary<string, object>
+                {
+                    { "mic_device_id", MicDeviceId },
+                    { "hotkey_mode", HotkeyMode }
+                };
+                System.IO.File.WriteAllText(PrefsFilePath, jss.Serialize(dict), Encoding.UTF8);
+            }
+            catch { }
+        }
+
+        public static List<KeyValuePair<int, string>> GetMicrophoneDevices()
+        {
+            var list = new List<KeyValuePair<int, string>>();
+            list.Add(new KeyValuePair<int, string>(-1, "Default System Microphone"));
+            try
+            {
+                int count = NativeMethods.waveInGetNumDevs();
+                uint capsSize = (uint)Marshal.SizeOf(typeof(NativeMethods.WAVEINCAPS));
+                for (int i = 0; i < count; i++)
+                {
+                    NativeMethods.WAVEINCAPS caps;
+                    if (NativeMethods.waveInGetDevCaps(new IntPtr(i), out caps, capsSize) == 0)
+                    {
+                        string name = !string.IsNullOrWhiteSpace(caps.szPname) ? caps.szPname.Trim() : ("Microphone " + (i + 1));
+                        list.Add(new KeyValuePair<int, string>(i, name));
+                    }
+                }
+            }
+            catch { }
+            return list;
         }
 
         public static void Log(string msg)
@@ -1965,13 +2085,31 @@ namespace FlinchApp
 
                     int dipW = Math.Max(800, (int)SystemParameters.PrimaryScreenWidth);
                     int dipH = Math.Max(600, (int)SystemParameters.PrimaryScreenHeight);
-                    targetBounds = new NativeMethods.RECT
+                    double dpiRatioX = System.Windows.Forms.Screen.PrimaryScreen.Bounds.Width / (double)dipW;
+                    double dpiRatioY = System.Windows.Forms.Screen.PrimaryScreen.Bounds.Height / (double)dipH;
+                    if (dpiRatioX <= 0.1) dpiRatioX = 1.0;
+                    if (dpiRatioY <= 0.1) dpiRatioY = 1.0;
+
+                    if (targetBounds.Width >= 400 && targetBounds.Height >= 300)
                     {
-                        Left = 0,
-                        Top = 0,
-                        Right = dipW,
-                        Bottom = dipH
-                    };
+                        targetBounds = new NativeMethods.RECT
+                        {
+                            Left = (int)Math.Round(targetBounds.Left / dpiRatioX),
+                            Top = (int)Math.Round(targetBounds.Top / dpiRatioY),
+                            Right = (int)Math.Round(targetBounds.Right / dpiRatioX),
+                            Bottom = (int)Math.Round(targetBounds.Bottom / dpiRatioY)
+                        };
+                    }
+                    else
+                    {
+                        targetBounds = new NativeMethods.RECT
+                        {
+                            Left = 0,
+                            Top = 0,
+                            Right = dipW,
+                            Bottom = dipH
+                        };
+                    }
 
                     var win = new OverlayWindow(targetBounds, scene, false);
                     lock (_instanceLock)
@@ -2057,7 +2195,53 @@ namespace FlinchApp
             };
             Content = _canvas;
 
-            // 1. Top-right floating dismiss pill: clean human-crafted design
+            // 1. Top-right floating controls: Pin + Dismiss (Esc)
+            var topControlsRow = new StackPanel { Orientation = Orientation.Horizontal };
+
+            bool isPinned = false;
+            var pinLabel = new TextBlock
+            {
+                Text = "Pin",
+                Foreground = new SolidColorBrush(Color.FromRgb(51, 65, 85)),
+                FontSize = 12,
+                FontWeight = FontWeights.SemiBold,
+                FontFamily = new FontFamily("Segoe UI Semibold, Segoe UI"),
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            var pinBorder = new Border
+            {
+                Background = new SolidColorBrush(Color.FromRgb(255, 255, 255)),
+                BorderBrush = new SolidColorBrush(Color.FromRgb(226, 232, 240)),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(8),
+                Padding = new Thickness(12, 6, 12, 6),
+                Margin = new Thickness(0, 0, 8, 0),
+                Cursor = Cursors.Hand,
+                Effect = new DropShadowEffect { Color = Colors.Black, BlurRadius = 12, Opacity = 0.12, ShadowDepth = 2 },
+                Child = pinLabel
+            };
+            pinBorder.MouseLeftButtonDown += (s, e) =>
+            {
+                e.Handled = true;
+                isPinned = !isPinned;
+                if (isPinned)
+                {
+                    if (_autoDismissTimer != null) _autoDismissTimer.Stop();
+                    pinLabel.Text = "Pinned";
+                    pinLabel.Foreground = new SolidColorBrush(Color.FromRgb(37, 99, 235));
+                    pinBorder.BorderBrush = new SolidColorBrush(Color.FromRgb(147, 197, 253));
+                    pinBorder.Background = new SolidColorBrush(Color.FromRgb(239, 246, 255));
+                }
+                else
+                {
+                    if (_autoDismissTimer != null) _autoDismissTimer.Start();
+                    pinLabel.Text = "Pin";
+                    pinLabel.Foreground = new SolidColorBrush(Color.FromRgb(51, 65, 85));
+                    pinBorder.BorderBrush = new SolidColorBrush(Color.FromRgb(226, 232, 240));
+                    pinBorder.Background = new SolidColorBrush(Color.FromRgb(255, 255, 255));
+                }
+            };
+
             var dismissBorder = new Border
             {
                 Background = new SolidColorBrush(Color.FromRgb(255, 255, 255)),
@@ -2099,9 +2283,12 @@ namespace FlinchApp
             dismissBorder.Child = dismissStack;
             dismissBorder.MouseLeftButtonDown += (s, e) => DismissWithAnimation();
 
-            Canvas.SetRight(dismissBorder, 24);
-            Canvas.SetTop(dismissBorder, 24);
-            _canvas.Children.Add(dismissBorder);
+            topControlsRow.Children.Add(pinBorder);
+            topControlsRow.Children.Add(dismissBorder);
+
+            Canvas.SetRight(topControlsRow, 24);
+            Canvas.SetTop(topControlsRow, 24);
+            _canvas.Children.Add(topControlsRow);
 
             // 2. Render each scene object onto the Canvas
             RenderSceneObjects(scene, immediateRender);
@@ -6109,6 +6296,55 @@ namespace FlinchApp
             }
             menu.Items.Add(voiceMenu);
 
+            // Microphone Input Device Selector
+            var micMenu = new System.Windows.Forms.ToolStripMenuItem("🎤 Microphone Input");
+            var micDevs = FlinchEnv.GetMicrophoneDevices();
+            foreach (var md in micDevs)
+            {
+                int mId = md.Key;
+                string mName = md.Value;
+                var mi = new System.Windows.Forms.ToolStripMenuItem(mName)
+                {
+                    Tag = mId,
+                    Checked = (FlinchEnv.MicDeviceId == mId)
+                };
+                mi.Click += (s, e) =>
+                {
+                    FlinchEnv.MicDeviceId = mId;
+                    FlinchEnv.SaveDevicePrefs();
+                    foreach (System.Windows.Forms.ToolStripMenuItem child in micMenu.DropDownItems)
+                        child.Checked = ((int)child.Tag == mId);
+                };
+                micMenu.DropDownItems.Add(mi);
+            }
+            menu.Items.Add(micMenu);
+
+            // Push-to-Talk Hotkey Selector
+            var hotkeyMenu = new System.Windows.Forms.ToolStripMenuItem("⌨️ Hotkey (" + FlinchEnv.HotkeyMode + ")");
+            string[] hkOptions = new[] { "Alt+V", "Alt+Space", "Ctrl+Shift+Space", "F8" };
+            foreach (string hk in hkOptions)
+            {
+                string hkVal = hk;
+                var hi = new System.Windows.Forms.ToolStripMenuItem(hkVal)
+                {
+                    Tag = hkVal,
+                    Checked = string.Equals(FlinchEnv.HotkeyMode, hkVal, StringComparison.OrdinalIgnoreCase)
+                };
+                hi.Click += (s, e) =>
+                {
+                    FlinchEnv.HotkeyMode = hkVal;
+                    FlinchEnv.SaveDevicePrefs();
+                    Dispatcher.Invoke(new Action(ApplyConfiguredHotkey));
+                    foreach (System.Windows.Forms.ToolStripMenuItem child in hotkeyMenu.DropDownItems)
+                        child.Checked = string.Equals(child.Tag as string, hkVal, StringComparison.OrdinalIgnoreCase);
+                    hotkeyMenu.Text = "⌨️ Hotkey (" + hkVal + ")";
+                    itemTalk.Text = "🎙️ Listen Voice (" + hkVal + ")";
+                    if (_trayIcon != null) _trayIcon.Text = "Flinch (Hold " + hkVal + " to Talk)";
+                };
+                hotkeyMenu.DropDownItems.Add(hi);
+            }
+            menu.Items.Add(hotkeyMenu);
+
             var itemReset = menu.Items.Add("🧹 Reset Conversation Memory");
             itemReset.Click += (s, e) => GeminiClient.ClearHistory();
             menu.Items.Add("-");
@@ -6233,16 +6469,51 @@ namespace FlinchApp
             };
         }
 
+        private void ApplyConfiguredHotkey()
+        {
+            try
+            {
+                IntPtr hwnd = new WindowInteropHelper(this).Handle;
+                if (hwnd == IntPtr.Zero) return;
+                NativeMethods.UnregisterHotKey(hwnd, HOTKEY_ID_ALTV);
+
+                uint mod = NativeMethods.MOD_ALT;
+                uint vk = NativeMethods.VK_V;
+                string mode = (FlinchEnv.HotkeyMode ?? "Alt+V").Trim();
+                if (string.Equals(mode, "Alt+Space", StringComparison.OrdinalIgnoreCase))
+                {
+                    mod = NativeMethods.MOD_ALT;
+                    vk = NativeMethods.VK_SPACE;
+                }
+                else if (string.Equals(mode, "Ctrl+Shift+Space", StringComparison.OrdinalIgnoreCase))
+                {
+                    mod = NativeMethods.MOD_CONTROL | NativeMethods.MOD_SHIFT;
+                    vk = NativeMethods.VK_SPACE;
+                }
+                else if (string.Equals(mode, "F8", StringComparison.OrdinalIgnoreCase))
+                {
+                    mod = 0;
+                    vk = NativeMethods.VK_F8;
+                }
+
+                bool ok = NativeMethods.RegisterHotKey(hwnd, HOTKEY_ID_ALTV, mod | NativeMethods.MOD_NOREPEAT, vk);
+                if (!ok)
+                {
+                    ok = NativeMethods.RegisterHotKey(hwnd, HOTKEY_ID_ALTV, mod, vk);
+                }
+                FlinchEnv.Log("Hotkey registered (" + mode + "): " + ok);
+            }
+            catch (Exception ex)
+            {
+                FlinchEnv.Log("ApplyConfiguredHotkey error: " + ex.Message);
+            }
+        }
+
         private void OnWindowSourceInitialized(object sender, EventArgs e)
         {
             IntPtr hwnd = new WindowInteropHelper(this).Handle;
             NativeMethods.MakeToolWindow(hwnd);
-            bool ok = NativeMethods.RegisterHotKey(hwnd, HOTKEY_ID_ALTV, NativeMethods.MOD_ALT | NativeMethods.MOD_NOREPEAT, NativeMethods.VK_V);
-            if (!ok)
-            {
-                ok = NativeMethods.RegisterHotKey(hwnd, HOTKEY_ID_ALTV, NativeMethods.MOD_ALT, NativeMethods.VK_V);
-            }
-            FlinchEnv.Log("Flinch Notch started. Alt+V hotkey registered: " + ok);
+            ApplyConfiguredHotkey();
 
             HwndSource src = HwndSource.FromHwnd(hwnd);
             if (src != null)
@@ -6990,14 +7261,25 @@ namespace FlinchApp
         {
             try
             {
-                var s = System.Windows.Forms.Screen.PrimaryScreen;
+                var s = System.Windows.Forms.Screen.FromPoint(System.Windows.Forms.Cursor.Position);
+                if (targetHwnd != IntPtr.Zero)
+                {
+                    try
+                    {
+                        var fromHwnd = System.Windows.Forms.Screen.FromHandle(targetHwnd);
+                        if (fromHwnd != null) s = fromHwnd;
+                    }
+                    catch { }
+                }
+                if (s == null) s = System.Windows.Forms.Screen.PrimaryScreen;
+
                 var fullBounds = new NativeMethods.RECT { Left = s.Bounds.Left, Top = s.Bounds.Top, Right = s.Bounds.Right, Bottom = s.Bounds.Bottom };
                 CapturedFrame frame = _captureService.CaptureBounds(fullBounds, "Display");
 
                 if (frame != null && frame.JpegBytes != null && frame.JpegBytes.Length > 0)
                 {
                     GeminiClient.SetStagedScreenFrame(frame);
-                    FlinchEnv.Log("Auto-captured primary screen for voice context: Display");
+                    FlinchEnv.Log("Auto-captured active monitor for voice context: " + s.DeviceName);
                 }
             }
             catch (Exception ex)
