@@ -2455,108 +2455,261 @@ namespace FlinchApp
 
         private static Border CreateAnnotationLabel(string text, Color accentColor)
         {
-            var stack = new StackPanel { Orientation = Orientation.Horizontal };
-            stack.Children.Add(new Border
-            {
-                Width = 6,
-                Height = 6,
-                CornerRadius = new CornerRadius(3),
-                Background = new SolidColorBrush(accentColor),
-                VerticalAlignment = VerticalAlignment.Center,
-                Margin = new Thickness(0, 0, 7, 0)
-            });
+            var stack = new StackPanel { Orientation = Orientation.Vertical };
             stack.Children.Add(new TextBlock
             {
                 Text = text,
                 Foreground = new SolidColorBrush(Color.FromRgb(15, 23, 42)),
-                FontSize = 12,
-                FontWeight = FontWeights.SemiBold,
-                FontFamily = new FontFamily("Segoe UI Semibold, Segoe UI"),
+                FontSize = 13.5,
+                FontWeight = FontWeights.Bold,
+                FontFamily = new FontFamily("Segoe Print, Ink Free, Comic Sans MS, Segoe UI"),
                 VerticalAlignment = VerticalAlignment.Center
+            });
+            stack.Children.Add(new Border
+            {
+                Height = 2.5,
+                CornerRadius = new CornerRadius(1.2),
+                Background = new SolidColorBrush(accentColor),
+                Margin = new Thickness(0, 1, 0, 0)
             });
 
             return new Border
             {
-                Background = new SolidColorBrush(Color.FromRgb(255, 255, 255)),
-                BorderBrush = new SolidColorBrush(Color.FromRgb(203, 213, 225)),
+                Background = new SolidColorBrush(Color.FromArgb(245, 255, 255, 255)),
+                BorderBrush = new SolidColorBrush(Color.FromRgb(226, 232, 240)),
                 BorderThickness = new Thickness(1),
                 CornerRadius = new CornerRadius(6),
-                Padding = new Thickness(10, 5, 10, 5),
+                Padding = new Thickness(9, 4, 9, 5),
                 Child = stack,
-                Effect = new DropShadowEffect { Color = Colors.Black, BlurRadius = 10, Opacity = 0.14, ShadowDepth = 2 }
+                Effect = new DropShadowEffect { Color = Colors.Black, BlurRadius = 8, Opacity = 0.12, ShadowDepth = 2 }
             };
+        }
+
+        // Creates a tilted vector Pencil/Marker icon that traces hand-drawn shapes live on screen
+        private static Canvas CreatePencilCursor(Color inkColor)
+        {
+            var c = new Canvas { Width = 32, Height = 32, IsHitTestVisible = false };
+            // Pencil body tilted at 45 degrees with tip at (0, 0)
+            var tipLead = new Polygon
+            {
+                Points = new PointCollection(new[] { new Point(0, 0), new Point(7, -3), new Point(3, -7) }),
+                Fill = new SolidColorBrush(inkColor)
+            };
+            var woodCone = new Polygon
+            {
+                Points = new PointCollection(new[] { new Point(7, -3), new Point(3, -7), new Point(10, -14), new Point(14, -10) }),
+                Fill = new SolidColorBrush(Color.FromRgb(245, 215, 165))
+            };
+            var barrel = new Polygon
+            {
+                Points = new PointCollection(new[] { new Point(10, -14), new Point(14, -10), new Point(26, -22), new Point(22, -26) }),
+                Fill = new SolidColorBrush(Color.FromRgb(245, 158, 11)),
+                Stroke = new SolidColorBrush(Color.FromRgb(180, 83, 9)),
+                StrokeThickness = 0.8
+            };
+            var eraser = new Polygon
+            {
+                Points = new PointCollection(new[] { new Point(22, -26), new Point(26, -22), new Point(30, -26), new Point(26, -30) }),
+                Fill = new SolidColorBrush(Color.FromRgb(244, 114, 182))
+            };
+            c.Children.Add(barrel);
+            c.Children.Add(woodCone);
+            c.Children.Add(tipLead);
+            c.Children.Add(eraser);
+            return c;
+        }
+
+        // Animates a hand-drawn Polyline point-by-point with a moving pencil tip cursor
+        private void AnimateHandDrawnPolyline(Canvas hostCanvas, List<Point> allPoints, Color strokeCol, double strokeWidth, int totalDurationMs, bool immediate, Action onCompleted = null)
+        {
+            if (allPoints == null || allPoints.Count < 2)
+            {
+                if (onCompleted != null) onCompleted();
+                return;
+            }
+
+            var poly = new Polyline
+            {
+                Stroke = new SolidColorBrush(strokeCol),
+                StrokeThickness = strokeWidth,
+                StrokeLineJoin = PenLineJoin.Round,
+                StrokeStartLineCap = PenLineCap.Round,
+                StrokeEndLineCap = PenLineCap.Round,
+                Effect = new DropShadowEffect { Color = Colors.Black, BlurRadius = 3, Opacity = 0.14, ShadowDepth = 1 }
+            };
+            hostCanvas.Children.Add(poly);
+
+            if (immediate)
+            {
+                poly.Points = new PointCollection(allPoints);
+                if (onCompleted != null) onCompleted();
+                return;
+            }
+
+            var pencil = CreatePencilCursor(strokeCol);
+            hostCanvas.Children.Add(pencil);
+
+            int totalPts = allPoints.Count;
+            int stepIntervalMs = 14;
+            int totalTicks = Math.Max(6, totalDurationMs / stepIntervalMs);
+            int curTick = 0;
+
+            var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(stepIntervalMs) };
+            timer.Tick += (s, e) =>
+            {
+                if (_isDismissing)
+                {
+                    timer.Stop();
+                    return;
+                }
+                curTick++;
+                double frac = Math.Min(1.0, (double)curTick / totalTicks);
+                int count = Math.Max(2, (int)Math.Round(frac * totalPts));
+                if (count > totalPts) count = totalPts;
+
+                var pts = new PointCollection();
+                for (int i = 0; i < count; i++) pts.Add(allPoints[i]);
+                poly.Points = pts;
+
+                Point tip = allPoints[count - 1];
+                Canvas.SetLeft(pencil, tip.X);
+                Canvas.SetTop(pencil, tip.Y);
+
+                if (curTick >= totalTicks)
+                {
+                    timer.Stop();
+                    hostCanvas.Children.Remove(pencil);
+                    if (onCompleted != null) onCompleted();
+                }
+            };
+            timer.Start();
+        }
+
+        // Generates an organic hand-drawn spiral loop matching the user's red hand-drawn circle reference:
+        // Starts inside the upper-right arc, sweeps ~435 degrees counter-clockwise in a slightly tilted oval,
+        // and overlaps above the starting tail at the top!
+        private static List<Point> BuildHandDrawnCirclePoints(double cx, double cy, double rx, double ry, double seedOffset = 0.0)
+        {
+            var pts = new List<Point>();
+            int steps = 64;
+            double startAngle = -0.32 * Math.PI; // ~ -58 deg (upper right inner start)
+            double totalSweep = -2.42 * Math.PI; // ~ 435 deg sweep so the top stroke overlaps the start tail!
+            double tilt = -0.09;                 // slight natural hand tilt (~ -5 deg)
+            double cosT = Math.Cos(tilt);
+            double sinT = Math.Sin(tilt);
+
+            for (int i = 0; i <= steps; i++)
+            {
+                double u = (double)i / steps;
+                double theta = startAngle + u * totalSweep;
+
+                // Spiral expansion: starts slightly tighter (0.82) and expands to 1.08 so the overlapping top arc sits cleanly above the start tail
+                double spiralScale = 0.82 + 0.26 * Math.Min(1.0, u * 1.15);
+                if (u > 0.82)
+                {
+                    // Gentle outward flick at the finishing tail on top
+                    spiralScale += (u - 0.82) * 0.22;
+                }
+
+                // Organic hand wobble (subtle low-frequency human hand variation)
+                double wobbleX = 1.0 + 0.035 * Math.Sin(theta * 2.0 + seedOffset) + 0.018 * Math.Cos(theta * 3.0 - seedOffset);
+                double wobbleY = 1.0 + 0.035 * Math.Cos(theta * 2.0 - seedOffset) + 0.020 * Math.Sin(theta * 3.0 + seedOffset);
+
+                double localX = rx * spiralScale * wobbleX * Math.Cos(theta);
+                double localY = ry * spiralScale * wobbleY * Math.Sin(theta);
+
+                double px = cx + (localX * cosT - localY * sinT);
+                double py = cy + (localX * sinT + localY * cosT);
+                pts.Add(new Point(px, py));
+            }
+            return pts;
+        }
+
+        // Generates a hand-drawn bracket/box or double marker underline for highlights
+        private static List<Point> BuildHandDrawnBoxPoints(double x, double y, double w, double h)
+        {
+            var pts = new List<Point>();
+            int segs = 14;
+            // Top edge (left to right with slight hand arc)
+            for (int i = 0; i <= segs; i++)
+            {
+                double u = (double)i / segs;
+                pts.Add(new Point(x + u * w, y - 2.0 * Math.Sin(u * Math.PI)));
+            }
+            // Right edge (top to bottom)
+            for (int i = 1; i <= 8; i++)
+            {
+                double u = (double)i / 8;
+                pts.Add(new Point(x + w + 1.5 * Math.Sin(u * Math.PI), y + u * h));
+            }
+            // Bottom edge (right to left)
+            for (int i = 1; i <= segs; i++)
+            {
+                double u = (double)i / segs;
+                pts.Add(new Point(x + w - u * w, y + h + 2.2 * Math.Sin(u * Math.PI)));
+            }
+            // Left edge (bottom to top + slight overshoot overlap at top-left corner)
+            for (int i = 1; i <= 9; i++)
+            {
+                double u = (double)i / 8;
+                pts.Add(new Point(x - 1.5 * Math.Sin(u * Math.PI) + (u > 1.0 ? 8.0 * (u - 1.0) : 0), y + h - Math.Min(1.05, u) * h));
+            }
+            return pts;
         }
 
         private void RenderCircle(SceneObjectPayload obj, bool immediate = false)
         {
-            double cx = 0, cy = 0, radius = 35.0;
+            double cx = 0, cy = 0, rx = 46.0, ry = 34.0;
             if (obj.from != null)
             {
                 cx = Math.Max(0.0, Math.Min(1.0, obj.from.x)) * Width;
                 cy = Math.Max(0.0, Math.Min(1.0, obj.from.y)) * Height;
                 if (obj.radius.HasValue && obj.radius.Value > 0)
                 {
-                    radius = obj.radius.Value * Math.Min(Width, Height);
+                    double r = obj.radius.Value * Math.Min(Width, Height);
+                    rx = r * 1.25;
+                    ry = r * 0.90;
                 }
             }
             else if (obj.rect != null)
             {
-                double rx = Math.Max(0.0, Math.Min(1.0, obj.rect.x)) * Width;
-                double ry = Math.Max(0.0, Math.Min(1.0, obj.rect.y)) * Height;
-                double rw = Math.Max(20, Math.Min(1.0, obj.rect.w) * Width);
-                double rh = Math.Max(20, Math.Min(1.0, obj.rect.h) * Height);
-                cx = rx + rw / 2.0;
-                cy = ry + rh / 2.0;
-                radius = Math.Max(rw, rh) / 2.0;
+                double rectX = Math.Max(0.0, Math.Min(1.0, obj.rect.x)) * Width;
+                double rectY = Math.Max(0.0, Math.Min(1.0, obj.rect.y)) * Height;
+                double rw = Math.Max(28, Math.Min(1.0, obj.rect.w) * Width);
+                double rh = Math.Max(22, Math.Min(1.0, obj.rect.h) * Height);
+                cx = rectX + rw / 2.0;
+                cy = rectY + rh / 2.0;
+                rx = Math.Max(26.0, rw * 0.62);
+                ry = Math.Max(20.0, rh * 0.62);
             }
             else return;
 
-            radius = Math.Max(18.0, Math.Min(350.0, radius));
-            Color strokeCol = ParseSceneColor(obj.color, Color.FromRgb(0x02, 0x84, 0xC7));
-            double strokeW = obj.strokeWidth.HasValue && obj.strokeWidth.Value > 0 ? obj.strokeWidth.Value : 2.5;
+            rx = Math.Max(24.0, Math.Min(360.0, rx));
+            ry = Math.Max(18.0, Math.Min(260.0, ry));
 
-            var circleEl = new Ellipse
-            {
-                Width = radius * 2.0,
-                Height = radius * 2.0,
-                Stroke = new SolidColorBrush(strokeCol),
-                StrokeThickness = strokeW,
-                Fill = new SolidColorBrush(Color.FromArgb(22, strokeCol.R, strokeCol.G, strokeCol.B)),
-                Effect = new DropShadowEffect { Color = Colors.Black, BlurRadius = 8, Opacity = 0.15, ShadowDepth = 1 },
-                Opacity = immediate ? 1.0 : 0.0
-            };
-            Canvas.SetLeft(circleEl, cx - radius);
-            Canvas.SetTop(circleEl, cy - radius);
-            _canvas.Children.Add(circleEl);
+            // Default circle color to engaging tutor red-orange marker (#E11D48) or parsed color
+            Color strokeCol = string.IsNullOrWhiteSpace(obj.color)
+                ? Color.FromRgb(0xE1, 0x1D, 0x48)
+                : ParseSceneColor(obj.color, Color.FromRgb(0xE1, 0x1D, 0x48));
+            double strokeW = obj.strokeWidth.HasValue && obj.strokeWidth.Value > 0 ? obj.strokeWidth.Value : 3.6;
 
-            if (!immediate)
-            {
-                var st = new ScaleTransform(0.85, 0.85, radius, radius);
-                circleEl.RenderTransform = st;
-                var scaleAnim = new System.Windows.Media.Animation.DoubleAnimation(0.85, 1.0, new Duration(TimeSpan.FromMilliseconds(260)))
-                {
-                    EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
-                };
-                var fadeAnim = new System.Windows.Media.Animation.DoubleAnimation(0.0, 1.0, new Duration(TimeSpan.FromMilliseconds(180)));
-                st.BeginAnimation(ScaleTransform.ScaleXProperty, scaleAnim);
-                st.BeginAnimation(ScaleTransform.ScaleYProperty, scaleAnim);
-                circleEl.BeginAnimation(UIElement.OpacityProperty, fadeAnim);
-            }
+            var loopPts = BuildHandDrawnCirclePoints(cx, cy, rx, ry, (cx + cy) * 0.01);
+            AnimateHandDrawnPolyline(_canvas, loopPts, strokeCol, strokeW, 420, immediate);
 
             if (!string.IsNullOrWhiteSpace(obj.label) || !string.IsNullOrWhiteSpace(obj.text))
             {
                 string labelText = !string.IsNullOrWhiteSpace(obj.label) ? obj.label : obj.text;
                 var tag = CreateAnnotationLabel(labelText, strokeCol);
                 tag.Opacity = immediate ? 1.0 : 0.0;
-                Canvas.SetLeft(tag, Math.Max(12, Math.Min(Width - 220, cx - 40)));
-                Canvas.SetTop(tag, Math.Max(12, cy - radius - 34));
+                Canvas.SetLeft(tag, Math.Max(12, Math.Min(Width - 220, cx - rx * 0.5)));
+                Canvas.SetTop(tag, Math.Max(12, cy - ry - 42));
                 _canvas.Children.Add(tag);
 
                 if (!immediate)
                 {
-                    var tagFade = new System.Windows.Media.Animation.DoubleAnimation(0.0, 1.0, new Duration(TimeSpan.FromMilliseconds(200)))
+                    var tagFade = new System.Windows.Media.Animation.DoubleAnimation(0.0, 1.0, new Duration(TimeSpan.FromMilliseconds(220)))
                     {
-                        BeginTime = TimeSpan.FromMilliseconds(120)
+                        BeginTime = TimeSpan.FromMilliseconds(320)
                     };
                     tag.BeginAnimation(UIElement.OpacityProperty, tagFade);
                 }
@@ -2571,29 +2724,30 @@ namespace FlinchApp
             double rw = Math.Max(32, Math.Min(1.0, obj.rect.w) * Width);
             double rh = Math.Max(24, Math.Min(1.0, obj.rect.h) * Height);
 
-            Color fillCol = ParseSceneColor(obj.color, Color.FromRgb(0x02, 0x84, 0xC7));
-            var highlightBox = new Border
+            Color fillCol = ParseSceneColor(obj.color, Color.FromRgb(0xD9, 0x77, 0x06));
+            // Subtle warm highlighter wash behind the hand-sketched outline
+            var wash = new Border
             {
                 Width = immediate ? rw : 0.0,
                 Height = rh,
-                Background = new SolidColorBrush(Color.FromArgb(32, fillCol.R, fillCol.G, fillCol.B)),
-                BorderBrush = new SolidColorBrush(fillCol),
-                BorderThickness = new Thickness(2.0),
-                CornerRadius = new CornerRadius(6),
-                Effect = new DropShadowEffect { Color = Colors.Black, BlurRadius = 10, Opacity = 0.12, ShadowDepth = 2 }
+                Background = new SolidColorBrush(Color.FromArgb(26, fillCol.R, fillCol.G, fillCol.B)),
+                CornerRadius = new CornerRadius(5)
             };
-            Canvas.SetLeft(highlightBox, rx);
-            Canvas.SetTop(highlightBox, ry);
-            _canvas.Children.Add(highlightBox);
+            Canvas.SetLeft(wash, rx);
+            Canvas.SetTop(wash, ry);
+            _canvas.Children.Add(wash);
 
             if (!immediate)
             {
-                var sweepAnim = new System.Windows.Media.Animation.DoubleAnimation(0.0, rw, new Duration(TimeSpan.FromMilliseconds(320)))
+                var sweepAnim = new System.Windows.Media.Animation.DoubleAnimation(0.0, rw, new Duration(TimeSpan.FromMilliseconds(340)))
                 {
                     EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
                 };
-                highlightBox.BeginAnimation(FrameworkElement.WidthProperty, sweepAnim);
+                wash.BeginAnimation(FrameworkElement.WidthProperty, sweepAnim);
             }
+
+            var boxPts = BuildHandDrawnBoxPoints(rx, ry, rw, rh);
+            AnimateHandDrawnPolyline(_canvas, boxPts, fillCol, 3.0, 380, immediate);
 
             if (!string.IsNullOrWhiteSpace(obj.label) || !string.IsNullOrWhiteSpace(obj.text))
             {
@@ -2601,14 +2755,14 @@ namespace FlinchApp
                 var tag = CreateAnnotationLabel(labelText, fillCol);
                 tag.Opacity = immediate ? 1.0 : 0.0;
                 Canvas.SetLeft(tag, rx);
-                Canvas.SetTop(tag, Math.Max(8, ry - 34));
+                Canvas.SetTop(tag, Math.Max(8, ry - 38));
                 _canvas.Children.Add(tag);
 
                 if (!immediate)
                 {
                     var tagFade = new System.Windows.Media.Animation.DoubleAnimation(0.0, 1.0, new Duration(TimeSpan.FromMilliseconds(200)))
                     {
-                        BeginTime = TimeSpan.FromMilliseconds(160)
+                        BeginTime = TimeSpan.FromMilliseconds(280)
                     };
                     tag.BeginAnimation(UIElement.OpacityProperty, tagFade);
                 }
@@ -2618,11 +2772,11 @@ namespace FlinchApp
         private void RenderDraw(SceneObjectPayload obj, bool immediate = false)
         {
             Color strokeCol = ParseSceneColor(obj.color, Color.FromRgb(0x02, 0x84, 0xC7));
-            double strokeW = obj.strokeWidth.HasValue && obj.strokeWidth.Value > 0 ? obj.strokeWidth.Value : 3.0;
+            double strokeW = obj.strokeWidth.HasValue && obj.strokeWidth.Value > 0 ? obj.strokeWidth.Value : 3.2;
 
             if (obj.points != null && obj.points.Count >= 2)
             {
-                var pts = new PointCollection();
+                var pts = new List<Point>();
                 foreach (var p in obj.points)
                 {
                     pts.Add(new Point(
@@ -2630,23 +2784,7 @@ namespace FlinchApp
                         Math.Max(0.0, Math.Min(1.0, p.y)) * Height));
                 }
 
-                var polyline = new Polyline
-                {
-                    Points = pts,
-                    Stroke = new SolidColorBrush(strokeCol),
-                    StrokeThickness = strokeW,
-                    StrokeLineJoin = PenLineJoin.Round,
-                    StrokeStartLineCap = PenLineCap.Round,
-                    StrokeEndLineCap = PenLineCap.Round,
-                    Opacity = immediate ? 1.0 : 0.0
-                };
-                _canvas.Children.Add(polyline);
-
-                if (!immediate)
-                {
-                    var drawFade = new System.Windows.Media.Animation.DoubleAnimation(0.0, 1.0, new Duration(TimeSpan.FromMilliseconds(220)));
-                    polyline.BeginAnimation(UIElement.OpacityProperty, drawFade);
-                }
+                AnimateHandDrawnPolyline(_canvas, pts, strokeCol, strokeW, 380, immediate);
 
                 if (!string.IsNullOrWhiteSpace(obj.label))
                 {
@@ -2654,14 +2792,14 @@ namespace FlinchApp
                     var tag = CreateAnnotationLabel(obj.label, strokeCol);
                     tag.Opacity = immediate ? 1.0 : 0.0;
                     Canvas.SetLeft(tag, Math.Max(10, Math.Min(Width - 160, firstPt.X)));
-                    Canvas.SetTop(tag, Math.Max(10, firstPt.Y - 32));
+                    Canvas.SetTop(tag, Math.Max(10, firstPt.Y - 36));
                     _canvas.Children.Add(tag);
 
                     if (!immediate)
                     {
                         var tagFade = new System.Windows.Media.Animation.DoubleAnimation(0.0, 1.0, new Duration(TimeSpan.FromMilliseconds(180)))
                         {
-                            BeginTime = TimeSpan.FromMilliseconds(120)
+                            BeginTime = TimeSpan.FromMilliseconds(220)
                         };
                         tag.BeginAnimation(UIElement.OpacityProperty, tagFade);
                     }
@@ -2700,54 +2838,41 @@ namespace FlinchApp
             double endY = Math.Max(0.0, Math.Min(1.0, obj.to.y)) * Height;
 
             Color strokeCol = ParseSceneColor(obj.color, Color.FromRgb(0x02, 0x84, 0xC7));
-            var arrowLine = new Line
-            {
-                X1 = startX,
-                Y1 = startY,
-                X2 = immediate ? endX : startX,
-                Y2 = immediate ? endY : startY,
-                Stroke = new SolidColorBrush(strokeCol),
-                StrokeThickness = 2.8,
-                StrokeStartLineCap = PenLineCap.Round,
-                StrokeEndLineCap = PenLineCap.Round,
-                Effect = new DropShadowEffect { Color = Colors.Black, BlurRadius = 6, Opacity = 0.16, ShadowDepth = 1 }
-            };
-            _canvas.Children.Add(arrowLine);
 
-            if (!immediate)
+            // Build a slightly curved, organic hand-drawn arrow shaft + hand-sketched open V arrowhead
+            double dx = endX - startX;
+            double dy = endY - startY;
+            double len = Math.Max(1.0, Math.Sqrt(dx * dx + dy * dy));
+            double nx = -dy / len;
+            double ny = dx / len;
+            double curveBow = Math.Min(22.0, len * 0.14);
+
+            var shaftPts = new List<Point>();
+            int segs = 24;
+            for (int i = 0; i <= segs; i++)
             {
-                var lineAnimX = new System.Windows.Media.Animation.DoubleAnimation(startX, endX, new Duration(TimeSpan.FromMilliseconds(280)))
-                {
-                    EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
-                };
-                var lineAnimY = new System.Windows.Media.Animation.DoubleAnimation(startY, endY, new Duration(TimeSpan.FromMilliseconds(280)))
-                {
-                    EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
-                };
-                arrowLine.BeginAnimation(Line.X2Property, lineAnimX);
-                arrowLine.BeginAnimation(Line.Y2Property, lineAnimY);
+                double u = (double)i / segs;
+                double arc = Math.Sin(u * Math.PI) * curveBow + Math.Sin(u * Math.PI * 3.0) * 1.4;
+                double px = startX + u * dx + nx * arc;
+                double py = startY + u * dy + ny * arc;
+                shaftPts.Add(new Point(px, py));
             }
 
-            double arrowLen = 14.0;
-            double arrowAngle = Math.PI / 6.0;
-            double angle = Math.Atan2(endY - startY, endX - startX);
+            // Tangent angle at the arrow tip
+            Point prevPt = shaftPts[shaftPts.Count - 3];
+            double tipAngle = Math.Atan2(endY - prevPt.Y, endX - prevPt.X);
+            double wingLen = 16.0;
+            double wingAngle = 0.48; // ~27.5 deg
 
-            var p1 = new Point(endX, endY);
-            var p2 = new Point(endX - arrowLen * Math.Cos(angle - arrowAngle), endY - arrowLen * Math.Sin(angle - arrowAngle));
-            var p3 = new Point(endX - arrowLen * Math.Cos(angle + arrowAngle), endY - arrowLen * Math.Sin(angle + arrowAngle));
+            var wing1 = new Point(endX - wingLen * Math.Cos(tipAngle - wingAngle), endY - wingLen * Math.Sin(tipAngle - wingAngle));
+            var wing2 = new Point(endX - (wingLen * 0.92) * Math.Cos(tipAngle + wingAngle + 0.06), endY - (wingLen * 0.92) * Math.Sin(tipAngle + wingAngle + 0.06));
 
-            var tip = new Polygon
-            {
-                Points = new PointCollection(new[] { p1, p2, p3 }),
-                Fill = new SolidColorBrush(strokeCol),
-                Opacity = immediate ? 1.0 : 0.0
-            };
-            _canvas.Children.Add(tip);
+            // Add hand-sketched arrowhead strokes right onto the end of the path so the pencil draws the shaft AND the V-tip in one fluid motion
+            shaftPts.Add(wing1);
+            shaftPts.Add(new Point(endX, endY));
+            shaftPts.Add(wing2);
 
-            if (!immediate)
-            {
-                tip.BeginAnimation(UIElement.OpacityProperty, new System.Windows.Media.Animation.DoubleAnimation(0.0, 1.0, new Duration(TimeSpan.FromMilliseconds(150))) { BeginTime = TimeSpan.FromMilliseconds(220) });
-            }
+            AnimateHandDrawnPolyline(_canvas, shaftPts, strokeCol, 3.2, 360, immediate);
 
             if (!string.IsNullOrWhiteSpace(obj.label) || !string.IsNullOrWhiteSpace(obj.text))
             {
@@ -2755,14 +2880,14 @@ namespace FlinchApp
                 var labelBorder = CreateAnnotationLabel(labelText, strokeCol);
                 labelBorder.Opacity = immediate ? 1.0 : 0.0;
                 Canvas.SetLeft(labelBorder, Math.Max(12, Math.Min(Width - 180, startX - 20)));
-                Canvas.SetTop(labelBorder, Math.Max(12, Math.Min(Height - 44, startY - 36)));
+                Canvas.SetTop(labelBorder, Math.Max(12, Math.Min(Height - 44, startY - 38)));
                 _canvas.Children.Add(labelBorder);
 
                 if (!immediate)
                 {
                     var tagFade = new System.Windows.Media.Animation.DoubleAnimation(0.0, 1.0, new Duration(TimeSpan.FromMilliseconds(180)))
                     {
-                        BeginTime = TimeSpan.FromMilliseconds(220)
+                        BeginTime = TimeSpan.FromMilliseconds(260)
                     };
                     labelBorder.BeginAnimation(UIElement.OpacityProperty, tagFade);
                 }
@@ -2777,24 +2902,8 @@ namespace FlinchApp
             double rh = Math.Max(20, Math.Min(1.0, obj.rect.h) * Height);
 
             Color strokeCol = ParseSceneColor(obj.color, Color.FromRgb(0x02, 0x84, 0xC7));
-            var outlineBorder = new Border
-            {
-                Width = rw,
-                Height = rh,
-                BorderThickness = new Thickness(2.0),
-                BorderBrush = new SolidColorBrush(strokeCol),
-                CornerRadius = new CornerRadius(6),
-                Background = new SolidColorBrush(Color.FromArgb(18, strokeCol.R, strokeCol.G, strokeCol.B)),
-                Opacity = immediate ? 1.0 : 0.0
-            };
-            Canvas.SetLeft(outlineBorder, rx);
-            Canvas.SetTop(outlineBorder, ry);
-            _canvas.Children.Add(outlineBorder);
-
-            if (!immediate)
-            {
-                outlineBorder.BeginAnimation(UIElement.OpacityProperty, new System.Windows.Media.Animation.DoubleAnimation(0.0, 1.0, new Duration(TimeSpan.FromMilliseconds(180))));
-            }
+            var boxPts = BuildHandDrawnBoxPoints(rx, ry, rw, rh);
+            AnimateHandDrawnPolyline(_canvas, boxPts, strokeCol, 3.0, 360, immediate);
 
             if (!string.IsNullOrWhiteSpace(obj.label) || !string.IsNullOrWhiteSpace(obj.text))
             {
@@ -2802,12 +2911,12 @@ namespace FlinchApp
                 var tag = CreateAnnotationLabel(labelText, strokeCol);
                 tag.Opacity = immediate ? 1.0 : 0.0;
                 Canvas.SetLeft(tag, rx);
-                Canvas.SetTop(tag, Math.Max(8, ry - 32));
+                Canvas.SetTop(tag, Math.Max(8, ry - 36));
                 _canvas.Children.Add(tag);
 
                 if (!immediate)
                 {
-                    tag.BeginAnimation(UIElement.OpacityProperty, new System.Windows.Media.Animation.DoubleAnimation(0.0, 1.0, new Duration(TimeSpan.FromMilliseconds(180))) { BeginTime = TimeSpan.FromMilliseconds(120) });
+                    tag.BeginAnimation(UIElement.OpacityProperty, new System.Windows.Media.Animation.DoubleAnimation(0.0, 1.0, new Duration(TimeSpan.FromMilliseconds(180))) { BeginTime = TimeSpan.FromMilliseconds(220) });
                 }
             }
         }
@@ -2835,20 +2944,20 @@ namespace FlinchApp
                 {
                     Text = obj.label,
                     Foreground = new SolidColorBrush(Color.FromRgb(15, 23, 42)),
-                    FontSize = 12.5,
-                    FontWeight = FontWeights.SemiBold,
-                    FontFamily = new FontFamily("Segoe UI Semibold, Segoe UI"),
+                    FontSize = 13.5,
+                    FontWeight = FontWeights.Bold,
+                    FontFamily = new FontFamily("Segoe Print, Ink Free, Comic Sans MS, Segoe UI"),
                     Margin = new Thickness(0, 0, 0, 4)
                 });
             }
             stack.Children.Add(new TextBlock
             {
                 Text = obj.text ?? obj.label ?? "",
-                Foreground = new SolidColorBrush(Color.FromRgb(71, 85, 105)),
-                FontSize = 12.5,
-                FontFamily = new FontFamily("Segoe UI"),
+                Foreground = new SolidColorBrush(Color.FromRgb(51, 65, 85)),
+                FontSize = 13,
+                FontFamily = new FontFamily("Segoe Print, Ink Free, Comic Sans MS, Segoe UI"),
                 TextWrapping = TextWrapping.Wrap,
-                LineHeight = 18
+                LineHeight = 19
             });
             calloutBorder.Child = stack;
             Canvas.SetLeft(calloutBorder, Math.Max(12, Math.Min(Width - 380, cx)));
@@ -2882,7 +2991,7 @@ namespace FlinchApp
                 Foreground = new SolidColorBrush(Color.FromRgb(15, 23, 42)),
                 FontSize = 15,
                 FontWeight = FontWeights.SemiBold,
-                FontFamily = new FontFamily("Consolas, Cambria Math, Segoe UI")
+                FontFamily = new FontFamily("Segoe Print, Consolas, Segoe UI")
             };
             eqStack.Children.Add(eqText);
             eqBorder.Child = eqStack;
@@ -2898,69 +3007,83 @@ namespace FlinchApp
             double sw = Math.Max(30, Math.Min(1.0, obj.rect.w) * Width);
             double sh = Math.Max(30, Math.Min(1.0, obj.rect.h) * Height);
 
-            var spotBorder = new Border
-            {
-                Width = sw,
-                Height = sh,
-                BorderThickness = new Thickness(2),
-                BorderBrush = new SolidColorBrush(Color.FromRgb(0x02, 0x84, 0xC7)),
-                Background = new SolidColorBrush(Color.FromArgb(20, 0x02, 0x84, 0xC7)),
-                CornerRadius = new CornerRadius(8)
-            };
-            Canvas.SetLeft(spotBorder, sx);
-            Canvas.SetTop(spotBorder, sy);
-            _canvas.Children.Add(spotBorder);
+            var boxPts = BuildHandDrawnBoxPoints(sx, sy, sw, sh);
+            AnimateHandDrawnPolyline(_canvas, boxPts, Color.FromRgb(0xE1, 0x1D, 0x48), 3.2, 360, false);
         }
 
+        // Interactive Tutor Whiteboard: writes step-by-step lists, hand-drawn circles around step numbers,
+        // connecting hand-sketched arrows, and circles the final answer with a live pencil!
         private void RenderNotepadBook(SceneObjectPayload obj, bool immediate = false)
         {
             if (obj == null || _isDismissing) return;
 
-            double cardW = Math.Min(400, Width * 0.42);
-            double cardX = Width - cardW - 28;
-            double cardY = 68;
+            double boardW = Math.Min(430, Width * 0.44);
+            double boardX = Width - boardW - 26;
+            double boardY = 68;
 
             if (obj.rect != null && obj.rect.w > 0.05)
             {
-                cardX = Math.Max(20, Math.Min(Width - cardW - 20, obj.rect.x * Width));
-                cardY = Math.Max(40, Math.Min(Height - 380, obj.rect.y * Height));
+                boardX = Math.Max(20, Math.Min(Width - boardW - 20, obj.rect.x * Width));
+                boardY = Math.Max(40, Math.Min(Height - 420, obj.rect.y * Height));
             }
 
-            // Human-crafted clean white surface card (#FFFFFF, 1px #E2E8F0 border, subtle natural drop shadow)
-            var cardBorder = new Border
+            // Physical Whiteboard frame (#FFFFFF canvas, warm aluminum/slate border, bottom marker tray)
+            var boardOuter = new Border
             {
-                Width = cardW,
+                Width = boardW,
                 Background = new SolidColorBrush(Color.FromRgb(255, 255, 255)),
-                BorderBrush = new SolidColorBrush(Color.FromRgb(226, 232, 240)),
-                BorderThickness = new Thickness(1),
-                CornerRadius = new CornerRadius(12),
-                Padding = new Thickness(20, 18, 20, 18),
-                Effect = new DropShadowEffect { Color = Colors.Black, BlurRadius = 22, Opacity = 0.14, ShadowDepth = 6 },
+                BorderBrush = new SolidColorBrush(Color.FromRgb(203, 213, 225)),
+                BorderThickness = new Thickness(2),
+                CornerRadius = new CornerRadius(14),
+                Effect = new DropShadowEffect { Color = Colors.Black, BlurRadius = 24, Opacity = 0.16, ShadowDepth = 6 },
                 Opacity = immediate ? 1.0 : 0.0
             };
 
-            var mainStack = new StackPanel();
+            var rootGrid = new Grid();
+            // Subtle whiteboard dot-grid background
+            var dotGridCanvas = new Canvas { IsHitTestVisible = false, ClipToBounds = true };
+            for (int gx = 18; gx < (int)boardW - 10; gx += 22)
+            {
+                for (int gy = 18; gy < 460; gy += 22)
+                {
+                    var dot = new Ellipse
+                    {
+                        Width = 2,
+                        Height = 2,
+                        Fill = new SolidColorBrush(Color.FromRgb(226, 232, 240))
+                    };
+                    Canvas.SetLeft(dot, gx);
+                    Canvas.SetTop(dot, gy);
+                    dotGridCanvas.Children.Add(dot);
+                }
+            }
+            rootGrid.Children.Add(dotGridCanvas);
 
-            // Portrait + Bio Header or Clean Title Header
+            // Overlay sketch canvas for hand-drawn underlines, step circles, and live pencil writing
+            var sketchOverlay = new Canvas { IsHitTestVisible = false };
+
+            var mainStack = new StackPanel { Margin = new Thickness(22, 18, 22, 16) };
+
+            // 1. Optional Wikimedia Portrait + Handwritten Whiteboard Title
             if (!string.IsNullOrWhiteSpace(obj.imageUrl))
             {
                 try
                 {
-                    var bioDock = new DockPanel { Margin = new Thickness(0, 0, 0, 14) };
+                    var bioDock = new DockPanel { Margin = new Thickness(0, 0, 0, 10) };
                     var img = new Image
                     {
-                        Width = 72,
-                        Height = 72,
+                        Width = 68,
+                        Height = 68,
                         Stretch = Stretch.UniformToFill,
-                        Clip = new RectangleGeometry(new Rect(0, 0, 72, 72), 8, 8)
+                        Clip = new RectangleGeometry(new Rect(0, 0, 68, 68), 8, 8)
                     };
                     var imgBorder = new Border
                     {
-                        Width = 74,
-                        Height = 74,
-                        Background = new SolidColorBrush(Color.FromRgb(241, 245, 249)),
-                        BorderBrush = new SolidColorBrush(Color.FromRgb(226, 232, 240)),
-                        BorderThickness = new Thickness(1),
+                        Width = 72,
+                        Height = 72,
+                        Background = new SolidColorBrush(Color.FromRgb(248, 250, 252)),
+                        BorderBrush = new SolidColorBrush(Color.FromRgb(148, 163, 184)),
+                        BorderThickness = new Thickness(1.5),
                         CornerRadius = new CornerRadius(9),
                         Margin = new Thickness(0, 0, 14, 0),
                         Visibility = Visibility.Collapsed,
@@ -3025,21 +3148,22 @@ namespace FlinchApp
                     var bioTextStack = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
                     bioTextStack.Children.Add(new TextBlock
                     {
-                        Text = string.IsNullOrWhiteSpace(obj.title) ? "Overview" : obj.title,
+                        Text = string.IsNullOrWhiteSpace(obj.title) ? "Whiteboard Guide" : obj.title,
                         Foreground = new SolidColorBrush(Color.FromRgb(15, 23, 42)),
-                        FontSize = 16,
-                        FontWeight = FontWeights.SemiBold,
-                        FontFamily = new FontFamily("Segoe UI Semibold, Segoe UI")
+                        FontSize = 17,
+                        FontWeight = FontWeights.Bold,
+                        FontFamily = new FontFamily("Segoe Print, Ink Free, Comic Sans MS, Segoe UI"),
+                        TextWrapping = TextWrapping.Wrap
                     });
                     if (!string.IsNullOrWhiteSpace(obj.subtitle))
                     {
                         bioTextStack.Children.Add(new TextBlock
                         {
                             Text = obj.subtitle,
-                            Foreground = new SolidColorBrush(Color.FromRgb(100, 116, 139)),
-                            FontSize = 12,
-                            FontFamily = new FontFamily("Segoe UI"),
-                            Margin = new Thickness(0, 3, 0, 0),
+                            Foreground = new SolidColorBrush(Color.FromRgb(71, 85, 105)),
+                            FontSize = 12.5,
+                            FontFamily = new FontFamily("Segoe Print, Ink Free, Comic Sans MS, Segoe UI"),
+                            Margin = new Thickness(0, 2, 0, 0),
                             TextWrapping = TextWrapping.Wrap
                         });
                     }
@@ -3050,78 +3174,224 @@ namespace FlinchApp
             }
             else
             {
-                var titleStack = new StackPanel { Margin = new Thickness(0, 0, 0, 12) };
+                var titleStack = new StackPanel { Margin = new Thickness(0, 0, 0, 6) };
                 titleStack.Children.Add(new TextBlock
                 {
-                    Text = string.IsNullOrWhiteSpace(obj.title) ? "Reference Note" : obj.title,
+                    Text = string.IsNullOrWhiteSpace(obj.title) ? "Step-by-Step Whiteboard" : obj.title,
                     Foreground = new SolidColorBrush(Color.FromRgb(15, 23, 42)),
-                    FontWeight = FontWeights.SemiBold,
-                    FontSize = 16,
-                    FontFamily = new FontFamily("Segoe UI Semibold, Segoe UI")
+                    FontWeight = FontWeights.Bold,
+                    FontSize = 17,
+                    FontFamily = new FontFamily("Segoe Print, Ink Free, Comic Sans MS, Segoe UI"),
+                    TextWrapping = TextWrapping.Wrap
                 });
                 if (!string.IsNullOrWhiteSpace(obj.subtitle))
                 {
                     titleStack.Children.Add(new TextBlock
                     {
                         Text = obj.subtitle,
-                        Foreground = new SolidColorBrush(Color.FromRgb(100, 116, 139)),
-                        FontSize = 12,
-                        FontFamily = new FontFamily("Segoe UI"),
-                        Margin = new Thickness(0, 3, 0, 0),
+                        Foreground = new SolidColorBrush(Color.FromRgb(71, 85, 105)),
+                        FontSize = 12.5,
+                        FontFamily = new FontFamily("Segoe Print, Ink Free, Comic Sans MS, Segoe UI"),
+                        Margin = new Thickness(0, 2, 0, 0),
                         TextWrapping = TextWrapping.Wrap
                     });
                 }
                 mainStack.Children.Add(titleStack);
             }
 
-            // Crisp 1px neutral divider
-            mainStack.Children.Add(new Border
+            // Hand-drawn wavy marker underline under the title
+            var underlineCanvas = new Canvas { Height = 12, Margin = new Thickness(0, 0, 0, 10) };
+            double ulWidth = boardW - 48;
+            var ulPts = new List<Point>();
+            for (int i = 0; i <= 24; i++)
             {
-                Height = 1,
-                Background = new SolidColorBrush(Color.FromRgb(241, 245, 249)),
-                Margin = new Thickness(0, 0, 0, 12)
-            });
+                double u = (double)i / 24;
+                ulPts.Add(new Point(u * ulWidth, 4.0 + 1.8 * Math.Sin(u * Math.PI * 2.0)));
+            }
+            AnimateHandDrawnPolyline(underlineCanvas, ulPts, Color.FromRgb(0xE1, 0x1D, 0x48), 2.6, 260, immediate);
+            mainStack.Children.Add(underlineCanvas);
 
-            // Content Rows
+            // 2. Step-by-Step Handwritten Guide Rows + Hand-Drawn Step Circles & Arrows
             var modernPanel = new StackPanel();
             string solutionText = obj.text ?? "";
-            var lines = solutionText.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
-            foreach (var line in lines)
-            {
-                bool isResult = line.IndexOf("Result", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                                line.IndexOf("Answer", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                                line.IndexOf("= 9", StringComparison.OrdinalIgnoreCase) >= 0;
+            var rawLines = solutionText.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
 
-                var lineBorder = new Border
+            Color[] stepColors = new[]
+            {
+                Color.FromRgb(0x02, 0x84, 0xC7), // Cobalt marker
+                Color.FromRgb(0xD9, 0x77, 0x06), // Amber marker
+                Color.FromRgb(0x16, 0xA3, 0x4A), // Green marker
+                Color.FromRgb(0x7C, 0x3A, 0xED), // Purple marker
+                Color.FromRgb(0xE1, 0x1D, 0x48)  // Red marker
+            };
+
+            int stepIndex = 0;
+            for (int li = 0; li < rawLines.Length; li++)
+            {
+                string rawLine = rawLines[li].Trim();
+                if (string.IsNullOrEmpty(rawLine)) continue;
+
+                // Strip leading numbering like "1.", "①", "Step 1:" so we can draw our own hand-sketched circle number!
+                string cleanStepText = Regex.Replace(rawLine, @"^(?:[①②③④⑤⑥]|(?:\d+[\.\)\:])|(?:Step\s+\d+[\.\)\:]?))\s*", "", RegexOptions.IgnoreCase).Trim();
+                if (string.IsNullOrEmpty(cleanStepText)) cleanStepText = rawLine;
+
+                bool isFinalConclusion = (li == rawLines.Length - 1 && rawLines.Length > 1) ||
+                                         rawLine.IndexOf("Result", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                         rawLine.IndexOf("Answer", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                         rawLine.IndexOf("Conclusion", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                         rawLine.IndexOf("= 9", StringComparison.OrdinalIgnoreCase) >= 0;
+
+                Color markerCol = isFinalConclusion
+                    ? Color.FromRgb(0xE1, 0x1D, 0x48)
+                    : stepColors[stepIndex % stepColors.Length];
+
+                var stepRow = new DockPanel { Margin = new Thickness(0, 0, 0, 6) };
+
+                // Left hand-drawn step circle badge (1, 2, 3... or ★ for final conclusion)
+                var badgeCanvas = new Canvas
                 {
-                    Background = isResult
-                        ? new SolidColorBrush(Color.FromRgb(240, 249, 255))
-                        : new SolidColorBrush(Color.FromRgb(248, 250, 252)),
-                    BorderBrush = isResult
-                        ? new SolidColorBrush(Color.FromRgb(186, 230, 253))
-                        : new SolidColorBrush(Color.FromRgb(241, 245, 249)),
-                    BorderThickness = new Thickness(1),
-                    CornerRadius = new CornerRadius(6),
-                    Padding = new Thickness(12, 8, 12, 8),
-                    Margin = new Thickness(0, 0, 0, 6)
+                    Width = 34,
+                    Height = 32,
+                    Margin = new Thickness(0, 2, 10, 0),
+                    VerticalAlignment = VerticalAlignment.Top
                 };
-                lineBorder.Child = new TextBlock
+                var miniCirclePts = BuildHandDrawnCirclePoints(16, 15, 13, 11, stepIndex * 1.7);
+                var miniPoly = new Polyline
                 {
-                    Text = line,
-                    Foreground = isResult
-                        ? new SolidColorBrush(Color.FromRgb(3, 105, 161))
-                        : new SolidColorBrush(Color.FromRgb(51, 65, 85)),
-                    FontSize = 12.5,
-                    FontWeight = isResult ? FontWeights.SemiBold : FontWeights.Normal,
-                    FontFamily = new FontFamily("Segoe UI"),
+                    Points = new PointCollection(miniCirclePts),
+                    Stroke = new SolidColorBrush(markerCol),
+                    StrokeThickness = 2.2,
+                    StrokeLineJoin = PenLineJoin.Round,
+                    StrokeStartLineCap = PenLineCap.Round,
+                    StrokeEndLineCap = PenLineCap.Round
+                };
+                badgeCanvas.Children.Add(miniPoly);
+
+                var numText = new TextBlock
+                {
+                    Text = isFinalConclusion ? "✓" : (stepIndex + 1).ToString(),
+                    Foreground = new SolidColorBrush(markerCol),
+                    FontSize = 13,
+                    FontWeight = FontWeights.Bold,
+                    FontFamily = new FontFamily("Segoe Print, Ink Free, Comic Sans MS, Segoe UI")
+                };
+                Canvas.SetLeft(numText, isFinalConclusion ? 10 : 11);
+                Canvas.SetTop(numText, 4);
+                badgeCanvas.Children.Add(numText);
+
+                DockPanel.SetDock(badgeCanvas, Dock.Left);
+                stepRow.Children.Add(badgeCanvas);
+
+                // Right handwritten step text (animated letter-by-letter when immediate == false)
+                var stepTextHost = new Grid();
+                var stepTb = new TextBlock
+                {
+                    Text = immediate ? cleanStepText : "",
+                    Foreground = isFinalConclusion
+                        ? new SolidColorBrush(Color.FromRgb(0xBE, 0x12, 0x3C))
+                        : new SolidColorBrush(Color.FromRgb(30, 41, 59)),
+                    FontSize = isFinalConclusion ? 14.0 : 13.2,
+                    FontWeight = isFinalConclusion ? FontWeights.Bold : FontWeights.SemiBold,
+                    FontFamily = new FontFamily("Segoe Print, Ink Free, Comic Sans MS, Segoe UI"),
                     TextWrapping = TextWrapping.Wrap,
-                    LineHeight = 18
+                    LineHeight = 20,
+                    Margin = new Thickness(0, 2, 0, 2)
                 };
-                modernPanel.Children.Add(lineBorder);
+                stepTextHost.Children.Add(stepTb);
+
+                // If this is the final conclusion, draw a hand-sketched red loop around the result once written!
+                if (isFinalConclusion)
+                {
+                    stepTextHost.Margin = new Thickness(0, 8, 0, 8);
+                    stepTb.Padding = new Thickness(18, 10, 18, 10);
+                    var finalLoopCanvas = new Canvas { IsHitTestVisible = false };
+                    stepTextHost.Children.Add(finalLoopCanvas);
+                    if (immediate)
+                    {
+                        stepTb.Measure(new Size(boardW - 92, double.PositiveInfinity));
+                        double w = Math.Max(160, Math.Min(boardW - 84, stepTb.DesiredSize.Width + 12));
+                        double h = Math.Max(42, stepTb.DesiredSize.Height + 10);
+                        var resLoop = BuildHandDrawnCirclePoints(w / 2.0, h / 2.0, w * 0.52, h * 0.60, 2.3);
+                        AnimateHandDrawnPolyline(finalLoopCanvas, resLoop, Color.FromRgb(0xE1, 0x1D, 0x48), 2.4, 300, true);
+                    }
+                    else
+                    {
+                        int loopDelayMs = 450 + stepIndex * 750;
+                        Task.Delay(loopDelayMs).ContinueWith(_ =>
+                        {
+                            Dispatcher.BeginInvoke(new Action(() =>
+                            {
+                                if (_isDismissing) return;
+                                double w = Math.Max(160, Math.Min(boardW - 84, stepTb.ActualWidth > 20 ? stepTb.ActualWidth + 12 : 250));
+                                double h = Math.Max(42, stepTb.ActualHeight > 10 ? stepTb.ActualHeight + 10 : 50);
+                                var resLoop = BuildHandDrawnCirclePoints(w / 2.0, h / 2.0, w * 0.52, h * 0.60, 2.3);
+                                AnimateHandDrawnPolyline(finalLoopCanvas, resLoop, Color.FromRgb(0xE1, 0x1D, 0x48), 2.4, 380, false);
+                            }));
+                        });
+                    }
+                }
+
+                stepRow.Children.Add(stepTextHost);
+                modernPanel.Children.Add(stepRow);
+
+                // Hand-drawn downward arrow connecting to the next step
+                if (li < rawLines.Length - 1)
+                {
+                    var arrowConnCanvas = new Canvas { Height = 16, Margin = new Thickness(12, 0, 0, 4), HorizontalAlignment = HorizontalAlignment.Left };
+                    var connPts = new List<Point>
+                    {
+                        new Point(4, 1),
+                        new Point(3, 8),
+                        new Point(4, 14),
+                        new Point(0, 10),
+                        new Point(4, 14),
+                        new Point(8, 10)
+                    };
+                    var connPoly = new Polyline
+                    {
+                        Points = new PointCollection(connPts),
+                        Stroke = new SolidColorBrush(Color.FromRgb(148, 163, 184)),
+                        StrokeThickness = 1.8,
+                        StrokeLineJoin = PenLineJoin.Round,
+                        StrokeStartLineCap = PenLineCap.Round,
+                        StrokeEndLineCap = PenLineCap.Round
+                    };
+                    arrowConnCanvas.Children.Add(connPoly);
+                    modernPanel.Children.Add(arrowConnCanvas);
+                }
+
+                // Live typewriter handwriting effect for each step
+                if (!immediate)
+                {
+                    string targetStr = cleanStepText;
+                    TextBlock capturedTb = stepTb;
+                    int startDelay = 180 + stepIndex * 650;
+                    Task.Delay(startDelay).ContinueWith(_ =>
+                    {
+                        Dispatcher.BeginInvoke(new Action(() =>
+                        {
+                            if (_isDismissing) return;
+                            int charIdx = 0;
+                            int charsPerTick = Math.Max(1, targetStr.Length / 22);
+                            var writeTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(22) };
+                            writeTimer.Tick += (ws, we) =>
+                            {
+                                if (_isDismissing) { writeTimer.Stop(); return; }
+                                charIdx = Math.Min(targetStr.Length, charIdx + charsPerTick);
+                                capturedTb.Text = targetStr.Substring(0, charIdx);
+                                if (charIdx >= targetStr.Length) writeTimer.Stop();
+                            };
+                            writeTimer.Start();
+                        }));
+                    });
+                }
+
+                stepIndex++;
             }
+
             mainStack.Children.Add(modernPanel);
 
-            // Optional Alternative Panel (only shown when altExplanation is provided)
+            // 3. Optional Alternative Convention Toggle
             if (!string.IsNullOrWhiteSpace(obj.altExplanation))
             {
                 var altPanel = new StackPanel { Visibility = Visibility.Collapsed };
@@ -3130,18 +3400,18 @@ namespace FlinchApp
                     Background = new SolidColorBrush(Color.FromRgb(254, 252, 232)),
                     BorderBrush = new SolidColorBrush(Color.FromRgb(253, 224, 71)),
                     BorderThickness = new Thickness(1),
-                    CornerRadius = new CornerRadius(6),
+                    CornerRadius = new CornerRadius(8),
                     Padding = new Thickness(12, 8, 12, 8),
-                    Margin = new Thickness(0, 0, 0, 8)
+                    Margin = new Thickness(0, 4, 0, 8)
                 };
                 altTextBorder.Child = new TextBlock
                 {
                     Text = obj.altExplanation,
                     Foreground = new SolidColorBrush(Color.FromRgb(113, 63, 18)),
-                    FontSize = 12,
-                    FontFamily = new FontFamily("Segoe UI"),
+                    FontSize = 12.5,
+                    FontFamily = new FontFamily("Segoe Print, Ink Free, Comic Sans MS, Segoe UI"),
                     TextWrapping = TextWrapping.Wrap,
-                    LineHeight = 17
+                    LineHeight = 18
                 };
                 altPanel.Children.Add(altTextBorder);
 
@@ -3158,7 +3428,7 @@ namespace FlinchApp
                 };
                 var btnText = new TextBlock
                 {
-                    Text = "View historical convention",
+                    Text = "Why do some people get a different answer?",
                     Foreground = new SolidColorBrush(Color.FromRgb(51, 65, 85)),
                     FontSize = 11.5,
                     FontWeight = FontWeights.SemiBold,
@@ -3175,13 +3445,13 @@ namespace FlinchApp
                     {
                         modernPanel.Visibility = Visibility.Collapsed;
                         altPanel.Visibility = Visibility.Visible;
-                        btnText.Text = "Back to standard solution";
+                        btnText.Text = "Back to step-by-step whiteboard";
                     }
                     else
                     {
                         modernPanel.Visibility = Visibility.Visible;
                         altPanel.Visibility = Visibility.Collapsed;
-                        btnText.Text = "View historical convention";
+                        btnText.Text = "Why do some people get a different answer?";
                     }
                 };
 
@@ -3189,15 +3459,30 @@ namespace FlinchApp
                 mainStack.Children.Add(switchBtn);
             }
 
-            cardBorder.Child = mainStack;
+            // 4. Bottom Whiteboard Marker Tray (Red Marker, Blue Marker, Green Marker, Eraser)
+            var trayBar = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                HorizontalAlignment = HorizontalAlignment.Right,
+                Margin = new Thickness(0, 12, 0, 0)
+            };
+            trayBar.Children.Add(new Border { Width = 28, Height = 5, CornerRadius = new CornerRadius(2.5), Background = new SolidColorBrush(Color.FromRgb(0xE1, 0x1D, 0x48)), Margin = new Thickness(0, 0, 6, 0) });
+            trayBar.Children.Add(new Border { Width = 28, Height = 5, CornerRadius = new CornerRadius(2.5), Background = new SolidColorBrush(Color.FromRgb(0x02, 0x84, 0xC7)), Margin = new Thickness(0, 0, 6, 0) });
+            trayBar.Children.Add(new Border { Width = 28, Height = 5, CornerRadius = new CornerRadius(2.5), Background = new SolidColorBrush(Color.FromRgb(0x16, 0xA3, 0x4A)), Margin = new Thickness(0, 0, 8, 0) });
+            trayBar.Children.Add(new Border { Width = 22, Height = 7, CornerRadius = new CornerRadius(2), Background = new SolidColorBrush(Color.FromRgb(100, 116, 139)) });
+            mainStack.Children.Add(trayBar);
 
-            Canvas.SetLeft(cardBorder, cardX);
-            Canvas.SetTop(cardBorder, cardY);
-            _canvas.Children.Add(cardBorder);
+            rootGrid.Children.Add(mainStack);
+            rootGrid.Children.Add(sketchOverlay);
+            boardOuter.Child = rootGrid;
+
+            Canvas.SetLeft(boardOuter, boardX);
+            Canvas.SetTop(boardOuter, boardY);
+            _canvas.Children.Add(boardOuter);
 
             if (!immediate)
             {
-                cardBorder.BeginAnimation(UIElement.OpacityProperty, new System.Windows.Media.Animation.DoubleAnimation(0.0, 1.0, new Duration(TimeSpan.FromMilliseconds(200))));
+                boardOuter.BeginAnimation(UIElement.OpacityProperty, new System.Windows.Media.Animation.DoubleAnimation(0.0, 1.0, new Duration(TimeSpan.FromMilliseconds(200))));
             }
         }
 
@@ -9742,33 +10027,32 @@ private void FinishRecordingAndSend()
                         {
                             new SceneObjectPayload
                             {
+                                type = "circle",
+                                color = "#EF4444",
+                                label = "Step 1: Start Debugging",
+                                rect = new SceneRect { x = 0.068, y = 0.105, w = 0.135, h = 0.068 }
+                            },
+                            new SceneObjectPayload
+                            {
                                 type = "highlight",
                                 color = "#D97706",
-                                label = "NullReferenceException on line 42",
+                                label = "Step 2: NullReferenceException on line 42",
                                 rect = new SceneRect { x = 0.08, y = 0.28, w = 0.42, h = 0.055 }
                             },
                             new SceneObjectPayload
                             {
                                 type = "arrow",
                                 color = "#0284C7",
-                                label = "Inspect variable state",
-                                from = new ScenePoint { x = 0.28, y = 0.46 },
-                                to = new ScenePoint { x = 0.20, y = 0.345 }
-                            },
-                            new SceneObjectPayload
-                            {
-                                type = "circle",
-                                color = "#0284C7",
-                                label = "Run Debugger",
-                                rect = new SceneRect { x = 0.08, y = 0.12, w = 0.09, h = 0.065 }
+                                label = "Step 3: Check ctx.Session before .AccessToken",
+                                from = new ScenePoint { x = 0.30, y = 0.47 },
+                                to = new ScenePoint { x = 0.21, y = 0.345 }
                             },
                             new SceneObjectPayload
                             {
                                 type = "notepad",
-                                title = "Elon Musk",
-                                subtitle = "Entrepreneur & Engineer (Born June 28, 1971)",
-                                imageUrl = "https://thumb.wikimedia.org/wikipedia/commons/thumb/6/69/Elon_Musk_-_54820081119_%283x4_cropped%2C_Rule_of_thirds%29.jpg/330px-Elon_Musk_-_54820081119_%283x4_cropped%2C_Rule_of_thirds%29.jpg",
-                                text = "Role: Founder & CEO of SpaceX, CEO of Tesla, Founder of xAI\nBorn in Pretoria, South Africa; moved to North America to study physics and economics at the University of Pennsylvania.\nCo-founded X.com (PayPal), founded SpaceX in 2002, and joined Tesla in 2004 to lead electric vehicle and spacecraft manufacturing.\nResult: Reusable orbital rockets (Falcon 9 / Starship) & global EV adoption."
+                                title = "Fixing Line 42 Step-by-Step",
+                                subtitle = "Whiteboard Guide • NullReferenceException",
+                                text = "Step 1: Look at line 42 — ctx.Session is being dereferenced without checking if Session is null first.\nStep 2: When an unauthenticated guest calls ProcessSession, ctx.Session evaluates to null and crashes.\nStep 3: Add a null-conditional operator (ctx?.Session?.AccessToken) or guard clause before calling .Trim().\nResult: Use string token = ctx?.Session?.AccessToken?.Trim() ?? \"\";"
                             }
                         }
                     };
