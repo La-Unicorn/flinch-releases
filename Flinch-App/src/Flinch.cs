@@ -2009,12 +2009,15 @@ namespace FlinchApp
         private static readonly object _instanceLock = new object();
 
         private readonly Canvas _canvas;
-        private readonly DispatcherTimer _autoDismissTimer;
+        private readonly ScenePayload _scene;
+        private readonly int _speechDurationMs;
+        private readonly DispatcherTimer _escPollTimer;
         private bool _isDismissing = false;
+        private bool _escWasDown = true;
 
         public Canvas RootCanvas { get { return _canvas; } }
 
-        public static void ShowScene(NativeMethods.RECT targetBounds, ScenePayload scene)
+        public static void ShowScene(NativeMethods.RECT targetBounds, ScenePayload scene, int speechDurationMs = 9500)
         {
             if (scene == null || scene.objects == null || scene.objects.Count == 0)
             {
@@ -2022,7 +2025,7 @@ namespace FlinchApp
                 return;
             }
 
-            FlinchEnv.Log(string.Format("[OverlayWindow] ShowScene invoked with {0} objects.", scene.objects.Count));
+            FlinchEnv.Log(string.Format("[OverlayWindow] ShowScene invoked with {0} objects (speechDurationMs={1}).", scene.objects.Count, speechDurationMs));
 
             Action showAction = () =>
             {
@@ -2059,7 +2062,7 @@ namespace FlinchApp
                         };
                     }
 
-                    var win = new OverlayWindow(targetBounds, scene, false);
+                    var win = new OverlayWindow(targetBounds, scene, false, speechDurationMs);
                     lock (_instanceLock)
                     {
                         _activeInstance = win;
@@ -2121,8 +2124,11 @@ namespace FlinchApp
             }
         }
 
-        public OverlayWindow(NativeMethods.RECT targetBounds, ScenePayload scene, bool immediateRender = false)
+        public OverlayWindow(NativeMethods.RECT targetBounds, ScenePayload scene, bool immediateRender = false, int speechDurationMs = 9500)
         {
+            _scene = scene ?? new ScenePayload();
+            _speechDurationMs = Math.Max(4500, Math.Min(32000, speechDurationMs));
+
             WindowStyle = WindowStyle.None;
             AllowsTransparency = true;
             Background = Brushes.Transparent;
@@ -2143,67 +2149,23 @@ namespace FlinchApp
             };
             Content = _canvas;
 
-            // 1. Top-right floating controls: Pin + Dismiss (Esc)
+            // 1. Top-right floating Close / Dismiss (Esc) button — explanation NEVER disappears automatically!
             var topControlsRow = new StackPanel { Orientation = Orientation.Horizontal };
-
-            bool isPinned = false;
-            var pinLabel = new TextBlock
-            {
-                Text = "Pin",
-                Foreground = new SolidColorBrush(Color.FromRgb(51, 65, 85)),
-                FontSize = 12,
-                FontWeight = FontWeights.SemiBold,
-                FontFamily = new FontFamily("Segoe UI Semibold, Segoe UI"),
-                VerticalAlignment = VerticalAlignment.Center
-            };
-            var pinBorder = new Border
-            {
-                Background = new SolidColorBrush(Color.FromRgb(255, 255, 255)),
-                BorderBrush = new SolidColorBrush(Color.FromRgb(226, 232, 240)),
-                BorderThickness = new Thickness(1),
-                CornerRadius = new CornerRadius(8),
-                Padding = new Thickness(12, 6, 12, 6),
-                Margin = new Thickness(0, 0, 8, 0),
-                Cursor = Cursors.Hand,
-                Effect = new DropShadowEffect { Color = Colors.Black, BlurRadius = 12, Opacity = 0.12, ShadowDepth = 2 },
-                Child = pinLabel
-            };
-            pinBorder.MouseLeftButtonDown += (s, e) =>
-            {
-                e.Handled = true;
-                isPinned = !isPinned;
-                if (isPinned)
-                {
-                    if (_autoDismissTimer != null) _autoDismissTimer.Stop();
-                    pinLabel.Text = "Pinned";
-                    pinLabel.Foreground = new SolidColorBrush(Color.FromRgb(37, 99, 235));
-                    pinBorder.BorderBrush = new SolidColorBrush(Color.FromRgb(147, 197, 253));
-                    pinBorder.Background = new SolidColorBrush(Color.FromRgb(239, 246, 255));
-                }
-                else
-                {
-                    if (_autoDismissTimer != null) _autoDismissTimer.Start();
-                    pinLabel.Text = "Pin";
-                    pinLabel.Foreground = new SolidColorBrush(Color.FromRgb(51, 65, 85));
-                    pinBorder.BorderBrush = new SolidColorBrush(Color.FromRgb(226, 232, 240));
-                    pinBorder.Background = new SolidColorBrush(Color.FromRgb(255, 255, 255));
-                }
-            };
 
             var dismissBorder = new Border
             {
                 Background = new SolidColorBrush(Color.FromRgb(255, 255, 255)),
                 BorderBrush = new SolidColorBrush(Color.FromRgb(226, 232, 240)),
-                BorderThickness = new Thickness(1),
+                BorderThickness = new Thickness(1.2),
                 CornerRadius = new CornerRadius(8),
                 Padding = new Thickness(12, 6, 12, 6),
                 Cursor = Cursors.Hand,
-                Effect = new DropShadowEffect { Color = Colors.Black, BlurRadius = 12, Opacity = 0.12, ShadowDepth = 2 }
+                Effect = new DropShadowEffect { Color = Colors.Black, BlurRadius = 12, Opacity = 0.14, ShadowDepth = 2 }
             };
             var dismissStack = new StackPanel { Orientation = Orientation.Horizontal };
             dismissStack.Children.Add(new TextBlock
             {
-                Text = "Dismiss",
+                Text = "✕ Close",
                 Foreground = new SolidColorBrush(Color.FromRgb(15, 23, 42)),
                 FontSize = 12,
                 FontWeight = FontWeights.SemiBold,
@@ -2229,17 +2191,21 @@ namespace FlinchApp
             };
             dismissStack.Children.Add(escKeycap);
             dismissBorder.Child = dismissStack;
-            dismissBorder.MouseLeftButtonDown += (s, e) => DismissWithAnimation();
+            dismissBorder.MouseLeftButtonDown += (s, e) =>
+            {
+                e.Handled = true;
+                DismissWithAnimation();
+            };
 
-            topControlsRow.Children.Add(pinBorder);
             topControlsRow.Children.Add(dismissBorder);
 
             Canvas.SetRight(topControlsRow, 24);
             Canvas.SetTop(topControlsRow, 24);
+            Panel.SetZIndex(topControlsRow, 100);
             _canvas.Children.Add(topControlsRow);
 
-            // 2. Render each scene object onto the Canvas
-            RenderSceneObjects(scene, immediateRender);
+            // 2. Render each scene object onto the Canvas synchronized with the spoken explanation
+            RenderSceneObjects(_scene, immediateRender);
 
             if (immediateRender)
             {
@@ -2252,20 +2218,30 @@ namespace FlinchApp
                 BeginAnimation(UIElement.OpacityProperty, fadeIn);
             }
 
-            // 4. Auto-dismiss timer (default 18 seconds so user has time to view)
-            int duration = scene.durationMs >= 4000 ? scene.durationMs : 18000;
-            _autoDismissTimer = new DispatcherTimer
+            // 3. Global Esc key listener so pressing Esc anywhere (even while browser has focus) closes the overlay!
+            _escWasDown = (NativeMethods.GetAsyncKeyState(0x1B) & 0x8000) != 0;
+            _escPollTimer = new DispatcherTimer
             {
-                Interval = TimeSpan.FromMilliseconds(duration)
+                Interval = TimeSpan.FromMilliseconds(55)
             };
-            _autoDismissTimer.Tick += (s, e) =>
+            _escPollTimer.Tick += (s, e) =>
             {
-                _autoDismissTimer.Stop();
-                DismissWithAnimation();
+                if (_isDismissing)
+                {
+                    _escPollTimer.Stop();
+                    return;
+                }
+                bool escDown = (NativeMethods.GetAsyncKeyState(0x1B) & 0x8000) != 0;
+                if (escDown && !_escWasDown)
+                {
+                    _escPollTimer.Stop();
+                    DismissWithAnimation();
+                }
+                _escWasDown = escDown;
             };
-            _autoDismissTimer.Start();
+            _escPollTimer.Start();
 
-            // 5. Keyboard dismissal & double click on empty canvas
+            // 4. Keyboard dismissal & double click on empty canvas
             KeyDown += (s, e) =>
             {
                 if (e.Key == Key.Escape) DismissWithAnimation();
@@ -2281,26 +2257,44 @@ namespace FlinchApp
         {
             if (scene.objects == null || scene.objects.Count == 0) return;
 
-            int maxDelay = 0;
+            // Count how many on-screen drawing shapes exist so we can pace them evenly across the spoken explanation
+            var drawingIndices = new List<int>();
+            for (int i = 0; i < scene.objects.Count; i++)
+            {
+                var o = scene.objects[i];
+                if (o == null) continue;
+                string t = (o.type ?? "").ToLowerInvariant().Trim();
+                if (t != "notepad" && t != "notebook")
+                {
+                    drawingIndices.Add(i);
+                }
+            }
+
+            int totalShapes = Math.Max(1, drawingIndices.Count);
+            int activeSpeechWindowMs = (int)(_speechDurationMs * 0.78);
+            int shapeOrder = 0;
+
             for (int i = 0; i < scene.objects.Count; i++)
             {
                 var obj = scene.objects[i];
                 if (obj == null) continue;
 
+                string type = (obj.type ?? "").ToLowerInvariant().Trim();
                 int delay = 0;
+
                 if (!immediateRender)
                 {
-                    if (obj.delayMs.HasValue && obj.delayMs.Value >= 0)
+                    if (type == "notepad" || type == "notebook")
                     {
-                        delay = obj.delayMs.Value;
+                        delay = 180;
                     }
-                    else if (obj.step.HasValue && obj.step.Value > 1)
+                    else
                     {
-                        delay = (obj.step.Value - 1) * 900;
+                        int stepOrdinal = (obj.step.HasValue && obj.step.Value >= 1) ? (obj.step.Value - 1) : shapeOrder;
+                        delay = 350 + (stepOrdinal * activeSpeechWindowMs) / totalShapes;
+                        shapeOrder++;
                     }
                 }
-
-                if (delay > maxDelay) maxDelay = delay;
 
                 if (delay <= 0 || immediateRender)
                 {
@@ -2309,21 +2303,16 @@ namespace FlinchApp
                 else
                 {
                     int capturedDelay = delay;
+                    SceneObjectPayload capturedObj = obj;
                     Task.Delay(capturedDelay).ContinueWith(_ =>
                     {
                         Dispatcher.BeginInvoke(new Action(() =>
                         {
                             if (_isDismissing) return;
-                            RenderSingleObject(obj, false);
+                            RenderSingleObject(capturedObj, false);
                         }));
                     });
                 }
-            }
-
-            int totalLifeMs = Math.Max(scene.durationMs, maxDelay + 12000);
-            if (_autoDismissTimer != null)
-            {
-                _autoDismissTimer.Interval = TimeSpan.FromMilliseconds(totalLifeMs);
             }
         }
 
@@ -2542,7 +2531,7 @@ namespace FlinchApp
             int steps = 64;
             double startAngle = -0.32 * Math.PI; // ~ -58 deg (upper right inner start)
             double totalSweep = -2.42 * Math.PI; // ~ 435 deg sweep so the top stroke overlaps the start tail!
-            double tilt = -0.09;                 // slight natural hand tilt (~ -5 deg)
+            double tilt = -0.07;                 // slight natural hand tilt (~ -4 deg)
             double cosT = Math.Cos(tilt);
             double sinT = Math.Sin(tilt);
 
@@ -2551,17 +2540,17 @@ namespace FlinchApp
                 double u = (double)i / steps;
                 double theta = startAngle + u * totalSweep;
 
-                // Spiral expansion: starts slightly tighter (0.82) and expands to 1.08 so the overlapping top arc sits cleanly above the start tail
-                double spiralScale = 0.82 + 0.26 * Math.Min(1.0, u * 1.15);
-                if (u > 0.82)
+                // Spiral expansion: tightly hugs 0.90..1.03 so the circle wraps the exact target expression without ballooning!
+                double spiralScale = 0.90 + 0.13 * Math.Min(1.0, u * 1.15);
+                if (u > 0.84)
                 {
                     // Gentle outward flick at the finishing tail on top
-                    spiralScale += (u - 0.82) * 0.22;
+                    spiralScale += (u - 0.84) * 0.16;
                 }
 
                 // Organic hand wobble (subtle low-frequency human hand variation)
-                double wobbleX = 1.0 + 0.035 * Math.Sin(theta * 2.0 + seedOffset) + 0.018 * Math.Cos(theta * 3.0 - seedOffset);
-                double wobbleY = 1.0 + 0.035 * Math.Cos(theta * 2.0 - seedOffset) + 0.020 * Math.Sin(theta * 3.0 + seedOffset);
+                double wobbleX = 1.0 + 0.028 * Math.Sin(theta * 2.0 + seedOffset) + 0.014 * Math.Cos(theta * 3.0 - seedOffset);
+                double wobbleY = 1.0 + 0.028 * Math.Cos(theta * 2.0 - seedOffset) + 0.015 * Math.Sin(theta * 3.0 + seedOffset);
 
                 double localX = rx * spiralScale * wobbleX * Math.Cos(theta);
                 double localY = ry * spiralScale * wobbleY * Math.Sin(theta);
@@ -2607,7 +2596,7 @@ namespace FlinchApp
 
         private void RenderCircle(SceneObjectPayload obj, bool immediate = false)
         {
-            double cx = 0, cy = 0, rx = 46.0, ry = 34.0;
+            double cx = 0, cy = 0, rx = 42.0, ry = 32.0;
             if (obj.from != null)
             {
                 cx = Math.Max(0.0, Math.Min(1.0, obj.from.x)) * Width;
@@ -2615,25 +2604,25 @@ namespace FlinchApp
                 if (obj.radius.HasValue && obj.radius.Value > 0)
                 {
                     double r = obj.radius.Value * Math.Min(Width, Height);
-                    rx = r * 1.25;
-                    ry = r * 0.90;
+                    rx = r * 1.18;
+                    ry = r * 0.88;
                 }
             }
             else if (obj.rect != null)
             {
                 double rectX = Math.Max(0.0, Math.Min(1.0, obj.rect.x)) * Width;
                 double rectY = Math.Max(0.0, Math.Min(1.0, obj.rect.y)) * Height;
-                double rw = Math.Max(28, Math.Min(1.0, obj.rect.w) * Width);
-                double rh = Math.Max(22, Math.Min(1.0, obj.rect.h) * Height);
+                double rw = Math.Max(22, Math.Min(1.0, obj.rect.w) * Width);
+                double rh = Math.Max(18, Math.Min(1.0, obj.rect.h) * Height);
                 cx = rectX + rw / 2.0;
                 cy = rectY + rh / 2.0;
-                rx = Math.Max(26.0, rw * 0.62);
-                ry = Math.Max(20.0, rh * 0.62);
+                rx = Math.Max(20.0, rw * 0.54);
+                ry = Math.Max(16.0, rh * 0.56);
             }
             else return;
 
-            rx = Math.Max(24.0, Math.Min(360.0, rx));
-            ry = Math.Max(18.0, Math.Min(260.0, ry));
+            rx = Math.Max(20.0, Math.Min(320.0, rx));
+            ry = Math.Max(16.0, Math.Min(230.0, ry));
 
             // Default circle color to engaging tutor red-orange marker (#E11D48) or parsed color
             Color strokeCol = string.IsNullOrWhiteSpace(obj.color)
@@ -2642,7 +2631,7 @@ namespace FlinchApp
             double strokeW = obj.strokeWidth.HasValue && obj.strokeWidth.Value > 0 ? obj.strokeWidth.Value : 3.6;
 
             var loopPts = BuildHandDrawnCirclePoints(cx, cy, rx, ry, (cx + cy) * 0.01);
-            AnimateHandDrawnPolyline(_canvas, loopPts, strokeCol, strokeW, 420, immediate);
+            AnimateHandDrawnPolyline(_canvas, loopPts, strokeCol, strokeW, 750, immediate);
 
             if (!string.IsNullOrWhiteSpace(obj.label) || !string.IsNullOrWhiteSpace(obj.text))
             {
@@ -2650,14 +2639,14 @@ namespace FlinchApp
                 var tag = CreateAnnotationLabel(labelText, strokeCol);
                 tag.Opacity = immediate ? 1.0 : 0.0;
                 Canvas.SetLeft(tag, Math.Max(12, Math.Min(Width - 220, cx - rx * 0.5)));
-                Canvas.SetTop(tag, Math.Max(12, cy - ry - 42));
+                Canvas.SetTop(tag, Math.Max(12, cy - ry - 40));
                 _canvas.Children.Add(tag);
 
                 if (!immediate)
                 {
-                    var tagFade = new System.Windows.Media.Animation.DoubleAnimation(0.0, 1.0, new Duration(TimeSpan.FromMilliseconds(220)))
+                    var tagFade = new System.Windows.Media.Animation.DoubleAnimation(0.0, 1.0, new Duration(TimeSpan.FromMilliseconds(240)))
                     {
-                        BeginTime = TimeSpan.FromMilliseconds(320)
+                        BeginTime = TimeSpan.FromMilliseconds(580)
                     };
                     tag.BeginAnimation(UIElement.OpacityProperty, tagFade);
                 }
@@ -2669,8 +2658,8 @@ namespace FlinchApp
             if (obj.rect == null) return;
             double rx = Math.Max(0.0, Math.Min(1.0, obj.rect.x)) * Width;
             double ry = Math.Max(0.0, Math.Min(1.0, obj.rect.y)) * Height;
-            double rw = Math.Max(32, Math.Min(1.0, obj.rect.w) * Width);
-            double rh = Math.Max(24, Math.Min(1.0, obj.rect.h) * Height);
+            double rw = Math.Max(26, Math.Min(1.0, obj.rect.w) * Width);
+            double rh = Math.Max(20, Math.Min(1.0, obj.rect.h) * Height);
 
             Color fillCol = ParseSceneColor(obj.color, Color.FromRgb(0xD9, 0x77, 0x06));
             // Subtle warm highlighter wash behind the hand-sketched outline
@@ -2687,7 +2676,7 @@ namespace FlinchApp
 
             if (!immediate)
             {
-                var sweepAnim = new System.Windows.Media.Animation.DoubleAnimation(0.0, rw, new Duration(TimeSpan.FromMilliseconds(340)))
+                var sweepAnim = new System.Windows.Media.Animation.DoubleAnimation(0.0, rw, new Duration(TimeSpan.FromMilliseconds(600)))
                 {
                     EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
                 };
@@ -2695,7 +2684,7 @@ namespace FlinchApp
             }
 
             var boxPts = BuildHandDrawnBoxPoints(rx, ry, rw, rh);
-            AnimateHandDrawnPolyline(_canvas, boxPts, fillCol, 3.0, 380, immediate);
+            AnimateHandDrawnPolyline(_canvas, boxPts, fillCol, 3.0, 720, immediate);
 
             if (!string.IsNullOrWhiteSpace(obj.label) || !string.IsNullOrWhiteSpace(obj.text))
             {
@@ -2708,9 +2697,9 @@ namespace FlinchApp
 
                 if (!immediate)
                 {
-                    var tagFade = new System.Windows.Media.Animation.DoubleAnimation(0.0, 1.0, new Duration(TimeSpan.FromMilliseconds(200)))
+                    var tagFade = new System.Windows.Media.Animation.DoubleAnimation(0.0, 1.0, new Duration(TimeSpan.FromMilliseconds(220)))
                     {
-                        BeginTime = TimeSpan.FromMilliseconds(280)
+                        BeginTime = TimeSpan.FromMilliseconds(550)
                     };
                     tag.BeginAnimation(UIElement.OpacityProperty, tagFade);
                 }
@@ -2820,7 +2809,7 @@ namespace FlinchApp
             shaftPts.Add(new Point(endX, endY));
             shaftPts.Add(wing2);
 
-            AnimateHandDrawnPolyline(_canvas, shaftPts, strokeCol, 3.2, 360, immediate);
+            AnimateHandDrawnPolyline(_canvas, shaftPts, strokeCol, 3.2, 680, immediate);
 
             if (!string.IsNullOrWhiteSpace(obj.label) || !string.IsNullOrWhiteSpace(obj.text))
             {
@@ -2833,9 +2822,9 @@ namespace FlinchApp
 
                 if (!immediate)
                 {
-                    var tagFade = new System.Windows.Media.Animation.DoubleAnimation(0.0, 1.0, new Duration(TimeSpan.FromMilliseconds(180)))
+                    var tagFade = new System.Windows.Media.Animation.DoubleAnimation(0.0, 1.0, new Duration(TimeSpan.FromMilliseconds(220)))
                     {
-                        BeginTime = TimeSpan.FromMilliseconds(260)
+                        BeginTime = TimeSpan.FromMilliseconds(520)
                     };
                     labelBorder.BeginAnimation(UIElement.OpacityProperty, tagFade);
                 }
@@ -2959,21 +2948,119 @@ namespace FlinchApp
             AnimateHandDrawnPolyline(_canvas, boxPts, Color.FromRgb(0xE1, 0x1D, 0x48), 3.2, 360, false);
         }
 
-        // Interactive Tutor Whiteboard: writes step-by-step lists, hand-drawn circles around step numbers,
-        // connecting hand-sketched arrows, and circles the final answer with a live pencil!
+        // Computes a smart, collision-free position for the Whiteboard so it NEVER covers the math problem or drawn shapes!
+        private Point ChooseNonOverlappingWhiteboardPosition(double boardW, double estBoardH, SceneObjectPayload notepadObj)
+        {
+            var drawnRects = new List<Rect>();
+            double sumCenterX = 0.0;
+            int centerCount = 0;
+
+            if (_scene != null && _scene.objects != null)
+            {
+                for (int i = 0; i < _scene.objects.Count; i++)
+                {
+                    var o = _scene.objects[i];
+                    if (o == null || o == notepadObj) continue;
+                    string t = (o.type ?? "").ToLowerInvariant().Trim();
+                    if (t == "notepad" || t == "notebook") continue;
+
+                    if (o.rect != null && o.rect.w > 0 && o.rect.h > 0)
+                    {
+                        double rx = Math.Max(0.0, Math.Min(1.0, o.rect.x)) * Width - 28;
+                        double ry = Math.Max(0.0, Math.Min(1.0, o.rect.y)) * Height - 44;
+                        double rw = Math.Max(40, Math.Min(1.0, o.rect.w) * Width) + 56;
+                        double rh = Math.Max(40, Math.Min(1.0, o.rect.h) * Height) + 64;
+                        drawnRects.Add(new Rect(Math.Max(0, rx), Math.Max(0, ry), rw, rh));
+                        sumCenterX += (rx + rw / 2.0);
+                        centerCount++;
+                    }
+                    else if (o.from != null && o.to != null)
+                    {
+                        double x1 = o.from.x * Width;
+                        double y1 = o.from.y * Height;
+                        double x2 = o.to.x * Width;
+                        double y2 = o.to.y * Height;
+                        double minX = Math.Min(x1, x2) - 24;
+                        double minY = Math.Min(y1, y2) - 36;
+                        double maxX = Math.Max(x1, x2) + 24;
+                        double maxY = Math.Max(y1, y2) + 24;
+                        drawnRects.Add(new Rect(Math.Max(0, minX), Math.Max(0, minY), Math.Max(40, maxX - minX), Math.Max(40, maxY - minY)));
+                        sumCenterX += (minX + maxX) / 2.0;
+                        centerCount++;
+                    }
+                    else if (o.from != null)
+                    {
+                        double cx = o.from.x * Width;
+                        double cy = o.from.y * Height;
+                        double r = (o.radius.HasValue && o.radius.Value > 0 ? o.radius.Value * Math.Min(Width, Height) : 55) + 28;
+                        drawnRects.Add(new Rect(Math.Max(0, cx - r), Math.Max(0, cy - r), r * 2, r * 2));
+                        sumCenterX += cx;
+                        centerCount++;
+                    }
+                }
+            }
+
+            double avgProblemX = centerCount > 0 ? (sumCenterX / centerCount) : (Width * 0.30);
+            bool problemOnRight = avgProblemX >= Width * 0.46;
+
+            // Candidate positions ordered so the side opposite the problem is preferred first
+            var candidates = new List<Point>();
+            if (problemOnRight)
+            {
+                candidates.Add(new Point(28, 64));                                      // Top-Left (ideal when problem is on right)
+                candidates.Add(new Point(28, Math.Max(64, Height - estBoardH - 52)));   // Bottom-Left
+                candidates.Add(new Point(28, Math.Max(64, (Height - estBoardH) / 2)));  // Middle-Left
+                candidates.Add(new Point(Width - boardW - 28, 68));                     // Top-Right
+                candidates.Add(new Point(Width - boardW - 28, Math.Max(68, Height - estBoardH - 52))); // Bottom-Right
+            }
+            else
+            {
+                candidates.Add(new Point(Width - boardW - 28, 68));                     // Top-Right (ideal when problem is on left)
+                candidates.Add(new Point(Width - boardW - 28, Math.Max(68, Height - estBoardH - 52))); // Bottom-Right
+                candidates.Add(new Point(28, 64));                                      // Top-Left
+                candidates.Add(new Point(28, Math.Max(64, Height - estBoardH - 52)));   // Bottom-Left
+                candidates.Add(new Point(28, Math.Max(64, (Height - estBoardH) / 2)));  // Middle-Left
+            }
+
+            Point bestPos = candidates[0];
+            double bestOverlapArea = double.MaxValue;
+
+            for (int c = 0; c < candidates.Count; c++)
+            {
+                Point pt = candidates[c];
+                var boardRect = new Rect(pt.X, pt.Y, boardW, estBoardH);
+                double overlapArea = 0.0;
+
+                for (int r = 0; r < drawnRects.Count; r++)
+                {
+                    Rect inter = Rect.Intersect(boardRect, drawnRects[r]);
+                    if (!inter.IsEmpty)
+                    {
+                        overlapArea += inter.Width * inter.Height;
+                    }
+                }
+
+                if (overlapArea < bestOverlapArea - 1.0)
+                {
+                    bestOverlapArea = overlapArea;
+                    bestPos = pt;
+                    if (overlapArea <= 0.1) break; // Found a 100% collision-free spot on the preferred side!
+                }
+            }
+
+            return bestPos;
+        }
+
+        // Interactive Tutor Whiteboard: writes step-by-step lists synchronized with voice,
+        // places itself where the problem remains 100% visible, and is draggable + manually closable!
         private void RenderNotepadBook(SceneObjectPayload obj, bool immediate = false)
         {
             if (obj == null || _isDismissing) return;
 
-            double boardW = Math.Min(430, Width * 0.44);
-            double boardX = Width - boardW - 26;
-            double boardY = 68;
-
-            if (obj.rect != null && obj.rect.w > 0.05)
-            {
-                boardX = Math.Max(20, Math.Min(Width - boardW - 20, obj.rect.x * Width));
-                boardY = Math.Max(40, Math.Min(Height - 420, obj.rect.y * Height));
-            }
+            double boardW = Math.Min(430, Width * 0.42);
+            Point smartPos = ChooseNonOverlappingWhiteboardPosition(boardW, 390, obj);
+            double boardX = smartPos.X;
+            double boardY = smartPos.Y;
 
             // Physical Whiteboard frame (#FFFFFF canvas, warm aluminum/slate border, bottom marker tray)
             var boardOuter = new Border
@@ -2983,8 +3070,41 @@ namespace FlinchApp
                 BorderBrush = new SolidColorBrush(Color.FromRgb(203, 213, 225)),
                 BorderThickness = new Thickness(2),
                 CornerRadius = new CornerRadius(14),
+                Cursor = Cursors.SizeAll,
                 Effect = new DropShadowEffect { Color = Colors.Black, BlurRadius = 24, Opacity = 0.16, ShadowDepth = 6 },
                 Opacity = immediate ? 1.0 : 0.0
+            };
+
+            // Allow the user to drag the Whiteboard anywhere on screen at any time
+            bool isDraggingBoard = false;
+            Point dragStartMouse = new Point();
+            double dragStartLeft = 0, dragStartTop = 0;
+            boardOuter.MouseLeftButtonDown += (s, e) =>
+            {
+                isDraggingBoard = true;
+                dragStartMouse = e.GetPosition(_canvas);
+                dragStartLeft = Canvas.GetLeft(boardOuter);
+                dragStartTop = Canvas.GetTop(boardOuter);
+                boardOuter.CaptureMouse();
+                e.Handled = true;
+            };
+            boardOuter.MouseMove += (s, e) =>
+            {
+                if (!isDraggingBoard) return;
+                Point cur = e.GetPosition(_canvas);
+                double nx = Math.Max(8, Math.Min(Width - boardW - 8, dragStartLeft + (cur.X - dragStartMouse.X)));
+                double ny = Math.Max(8, Math.Min(Height - 120, dragStartTop + (cur.Y - dragStartMouse.Y)));
+                Canvas.SetLeft(boardOuter, nx);
+                Canvas.SetTop(boardOuter, ny);
+            };
+            boardOuter.MouseLeftButtonUp += (s, e) =>
+            {
+                if (isDraggingBoard)
+                {
+                    isDraggingBoard = false;
+                    boardOuter.ReleaseMouseCapture();
+                    e.Handled = true;
+                }
             };
 
             var rootGrid = new Grid();
@@ -3010,14 +3130,46 @@ namespace FlinchApp
             // Overlay sketch canvas for hand-drawn underlines, step circles, and live pencil writing
             var sketchOverlay = new Canvas { IsHitTestVisible = false };
 
-            var mainStack = new StackPanel { Margin = new Thickness(22, 18, 22, 16) };
+            var mainStack = new StackPanel { Margin = new Thickness(22, 16, 22, 16) };
+
+            // Top-right Close (✕) button directly inside the Whiteboard header
+            var headerDock = new DockPanel { Margin = new Thickness(0, 0, 0, 4) };
+            var wbCloseBtn = new Border
+            {
+                Width = 26,
+                Height = 26,
+                CornerRadius = new CornerRadius(6),
+                Background = new SolidColorBrush(Color.FromRgb(241, 245, 249)),
+                BorderBrush = new SolidColorBrush(Color.FromRgb(203, 213, 225)),
+                BorderThickness = new Thickness(1),
+                Cursor = Cursors.Hand,
+                VerticalAlignment = VerticalAlignment.Top,
+                Margin = new Thickness(8, 0, 0, 0),
+                ToolTip = "Close Whiteboard (Esc)",
+                Child = new TextBlock
+                {
+                    Text = "✕",
+                    Foreground = new SolidColorBrush(Color.FromRgb(71, 85, 105)),
+                    FontSize = 12,
+                    FontWeight = FontWeights.Bold,
+                    HorizontalAlignment = HorizontalAlignment.Center,
+                    VerticalAlignment = VerticalAlignment.Center
+                }
+            };
+            wbCloseBtn.MouseLeftButtonDown += (s, e) =>
+            {
+                e.Handled = true;
+                DismissWithAnimation();
+            };
+            DockPanel.SetDock(wbCloseBtn, Dock.Right);
+            headerDock.Children.Add(wbCloseBtn);
 
             // 1. Optional Wikimedia Portrait + Handwritten Whiteboard Title
             if (!string.IsNullOrWhiteSpace(obj.imageUrl))
             {
                 try
                 {
-                    var bioDock = new DockPanel { Margin = new Thickness(0, 0, 0, 10) };
+                    var bioDock = new DockPanel { Margin = new Thickness(0, 0, 0, 4) };
                     var img = new Image
                     {
                         Width = 68,
@@ -3098,7 +3250,7 @@ namespace FlinchApp
                     {
                         Text = string.IsNullOrWhiteSpace(obj.title) ? "Whiteboard Guide" : obj.title,
                         Foreground = new SolidColorBrush(Color.FromRgb(15, 23, 42)),
-                        FontSize = 17,
+                        FontSize = 16.5,
                         FontWeight = FontWeights.Bold,
                         FontFamily = new FontFamily("Segoe Print, Ink Free, Comic Sans MS, Segoe UI"),
                         TextWrapping = TextWrapping.Wrap
@@ -3116,19 +3268,19 @@ namespace FlinchApp
                         });
                     }
                     bioDock.Children.Add(bioTextStack);
-                    mainStack.Children.Add(bioDock);
+                    headerDock.Children.Add(bioDock);
                 }
                 catch { }
             }
             else
             {
-                var titleStack = new StackPanel { Margin = new Thickness(0, 0, 0, 6) };
+                var titleStack = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
                 titleStack.Children.Add(new TextBlock
                 {
                     Text = string.IsNullOrWhiteSpace(obj.title) ? "Step-by-Step Whiteboard" : obj.title,
                     Foreground = new SolidColorBrush(Color.FromRgb(15, 23, 42)),
                     FontWeight = FontWeights.Bold,
-                    FontSize = 17,
+                    FontSize = 16.5,
                     FontFamily = new FontFamily("Segoe Print, Ink Free, Comic Sans MS, Segoe UI"),
                     TextWrapping = TextWrapping.Wrap
                 });
@@ -3144,8 +3296,9 @@ namespace FlinchApp
                         TextWrapping = TextWrapping.Wrap
                     });
                 }
-                mainStack.Children.Add(titleStack);
+                headerDock.Children.Add(titleStack);
             }
+            mainStack.Children.Add(headerDock);
 
             // Hand-drawn wavy marker underline under the title
             var underlineCanvas = new Canvas { Height = 12, Margin = new Thickness(0, 0, 0, 10) };
@@ -3159,10 +3312,17 @@ namespace FlinchApp
             AnimateHandDrawnPolyline(underlineCanvas, ulPts, Color.FromRgb(0xE1, 0x1D, 0x48), 2.6, 260, immediate);
             mainStack.Children.Add(underlineCanvas);
 
-            // 2. Step-by-Step Handwritten Guide Rows + Hand-Drawn Step Circles & Arrows
+            // 2. Step-by-Step Handwritten Guide Rows + Hand-Drawn Step Circles & Arrows (paced with speech!)
             var modernPanel = new StackPanel();
             string solutionText = obj.text ?? "";
             var rawLines = solutionText.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+
+            var validLines = new List<string>();
+            for (int li = 0; li < rawLines.Length; li++)
+            {
+                string trimmed = rawLines[li].Trim();
+                if (!string.IsNullOrEmpty(trimmed)) validLines.Add(trimmed);
+            }
 
             Color[] stepColors = new[]
             {
@@ -3173,29 +3333,32 @@ namespace FlinchApp
                 Color.FromRgb(0xE1, 0x1D, 0x48)  // Red marker
             };
 
-            int stepIndex = 0;
-            for (int li = 0; li < rawLines.Length; li++)
+            int totalValidSteps = Math.Max(1, validLines.Count);
+            int totalSpeechSpreadMs = (int)(_speechDurationMs * 0.80);
+            int msPerStepWindow = Math.Max(1100, totalSpeechSpreadMs / totalValidSteps);
+
+            for (int stepIndex = 0; stepIndex < validLines.Count; stepIndex++)
             {
-                string rawLine = rawLines[li].Trim();
-                if (string.IsNullOrEmpty(rawLine)) continue;
+                string rawLine = validLines[stepIndex];
 
                 // Strip leading numbering like "1.", "①", "Step 1:" so we can draw our own hand-sketched circle number!
                 string cleanStepText = Regex.Replace(rawLine, @"^(?:[①②③④⑤⑥]|(?:\d+[\.\)\:])|(?:Step\s+\d+[\.\)\:]?))\s*", "", RegexOptions.IgnoreCase).Trim();
                 if (string.IsNullOrEmpty(cleanStepText)) cleanStepText = rawLine;
 
-                bool isFinalConclusion = (li == rawLines.Length - 1 && rawLines.Length > 1) ||
-                                         rawLine.IndexOf("Result", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                                         rawLine.IndexOf("Answer", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                                         rawLine.IndexOf("Conclusion", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                                         rawLine.IndexOf("= 9", StringComparison.OrdinalIgnoreCase) >= 0;
+                // ONLY the very last line of a multi-step breakdown is marked as the final conclusion!
+                bool isFinalConclusion = (stepIndex == validLines.Count - 1 && validLines.Count > 1);
 
                 Color markerCol = isFinalConclusion
                     ? Color.FromRgb(0xE1, 0x1D, 0x48)
                     : stepColors[stepIndex % stepColors.Length];
 
-                var stepRow = new DockPanel { Margin = new Thickness(0, 0, 0, 6) };
+                var stepRow = new DockPanel
+                {
+                    Margin = new Thickness(0, 0, 0, 6),
+                    Visibility = immediate ? Visibility.Visible : Visibility.Collapsed
+                };
 
-                // Left hand-drawn step circle badge (1, 2, 3... or ★ for final conclusion)
+                // Left hand-drawn step circle badge (1, 2, 3... or ✓ for final conclusion)
                 var badgeCanvas = new Canvas
                 {
                     Width = 34,
@@ -3230,62 +3393,71 @@ namespace FlinchApp
                 DockPanel.SetDock(badgeCanvas, Dock.Left);
                 stepRow.Children.Add(badgeCanvas);
 
-                // Right handwritten step text (animated letter-by-letter when immediate == false)
-                var stepTextHost = new Grid();
+                // Right handwritten step text (animated letter-by-letter with live pencil while speaking!)
+                var stepTextHost = new StackPanel { Orientation = Orientation.Vertical };
                 var stepTb = new TextBlock
                 {
                     Text = immediate ? cleanStepText : "",
                     Foreground = isFinalConclusion
                         ? new SolidColorBrush(Color.FromRgb(0xBE, 0x12, 0x3C))
                         : new SolidColorBrush(Color.FromRgb(30, 41, 59)),
-                    FontSize = isFinalConclusion ? 14.0 : 13.2,
+                    FontSize = isFinalConclusion ? 14.2 : 13.2,
                     FontWeight = isFinalConclusion ? FontWeights.Bold : FontWeights.SemiBold,
                     FontFamily = new FontFamily("Segoe Print, Ink Free, Comic Sans MS, Segoe UI"),
                     TextWrapping = TextWrapping.Wrap,
                     LineHeight = 20,
                     Margin = new Thickness(0, 2, 0, 2)
                 };
-                stepTextHost.Children.Add(stepTb);
 
-                // If this is the final conclusion, draw a hand-sketched red loop around the result once written!
+                Canvas finalUnderlineCanvas = null;
                 if (isFinalConclusion)
                 {
-                    stepTextHost.Margin = new Thickness(0, 8, 0, 8);
-                    stepTb.Padding = new Thickness(18, 10, 18, 10);
-                    var finalLoopCanvas = new Canvas { IsHitTestVisible = false };
-                    stepTextHost.Children.Add(finalLoopCanvas);
+                    // Clean warm highlight card + hand-drawn double marker underline BELOW the result (never crossing through text!)
+                    var finalCard = new Border
+                    {
+                        Background = new SolidColorBrush(Color.FromRgb(255, 241, 242)),
+                        BorderBrush = new SolidColorBrush(Color.FromRgb(254, 205, 211)),
+                        BorderThickness = new Thickness(1.2),
+                        CornerRadius = new CornerRadius(8),
+                        Padding = new Thickness(12, 6, 12, 6),
+                        Margin = new Thickness(0, 2, 0, 2),
+                        Child = stepTb
+                    };
+                    stepTextHost.Children.Add(finalCard);
+                    finalUnderlineCanvas = new Canvas { Height = 10, Margin = new Thickness(4, 2, 0, 2), IsHitTestVisible = false };
+                    stepTextHost.Children.Add(finalUnderlineCanvas);
+
                     if (immediate)
                     {
-                        stepTb.Measure(new Size(boardW - 92, double.PositiveInfinity));
-                        double w = Math.Max(160, Math.Min(boardW - 84, stepTb.DesiredSize.Width + 12));
-                        double h = Math.Max(42, stepTb.DesiredSize.Height + 10);
-                        var resLoop = BuildHandDrawnCirclePoints(w / 2.0, h / 2.0, w * 0.52, h * 0.60, 2.3);
-                        AnimateHandDrawnPolyline(finalLoopCanvas, resLoop, Color.FromRgb(0xE1, 0x1D, 0x48), 2.4, 300, true);
-                    }
-                    else
-                    {
-                        int loopDelayMs = 450 + stepIndex * 750;
-                        Task.Delay(loopDelayMs).ContinueWith(_ =>
+                        double uw = Math.Max(140, boardW - 110);
+                        var uPts = new List<Point>();
+                        for (int k = 0; k <= 20; k++)
                         {
-                            Dispatcher.BeginInvoke(new Action(() =>
-                            {
-                                if (_isDismissing) return;
-                                double w = Math.Max(160, Math.Min(boardW - 84, stepTb.ActualWidth > 20 ? stepTb.ActualWidth + 12 : 250));
-                                double h = Math.Max(42, stepTb.ActualHeight > 10 ? stepTb.ActualHeight + 10 : 50);
-                                var resLoop = BuildHandDrawnCirclePoints(w / 2.0, h / 2.0, w * 0.52, h * 0.60, 2.3);
-                                AnimateHandDrawnPolyline(finalLoopCanvas, resLoop, Color.FromRgb(0xE1, 0x1D, 0x48), 2.4, 380, false);
-                            }));
-                        });
+                            double u = (double)k / 20;
+                            uPts.Add(new Point(u * uw, 3.0 + 1.5 * Math.Sin(u * Math.PI * 2.0)));
+                        }
+                        AnimateHandDrawnPolyline(finalUnderlineCanvas, uPts, Color.FromRgb(0xE1, 0x1D, 0x48), 2.4, 260, true);
                     }
+                }
+                else
+                {
+                    stepTextHost.Children.Add(stepTb);
                 }
 
                 stepRow.Children.Add(stepTextHost);
                 modernPanel.Children.Add(stepRow);
 
                 // Hand-drawn downward arrow connecting to the next step
-                if (li < rawLines.Length - 1)
+                Canvas arrowConnCanvas = null;
+                if (stepIndex < validLines.Count - 1)
                 {
-                    var arrowConnCanvas = new Canvas { Height = 16, Margin = new Thickness(12, 0, 0, 4), HorizontalAlignment = HorizontalAlignment.Left };
+                    arrowConnCanvas = new Canvas
+                    {
+                        Height = 16,
+                        Margin = new Thickness(12, 0, 0, 4),
+                        HorizontalAlignment = HorizontalAlignment.Left,
+                        Visibility = immediate ? Visibility.Visible : Visibility.Collapsed
+                    };
                     var connPts = new List<Point>
                     {
                         new Point(4, 1),
@@ -3308,33 +3480,62 @@ namespace FlinchApp
                     modernPanel.Children.Add(arrowConnCanvas);
                 }
 
-                // Live typewriter handwriting effect for each step
+                // Live synchronized handwriting effect: each step appears and writes only when the bot speaks that step!
                 if (!immediate)
                 {
                     string targetStr = cleanStepText;
                     TextBlock capturedTb = stepTb;
-                    int startDelay = 180 + stepIndex * 650;
+                    DockPanel capturedRow = stepRow;
+                    Canvas capturedArrow = arrowConnCanvas;
+                    Canvas capturedFinalUl = finalUnderlineCanvas;
+                    bool capturedIsFinal = isFinalConclusion;
+                    int startDelay = 280 + stepIndex * msPerStepWindow;
+                    int writeDurationMs = Math.Max(750, Math.Min(1600, (int)(msPerStepWindow * 0.72)));
+
                     Task.Delay(startDelay).ContinueWith(_ =>
                     {
                         Dispatcher.BeginInvoke(new Action(() =>
                         {
                             if (_isDismissing) return;
+                            capturedRow.Visibility = Visibility.Visible;
+
                             int charIdx = 0;
-                            int charsPerTick = Math.Max(1, targetStr.Length / 22);
-                            var writeTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(22) };
+                            int tickMs = 28;
+                            int totalTicks = Math.Max(12, writeDurationMs / tickMs);
+                            double charsPerTick = Math.Max(0.5, (double)targetStr.Length / totalTicks);
+                            double accumChars = 0.0;
+
+                            var writeTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(tickMs) };
                             writeTimer.Tick += (ws, we) =>
                             {
                                 if (_isDismissing) { writeTimer.Stop(); return; }
-                                charIdx = Math.Min(targetStr.Length, charIdx + charsPerTick);
+                                accumChars += charsPerTick;
+                                charIdx = Math.Min(targetStr.Length, (int)Math.Round(accumChars));
                                 capturedTb.Text = targetStr.Substring(0, charIdx);
-                                if (charIdx >= targetStr.Length) writeTimer.Stop();
+                                if (charIdx >= targetStr.Length)
+                                {
+                                    writeTimer.Stop();
+                                    if (capturedArrow != null)
+                                    {
+                                        capturedArrow.Visibility = Visibility.Visible;
+                                    }
+                                    if (capturedIsFinal && capturedFinalUl != null)
+                                    {
+                                        double uw = Math.Max(140, Math.Min(boardW - 110, capturedTb.ActualWidth > 30 ? capturedTb.ActualWidth : 210));
+                                        var uPts = new List<Point>();
+                                        for (int k = 0; k <= 20; k++)
+                                        {
+                                            double u = (double)k / 20;
+                                            uPts.Add(new Point(u * uw, 3.0 + 1.5 * Math.Sin(u * Math.PI * 2.0)));
+                                        }
+                                        AnimateHandDrawnPolyline(capturedFinalUl, uPts, Color.FromRgb(0xE1, 0x1D, 0x48), 2.5, 420, false);
+                                    }
+                                }
                             };
                             writeTimer.Start();
                         }));
                     });
                 }
-
-                stepIndex++;
             }
 
             mainStack.Children.Add(modernPanel);
@@ -3455,9 +3656,9 @@ namespace FlinchApp
 
         protected override void OnClosed(EventArgs e)
         {
-            if (_autoDismissTimer != null)
+            if (_escPollTimer != null)
             {
-                _autoDismissTimer.Stop();
+                _escPollTimer.Stop();
             }
             lock (_instanceLock)
             {
@@ -4124,9 +4325,9 @@ namespace FlinchApp
                         }
 
                         // Attach screen image & UIA metadata: staged frame or live active window
-                        for (int w = 0; w < 4 && !HasStagedScreenFrame; w++)
+                        for (int w = 0; w < 10 && !HasStagedScreenFrame; w++)
                         {
-                            Thread.Sleep(50);
+                            Thread.Sleep(45);
                         }
 
                         byte[] screenBytes;
@@ -7919,10 +8120,11 @@ private void FinishRecordingAndSend()
                             return;
                         }
 
-                        // 1. Check for Close Whiteboard command
-                        if (WhiteboardOverlayManager.IsOpen && (lowerTrans == "close" || lowerTrans.Contains("close whiteboard") || lowerTrans.Contains("dismiss whiteboard") || lowerTrans.Contains("close overlay")))
+                        // 1. Check for Close Whiteboard / Overlay voice command
+                        if (lowerTrans == "close" || lowerTrans.Contains("close whiteboard") || lowerTrans.Contains("dismiss whiteboard") || lowerTrans.Contains("close overlay") || lowerTrans.Contains("dismiss overlay"))
                         {
-                            WhiteboardOverlayManager.Close();
+                            OverlayWindow.CloseCurrent();
+                            if (WhiteboardOverlayManager.IsOpen) WhiteboardOverlayManager.Close();
                             SetIslandState(IslandState.Idle, "", "");
                             return;
                         }
@@ -7930,8 +8132,11 @@ private void FinishRecordingAndSend()
                         // 2. Display transparent screen overlay whenever scene objects are returned!
                         if (scene != null && scene.objects != null && scene.objects.Count > 0)
                         {
-                            FlinchEnv.Log(string.Format("[Flinch] Displaying visual overlay with {0} objects for transcript: '{1}'", scene.objects.Count, transcript));
-                            OverlayWindow.ShowScene(GeminiClient.LastActiveTargetBounds, scene);
+                            int speechMs = (audioWav != null && audioWav.Length > 44)
+                                ? (int)(GetWavDurationSeconds(audioWav) * 1000)
+                                : 10000;
+                            FlinchEnv.Log(string.Format("[Flinch] Displaying visual overlay with {0} objects (speechMs={1}) for transcript: '{2}'", scene.objects.Count, speechMs, transcript));
+                            OverlayWindow.ShowScene(GeminiClient.LastActiveTargetBounds, scene, speechMs);
                         }
                         else if (IsVisualExplainIntent(lowerTrans, action))
                         {

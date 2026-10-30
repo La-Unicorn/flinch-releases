@@ -1019,19 +1019,21 @@ Look carefully at the attached screenshot of the user's active window/display.${
 Instructions:
 1. PERSONA: Speak naturally like a smart, warm friend or tutor. NEVER mention that you are "here to help with your screen", NEVER say "I can see on your screen", and NEVER act robotic.
 2. STEP-BY-STEP TUTORING RULE (CRITICAL): When the user asks to solve, explain, debug, or fix ANY problem, equation, code error, or concept, NEVER just blurt out the straight final answer first! Walk them through the reasoning step by step (Step 1 -> Step 2 -> Step 3 -> Conclusion) so they genuinely understand how and why it works.
-3. HAND-DRAWN SKETCHES & TUTOR WHITEBOARD:
-   - Whenever you explain or solve something on screen, generate sequential hand-drawn scene objects ("circle", "highlight", "arrow") pointing to the exact parts of the problem with staggered delayMs (e.g. step 1 at 200ms, step 2 at 1800ms, step 3 at 3400ms).
-   - ALWAYS include a "notepad" whiteboard object containing a clear numbered step-by-step guide separated by newlines (e.g. "1. First step...\\n2. Second step...\\n3. Third step...\\nResult: ...") so your live pencil writes each step onto the whiteboard as you speak!
+3. PINPOINT VISUAL GROUNDING (box_2d [ymin, xmin, ymax, xmax] 0..1000):
+   - Whenever you explain or solve something on screen, generate sequential hand-drawn scene objects ("circle", "highlight", "arrow") pointing to the EXACT sub-expressions or characters of the problem (e.g. tightly wrap ONLY "(1+2)" for Step 1, then tightly wrap ONLY "6 ÷ 2" for Step 2).
+   - For maximum spatial accuracy, provide "box_2d": [ymin, xmin, ymax, xmax] in integer coordinates from 0 to 1000 tightly bounding the exact characters/element on the screenshot!
+   - Number each step sequentially ("step": 1, "step": 2, "step": 3...) so each shape draws live while you speak that step!
+   - ALWAYS include a "notepad" whiteboard object containing a clear numbered step-by-step guide separated by newlines (e.g. "1. First step...\\n2. Second step...\\n3. Third step...\\nResult: ...") so your live pencil writes each step onto the whiteboard synchronized with your voice!
 
 Set durationMs: 25000 when generating visual scene objects.
 
 Supported scene object types:
-- "circle": {"type": "circle", "rect": {"x": 0.45, "y": 0.35, "w": 0.12, "h": 0.10}, "step": 1, "delayMs": 200, "label": "Step 1: Start here", "color": "#E11D48"}
-- "highlight": {"type": "highlight", "rect": {"x": 0.2, "y": 0.3, "w": 0.4, "h": 0.05}, "step": 2, "delayMs": 1800, "label": "Step 2: Check this", "color": "#D97706"}
-- "arrow": {"type": "arrow", "from": {"x": 0.2, "y": 0.3}, "to": {"x": 0.5, "y": 0.4}, "step": 3, "delayMs": 3400, "label": "Step 3: Leads here", "color": "#2563EB"}
-- "outline": {"type": "outline", "rect": {"x": 0.4, "y": 0.3, "w": 0.2, "h": 0.08}, "label": "Target"}
-- "callout": {"type": "callout", "rect": {"x": 0.4, "y": 0.4, "w": 0.3, "h": 0.1}, "text": "Explanation note"}
-- "notepad": {"type": "notepad", "title": "Step-by-Step Guide", "text": "1. First step...\\n2. Second step...\\n3. Third step...\\nResult: Final takeaway", "altAnswer": "", "altExplanation": "", "delayMs": 300}
+- "circle": {"type": "circle", "box_2d": [350, 450, 430, 560], "step": 1, "label": "Step 1: (1+2) = 3", "color": "#E11D48"}
+- "highlight": {"type": "highlight", "box_2d": [350, 320, 430, 445], "step": 2, "label": "Step 2: 6 ÷ 2 = 3", "color": "#D97706"}
+- "arrow": {"type": "arrow", "from": {"x": 0.38, "y": 0.34}, "to": {"x": 0.50, "y": 0.34}, "step": 3, "label": "Step 3: 3 × 3 = 9", "color": "#2563EB"}
+- "outline": {"type": "outline", "box_2d": [300, 400, 380, 600], "step": 1, "label": "Target"}
+- "callout": {"type": "callout", "box_2d": [400, 400, 500, 700], "text": "Explanation note"}
+- "notepad": {"type": "notepad", "title": "Step-by-Step Guide", "text": "1. First step...\\n2. Second step...\\n3. Third step...\\nResult: Final takeaway", "altAnswer": "", "altExplanation": ""}
 
 Return your output strictly as a JSON object:
 {
@@ -1317,7 +1319,7 @@ If no visual overlay is needed, set "scene": null.`;
       }
     }
 
-    // Guarantee step-by-step visual overlay and Math Notebook ONLY for the specific 6 ÷ 2(1+2) problem
+    // Ensure any viral 6 ÷ 2(1+2) math query without a whiteboard gets a clean notepad card (without overriding vision coordinates!)
     const lowTx = transcript.toLowerCase();
     const lowReply = reply.toLowerCase();
     const isViralMath = lowTx.includes("6 ÷ 2") || lowTx.includes("6/2") || lowTx.includes("1+2") || lowReply.includes("6 ÷ 2") || lowReply.includes("6/2(1+2)");
@@ -1328,37 +1330,12 @@ If no visual overlay is needed, set "scene": null.`;
           durationMs: 25000,
           objects: [
             {
-              type: "circle",
-              rect: { x: 0.38, y: 0.43, w: 0.17, h: 0.16 },
-              step: 1,
-              delayMs: 200,
-              label: "1. (1+2) = 3",
-              color: "#2563EB"
-            },
-            {
-              type: "highlight",
-              rect: { x: 0.22, y: 0.46, w: 0.17, h: 0.10 },
-              step: 2,
-              delayMs: 2200,
-              label: "2. 6 / 2 = 3",
-              color: "#D97706"
-            },
-            {
-              type: "arrow",
-              from: { x: 0.54, y: 0.51 },
-              to: { x: 0.65, y: 0.51 },
-              step: 3,
-              delayMs: 4400,
-              label: "3. 3 x 3 = 9",
-              color: "#16A34A"
-            },
-            {
               type: "notepad",
               title: "Order of Operations: 6 ÷ 2(1+2)",
-              text: "1. Parentheses First: (1 + 2) = 3  ->  6 ÷ 2(3)\n2. Left-to-Right: 6 ÷ 2 = 3  ->  3(3)\n3. Multiply: 3 x 3 = 9\n\nResult = 9 (Modern Standard)",
+              text: "1. Parentheses First: (1 + 2) = 3  ->  6 ÷ 2(3)\n2. Left-to-Right: 6 ÷ 2 = 3  ->  3(3)\n3. Multiply: 3 x 3 = 9\nResult: 9 (Modern Standard)",
               altAnswer: "1",
               altExplanation: "People get 1 because historical 1917 Cajori conventions (and some calculators) bind implied multiplication 2(3) tighter than division: 6 ÷ [2(3)] = 6 ÷ 6 = 1.\n\nUnder modern PEMDAS / ISO 80000-2 standards, multiplication and division share equal priority left-to-right, giving 9.",
-              delayMs: 400
+              delayMs: 300
             }
           ]
         };
@@ -2435,6 +2412,31 @@ function sanitizeScene(sceneRaw: any): any {
       return Math.max(0.0, Math.min(1.0, Math.round(num * 1000) / 1000));
     };
 
+    const parseBox2D = (b: any): { x: number; y: number; w: number; h: number } | null => {
+      if (!Array.isArray(b) || b.length < 4) return null;
+      const n0 = parseFloat(b[0]);
+      const n1 = parseFloat(b[1]);
+      const n2 = parseFloat(b[2]);
+      const n3 = parseFloat(b[3]);
+      if (isNaN(n0) || isNaN(n1) || isNaN(n2) || isNaN(n3)) return null;
+      // Gemini native box_2d is [ymin, xmin, ymax, xmax] in 0..1000 (or 0..1)
+      const scale = (n0 > 1.0 || n1 > 1.0 || n2 > 1.0 || n3 > 1.0) ? 1000.0 : 1.0;
+      const ymin = clamp(Math.min(n0, n2) / scale);
+      const xmin = clamp(Math.min(n1, n3) / scale);
+      const ymax = clamp(Math.max(n0, n2) / scale);
+      const xmax = clamp(Math.max(n1, n3) / scale);
+      const w = Math.max(0.015, xmax - xmin);
+      const h = Math.max(0.015, ymax - ymin);
+      return {
+        x: xmin,
+        y: ymin,
+        w: Math.min(1.0 - xmin, w),
+        h: Math.min(1.0 - ymin, h),
+      };
+    };
+
+    const boxRect = parseBox2D(obj.box_2d || obj.box2d || obj.bbox);
+
     const cleanObj: any = { type };
 
     if (type === "notepad" || type === "notebook") {
@@ -2444,7 +2446,9 @@ function sanitizeScene(sceneRaw: any): any {
       if (obj.imageUrl) cleanObj.imageUrl = String(obj.imageUrl).slice(0, 500);
       if (obj.altAnswer) cleanObj.altAnswer = String(obj.altAnswer).slice(0, 50);
       if (obj.altExplanation) cleanObj.altExplanation = String(obj.altExplanation).slice(0, 600);
-      if (obj.rect) {
+      if (boxRect) {
+        cleanObj.rect = boxRect;
+      } else if (obj.rect) {
         cleanObj.rect = { x: clamp(obj.rect.x), y: clamp(obj.rect.y), w: clamp(obj.rect.w), h: clamp(obj.rect.h) };
       }
       if (obj.color) cleanObj.color = String(obj.color).trim();
@@ -2452,8 +2456,13 @@ function sanitizeScene(sceneRaw: any): any {
     }
     else if (type === "arrow") {
       if (!obj.from || !obj.to) continue;
-      cleanObj.from = { x: clamp(obj.from.x), y: clamp(obj.from.y) };
-      cleanObj.to = { x: clamp(obj.to.x), y: clamp(obj.to.y) };
+      const normCoord = (v: any) => {
+        const num = typeof v === "number" ? v : parseFloat(v);
+        if (isNaN(num)) return 0;
+        return clamp(num > 1.0 ? num / 1000.0 : num);
+      };
+      cleanObj.from = { x: normCoord(obj.from.x), y: normCoord(obj.from.y) };
+      cleanObj.to = { x: normCoord(obj.to.x), y: normCoord(obj.to.y) };
       if (typeof obj.label === "string" && obj.label.trim()) {
         cleanObj.label = obj.label.replace(/<[^>]*>?/gm, "").slice(0, 100).trim();
       }
@@ -2474,15 +2483,22 @@ function sanitizeScene(sceneRaw: any): any {
         cleanObj.label = obj.label.replace(/<[^>]*>?/gm, "").slice(0, 100).trim();
       }
     } else if (type === "circle") {
-      if (obj.from) {
-        cleanObj.from = { x: clamp(obj.from.x), y: clamp(obj.from.y) };
-        if (typeof obj.radius === "number") cleanObj.radius = Math.max(0.005, Math.min(0.5, obj.radius));
+      if (boxRect) {
+        cleanObj.rect = boxRect;
       } else if (obj.rect) {
-        const rx = clamp(obj.rect.x);
-        const ry = clamp(obj.rect.y);
-        const rw = Math.max(0.01, clamp(obj.rect.w || obj.rect.width || 0.1));
-        const rh = Math.max(0.01, clamp(obj.rect.h || obj.rect.height || 0.1));
+        const rx = clamp(obj.rect.x > 1.0 ? obj.rect.x / 1000.0 : obj.rect.x);
+        const ry = clamp(obj.rect.y > 1.0 ? obj.rect.y / 1000.0 : obj.rect.y);
+        const rawW = obj.rect.w || obj.rect.width || 0.1;
+        const rawH = obj.rect.h || obj.rect.height || 0.1;
+        const rw = Math.max(0.015, clamp(rawW > 1.0 ? rawW / 1000.0 : rawW));
+        const rh = Math.max(0.015, clamp(rawH > 1.0 ? rawH / 1000.0 : rawH));
         cleanObj.rect = { x: rx, y: ry, w: Math.min(1.0 - rx, rw), h: Math.min(1.0 - ry, rh) };
+      } else if (obj.from) {
+        cleanObj.from = {
+          x: clamp(obj.from.x > 1.0 ? obj.from.x / 1000.0 : obj.from.x),
+          y: clamp(obj.from.y > 1.0 ? obj.from.y / 1000.0 : obj.from.y),
+        };
+        if (typeof obj.radius === "number") cleanObj.radius = Math.max(0.005, Math.min(0.5, obj.radius));
       } else {
         continue;
       }
@@ -2493,17 +2509,23 @@ function sanitizeScene(sceneRaw: any): any {
       }
     } else {
       // outline, highlight, callout, equation, spotlight
-      const rect = obj.rect || {};
-      const rx = clamp(rect.x);
-      const ry = clamp(rect.y);
-      const rw = Math.max(0.01, clamp(rect.w || rect.width || 0.1));
-      const rh = Math.max(0.01, clamp(rect.h || rect.height || 0.05));
-      cleanObj.rect = {
-        x: rx,
-        y: ry,
-        w: Math.min(1.0 - rx, rw),
-        h: Math.min(1.0 - ry, rh),
-      };
+      if (boxRect) {
+        cleanObj.rect = boxRect;
+      } else {
+        const rect = obj.rect || {};
+        const rx = clamp(rect.x > 1.0 ? rect.x / 1000.0 : rect.x);
+        const ry = clamp(rect.y > 1.0 ? rect.y / 1000.0 : rect.y);
+        const rawW = rect.w || rect.width || 0.1;
+        const rawH = rect.h || rect.height || 0.05;
+        const rw = Math.max(0.015, clamp(rawW > 1.0 ? rawW / 1000.0 : rawW));
+        const rh = Math.max(0.015, clamp(rawH > 1.0 ? rawH / 1000.0 : rawH));
+        cleanObj.rect = {
+          x: rx,
+          y: ry,
+          w: Math.min(1.0 - rx, rw),
+          h: Math.min(1.0 - ry, rh),
+        };
+      }
 
       if (typeof obj.color === "string") cleanObj.color = obj.color.slice(0, 30);
       if (typeof obj.label === "string" && obj.label.trim()) {
