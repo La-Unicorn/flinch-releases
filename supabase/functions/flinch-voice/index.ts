@@ -1024,22 +1024,28 @@ Look carefully at the attached screenshot of the user's active window/display.${
 Instructions:
 1. PERSONA: Speak naturally like a smart, warm friend or tutor. NEVER mention that you are "here to help with your screen", NEVER say "I can see on your screen", and NEVER act robotic.
 2. STEP-BY-STEP TUTORING RULE (CRITICAL): When the user asks to solve, explain, debug, or fix ANY problem, equation, code error, or concept, NEVER just blurt out the straight final answer first! Walk them through the reasoning step by step (Step 1 -> Step 2 -> Step 3 -> Conclusion) so they genuinely understand how and why it works.
-3. PINPOINT VISUAL GROUNDING (box_2d [ymin, xmin, ymax, xmax] 0..1000):
-   - Whenever you explain or solve something on screen, generate sequential hand-drawn scene objects ("circle", "highlight", "arrow") pointing to the EXACT sub-expressions or characters of the problem (e.g. tightly wrap ONLY "(1+2)" for Step 1, then tightly wrap ONLY "6 ÷ 2" for Step 2).
+3. PINPOINT VISUAL GROUNDING (box_2d [ymin, xmin, ymax, xmax] 0..1000) & SPEECH-TO-DRAWING ALIGNMENT:
+   - Whenever you explain or solve something on screen, generate sequential hand-drawn scene objects pointing to the EXACT sub-expressions or characters of the problem (e.g. tightly wrap ONLY "(1+2)" for Step 1, then tightly wrap ONLY "6 ÷ 2" for Step 2).
    - For maximum spatial accuracy, provide "box_2d": [ymin, xmin, ymax, xmax] in integer coordinates from 0 to 1000 tightly bounding the exact characters/element on the screenshot!
-   - Number each step sequentially ("step": 1, "step": 2, "step": 3...) so each shape draws live while you speak that step!
-   - ALWAYS include a "notepad" whiteboard object containing a clear numbered step-by-step guide separated by newlines (e.g. "1. First step...\\n2. Second step...\\n3. Third step...\\nResult: ...") so your live pencil writes each step onto the whiteboard synchronized with your voice!
+   - Number each step sequentially ("step": 1, "step": 2, "step": 3...) AND structure your spoken "answer" into matching sentences (Sentence 1 explains Step 1, Sentence 2 explains Step 2, Sentence 3 explains Step 3, final sentence gives the Conclusion) so our speech-alignment engine triggers each drawing at the exact millisecond your voice begins speaking that sentence!
+   - Include "spokenTrigger" on each scene object with a 2-4 word phrase from your spoken "answer" where that shape should start drawing!
+   - ALWAYS include a "notepad" whiteboard object containing a clear numbered step-by-step guide separated by newlines (e.g. "1. First step...\\n2. Second step...\\n3. Third step...\\nResult: ...") so your live pencil writes each step onto the whiteboard synchronized with your voice! If the problem involves a function, slope, parabola, or inequality, also include "graph": "x^2 - 4" (or "numberline: > 3") on the "notepad" object so the whiteboard sketches a live mini graph!
 
 Set durationMs: 25000 when generating visual scene objects.
 
-Supported scene object types:
-- "circle": {"type": "circle", "box_2d": [350, 450, 430, 560], "step": 1, "label": "Step 1: (1+2) = 3", "color": "#E11D48"}
-- "highlight": {"type": "highlight", "box_2d": [350, 320, 430, 445], "step": 2, "label": "Step 2: 6 ÷ 2 = 3", "color": "#D97706"}
-- "arrow": {"type": "arrow", "from": {"x": 0.38, "y": 0.34}, "to": {"x": 0.50, "y": 0.34}, "step": 3, "label": "Step 3: 3 × 3 = 9", "color": "#2563EB"}
-- "checkmark": {"type": "checkmark", "box_2d": [320, 280, 370, 330], "step": 1, "label": "Correct!", "color": "#16A34A"}
-- "outline": {"type": "outline", "box_2d": [300, 400, 380, 600], "step": 1, "label": "Target"}
-- "callout": {"type": "callout", "box_2d": [400, 400, 500, 700], "text": "Explanation note"}
-- "notepad": {"type": "notepad", "title": "Step-by-Step Guide", "text": "1. First step...\\n2. Second step...\\n3. Third step...\\nResult: Final takeaway", "altAnswer": "", "altExplanation": ""}
+Supported scene object types (choose the best tutor drawing for each step!):
+- "circle" (hand-drawn spiral loop): {"type": "circle", "box_2d": [350, 450, 430, 560], "step": 1, "spokenTrigger": "inside the parentheses", "label": "Step 1: (1+2) = 3", "color": "#E11D48"}
+- "underline" / "squiggle" (hand-drawn double underline or wavy bug squiggle beneath text): {"type": "underline", "box_2d": [350, 320, 430, 445], "step": 2, "style": "double", "label": "Step 2: 6 ÷ 2 = 3", "color": "#0284C7"} (use "style": "wavy" for errors/bugs)
+- "curly_brace" / "bracket" (hand-drawn under-brace ⏟ grouping an expression, or side-brace } beside code lines): {"type": "curly_brace", "box_2d": [350, 450, 430, 560], "step": 1, "label": "Evaluates to 3", "color": "#0284C7"}
+- "cross" / "strike" (hand-drawn red ✗ or diagonal slash / for canceling out terms in fractions/equations or marking a mistake): {"type": "cross", "box_2d": [350, 450, 410, 510], "step": 2, "style": "slash", "label": "Cancels out", "color": "#E11D48"}
+- "checkmark" (hand-drawn green ✓ next to a correct student step): {"type": "checkmark", "box_2d": [320, 280, 370, 330], "step": 1, "label": "Correct!", "color": "#16A34A"}
+- "arrow" (curved hand-drawn arrow between two points OR jumping from from_box_2d to to_box_2d): {"type": "arrow", "from_box_2d": [350, 320, 420, 400], "to_box_2d": [350, 450, 420, 550], "step": 3, "label": "Multiply 3 × 3", "color": "#2563EB"}
+- "magnify" / "zoom" (magnifying loupe callout for tiny exponents, signs, or small UI icons): {"type": "magnify", "box_2d": [340, 480, 375, 515], "step": 1, "label": "Notice the negative exponent -2", "color": "#7C3AED"}
+- "highlight" (warm marker wash): {"type": "highlight", "box_2d": [350, 320, 430, 445], "step": 2, "label": "Key term", "color": "#D97706"}
+- "outline" (hand-drawn rectangle): {"type": "outline", "box_2d": [300, 400, 380, 600], "step": 1, "label": "Target"}
+- "equation" (handwritten formula card): {"type": "equation", "box_2d": [420, 350, 490, 600], "step": 2, "latex": "x = (-b ± √(b² - 4ac)) / 2a"}
+- "callout" (sticky note): {"type": "callout", "box_2d": [400, 400, 500, 700], "text": "Explanation note"}
+- "notepad" (interactive tutor whiteboard): {"type": "notepad", "title": "Step-by-Step Guide", "text": "1. First step...\\n2. Second step...\\n3. Third step...\\nResult: Final takeaway", "graph": "", "altAnswer": "", "altExplanation": ""}
 
 4. "CHECK MY WORK" / PRACTICE MODE:
    - If the user says "check my work", "did I do this right", "is my solution right", or "grade my steps", inspect each step of their work on screen:
@@ -2414,7 +2420,12 @@ function sanitizeScene(sceneRaw: any): any {
   const objects = Array.isArray(sceneRaw.objects) ? sceneRaw.objects : [];
   if (objects.length === 0) return null;
 
-  const validTypes = new Set(["arrow", "outline", "callout", "equation", "spotlight", "circle", "highlight", "checkmark", "check", "draw", "pen", "path", "notepad", "notebook"]);
+  const validTypes = new Set([
+    "arrow", "outline", "callout", "equation", "spotlight", "circle", "ring",
+    "highlight", "checkmark", "check", "cross", "x_mark", "strike", "slash",
+    "underline", "squiggle", "curly_brace", "brace", "bracket", "magnify", "zoom",
+    "draw", "pen", "path", "notepad", "notebook"
+  ]);
   const cleanObjects: any[] = [];
 
   for (const obj of objects) {
@@ -2457,11 +2468,12 @@ function sanitizeScene(sceneRaw: any): any {
 
     if (type === "notepad" || type === "notebook") {
       cleanObj.title = String(obj.title || "Topic Overview").slice(0, 150);
-      cleanObj.text = String(obj.text || "").slice(0, 1000);
+      cleanObj.text = String(obj.text || "").slice(0, 1200);
       if (obj.subtitle) cleanObj.subtitle = String(obj.subtitle).slice(0, 200);
       if (obj.imageUrl) cleanObj.imageUrl = String(obj.imageUrl).slice(0, 500);
       if (obj.altAnswer) cleanObj.altAnswer = String(obj.altAnswer).slice(0, 50);
       if (obj.altExplanation) cleanObj.altExplanation = String(obj.altExplanation).slice(0, 600);
+      if (obj.graph) cleanObj.graph = String(obj.graph).slice(0, 150);
       if (boxRect) {
         cleanObj.rect = boxRect;
       } else if (obj.rect) {
@@ -2471,14 +2483,23 @@ function sanitizeScene(sceneRaw: any): any {
       if (typeof obj.delayMs === "number") cleanObj.delayMs = Math.max(0, Math.min(15000, obj.delayMs));
     }
     else if (type === "arrow") {
-      if (!obj.from || !obj.to) continue;
+      const fromBox = parseBox2D(obj.from_box_2d || obj.fromBox2d);
+      const toBox = parseBox2D(obj.to_box_2d || obj.toBox2d);
       const normCoord = (v: any) => {
         const num = typeof v === "number" ? v : parseFloat(v);
         if (isNaN(num)) return 0;
         return clamp(num > 1.0 ? num / 1000.0 : num);
       };
-      cleanObj.from = { x: normCoord(obj.from.x), y: normCoord(obj.from.y) };
-      cleanObj.to = { x: normCoord(obj.to.x), y: normCoord(obj.to.y) };
+      if (fromBox && toBox) {
+        cleanObj.from = { x: clamp(fromBox.x + fromBox.w * 0.5), y: clamp(fromBox.y + fromBox.h * 0.5) };
+        cleanObj.to = { x: clamp(toBox.x + toBox.w * 0.5), y: clamp(toBox.y + toBox.h * 0.5) };
+      } else if (obj.from && obj.to) {
+        cleanObj.from = { x: normCoord(obj.from.x), y: normCoord(obj.from.y) };
+        cleanObj.to = { x: normCoord(obj.to.x), y: normCoord(obj.to.y) };
+      } else {
+        continue;
+      }
+      if (typeof obj.color === "string") cleanObj.color = obj.color.slice(0, 30);
       if (typeof obj.label === "string" && obj.label.trim()) {
         cleanObj.label = obj.label.replace(/<[^>]*>?/gm, "").slice(0, 100).trim();
       }
@@ -2555,6 +2576,12 @@ function sanitizeScene(sceneRaw: any): any {
       }
     }
 
+    if (typeof obj.style === "string" && obj.style.trim()) {
+      cleanObj.style = obj.style.slice(0, 30).trim().toLowerCase();
+    }
+    if (typeof obj.spokenTrigger === "string" && obj.spokenTrigger.trim()) {
+      cleanObj.spokenTrigger = obj.spokenTrigger.slice(0, 80).trim();
+    }
     if (typeof obj.step === "number" && obj.step >= 1 && obj.step <= 20) {
       cleanObj.step = Math.round(obj.step);
     }
@@ -2563,7 +2590,7 @@ function sanitizeScene(sceneRaw: any): any {
     }
 
     cleanObjects.push(cleanObj);
-    if (cleanObjects.length >= 8) break; // Limit to max 8 objects
+    if (cleanObjects.length >= 12) break; // Limit to max 12 objects
   }
 
   if (cleanObjects.length === 0) return null;

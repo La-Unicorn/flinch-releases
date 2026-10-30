@@ -1989,6 +1989,9 @@ namespace FlinchApp
         public string altExplanation { get; set; }
         public string imageUrl { get; set; }
         public string subtitle { get; set; }
+        public string style { get; set; }
+        public string spokenTrigger { get; set; }
+        public string graph { get; set; }
     }
 
     internal sealed class ScenePayload
@@ -2021,13 +2024,99 @@ namespace FlinchApp
         private readonly Canvas _canvas;
         private readonly ScenePayload _scene;
         private readonly int _speechDurationMs;
+        private readonly string _spokenReply;
+        private readonly List<int> _sentenceStartTimesMs;
         private readonly DispatcherTimer _escPollTimer;
         private bool _isDismissing = false;
         private bool _escWasDown = true;
 
         public Canvas RootCanvas { get { return _canvas; } }
 
-        public static void ShowScene(NativeMethods.RECT targetBounds, ScenePayload scene, int speechDurationMs = 9500)
+        // Computes the start millisecond of each sentence in the spoken reply proportional to its word/character count,
+        // and also finds the exact millisecond when any "spokenTrigger" phrase is spoken!
+        private static List<int> BuildSentenceTimelineMs(string spokenReply, int totalSpeechMs)
+        {
+            var starts = new List<int>();
+            if (string.IsNullOrWhiteSpace(spokenReply))
+            {
+                starts.Add(150);
+                return starts;
+            }
+
+            var sentences = new List<string>();
+            int sStart = 0;
+            for (int i = 0; i < spokenReply.Length; i++)
+            {
+                char c = spokenReply[i];
+                if ((c == '.' || c == '!' || c == '?') && (i + 1 == spokenReply.Length || char.IsWhiteSpace(spokenReply[i + 1])))
+                {
+                    string seg = spokenReply.Substring(sStart, i - sStart + 1).Trim();
+                    if (seg.Length > 0) sentences.Add(seg);
+                    sStart = i + 1;
+                }
+            }
+            if (sStart < spokenReply.Length)
+            {
+                string tail = spokenReply.Substring(sStart).Trim();
+                if (tail.Length > 0) sentences.Add(tail);
+            }
+
+            if (sentences.Count == 0)
+            {
+                starts.Add(150);
+                return starts;
+            }
+
+            int totalChars = 0;
+            for (int i = 0; i < sentences.Count; i++) totalChars += Math.Max(4, sentences[i].Length);
+            if (totalChars <= 0) totalChars = 1;
+
+            int activeMs = Math.Max(2000, (int)(totalSpeechMs * 0.90));
+            int accumChars = 0;
+            for (int i = 0; i < sentences.Count; i++)
+            {
+                int ms = 120 + (int)Math.Round(((double)accumChars / totalChars) * activeMs);
+                starts.Add(ms);
+                accumChars += Math.Max(4, sentences[i].Length);
+            }
+            return starts;
+        }
+
+        private int ResolveSpokenDelayMs(string spokenTrigger, int stepIndexZeroBased, int totalStepsFallback)
+        {
+            int activeWindowMs = Math.Max(2000, (int)(_speechDurationMs * 0.88));
+
+            // 1. Exact phrase match in the spoken reply ("inside the parentheses", "divide 6 by 2", etc.)
+            if (!string.IsNullOrWhiteSpace(spokenTrigger) && !string.IsNullOrWhiteSpace(_spokenReply))
+            {
+                int idx = _spokenReply.IndexOf(spokenTrigger.Trim(), StringComparison.OrdinalIgnoreCase);
+                if (idx >= 0 && _spokenReply.Length > 0)
+                {
+                    double frac = (double)idx / _spokenReply.Length;
+                    return 100 + (int)Math.Round(frac * activeWindowMs);
+                }
+            }
+
+            // 2. Sentence-level alignment: Step 1 -> Sentence 1 start, Step 2 -> Sentence 2 start, etc.
+            if (_sentenceStartTimesMs != null && _sentenceStartTimesMs.Count > 0)
+            {
+                if (stepIndexZeroBased >= 0 && stepIndexZeroBased < _sentenceStartTimesMs.Count)
+                {
+                    return _sentenceStartTimesMs[stepIndexZeroBased];
+                }
+                if (_sentenceStartTimesMs.Count >= 2 && totalStepsFallback > 1)
+                {
+                    int mappedIdx = (int)Math.Round(((double)stepIndexZeroBased / (totalStepsFallback - 1)) * (_sentenceStartTimesMs.Count - 1));
+                    mappedIdx = Math.Max(0, Math.Min(_sentenceStartTimesMs.Count - 1, mappedIdx));
+                    return _sentenceStartTimesMs[mappedIdx];
+                }
+            }
+
+            // 3. Proportional fallback
+            return 220 + (stepIndexZeroBased * activeWindowMs) / Math.Max(1, totalStepsFallback);
+        }
+
+        public static void ShowScene(NativeMethods.RECT targetBounds, ScenePayload scene, int speechDurationMs = 9500, string spokenReply = null)
         {
             if (scene == null || scene.objects == null || scene.objects.Count == 0)
             {
@@ -2072,7 +2161,7 @@ namespace FlinchApp
                         };
                     }
 
-                    var win = new OverlayWindow(targetBounds, scene, false, speechDurationMs);
+                    var win = new OverlayWindow(targetBounds, scene, false, speechDurationMs, spokenReply);
                     lock (_instanceLock)
                     {
                         _activeInstance = win;
@@ -2135,10 +2224,12 @@ namespace FlinchApp
             }
         }
 
-        public OverlayWindow(NativeMethods.RECT targetBounds, ScenePayload scene, bool immediateRender = false, int speechDurationMs = 9500)
+        public OverlayWindow(NativeMethods.RECT targetBounds, ScenePayload scene, bool immediateRender = false, int speechDurationMs = 9500, string spokenReply = null)
         {
             _scene = scene ?? new ScenePayload();
             _speechDurationMs = Math.Max(4500, Math.Min(32000, speechDurationMs));
+            _spokenReply = spokenReply ?? "";
+            _sentenceStartTimesMs = BuildSentenceTimelineMs(_spokenReply, _speechDurationMs);
 
             WindowStyle = WindowStyle.None;
             AllowsTransparency = true;
@@ -2297,12 +2388,12 @@ namespace FlinchApp
                 {
                     if (type == "notepad" || type == "notebook")
                     {
-                        delay = 180;
+                        delay = 140;
                     }
                     else
                     {
                         int stepOrdinal = (obj.step.HasValue && obj.step.Value >= 1) ? (obj.step.Value - 1) : shapeOrder;
-                        delay = 350 + (stepOrdinal * activeSpeechWindowMs) / totalShapes;
+                        delay = ResolveSpokenDelayMs(obj.spokenTrigger, stepOrdinal, totalShapes);
                         shapeOrder++;
                     }
                 }
@@ -2358,7 +2449,7 @@ namespace FlinchApp
             }
             else if (type == "equation" && obj.rect != null)
             {
-                RenderEquation(obj);
+                RenderEquation(obj, immediate);
             }
             else if (type == "spotlight" && obj.rect != null)
             {
@@ -2367,6 +2458,22 @@ namespace FlinchApp
             else if (type == "checkmark" || type == "check")
             {
                 RenderCheckmark(obj, immediate);
+            }
+            else if (type == "cross" || type == "x_mark" || type == "strike" || type == "slash")
+            {
+                RenderCrossOrStrike(obj, immediate);
+            }
+            else if (type == "underline" || type == "squiggle")
+            {
+                RenderUnderline(obj, immediate);
+            }
+            else if (type == "curly_brace" || type == "brace" || type == "bracket")
+            {
+                RenderCurlyBrace(obj, immediate);
+            }
+            else if (type == "magnify" || type == "zoom")
+            {
+                RenderMagnifyLoupe(obj, immediate);
             }
             else if (type == "notepad" || type == "notebook")
             {
@@ -3004,34 +3111,328 @@ namespace FlinchApp
             }
         }
 
-        private void RenderEquation(SceneObjectPayload obj)
+        private void RenderEquation(SceneObjectPayload obj, bool immediate = false)
         {
             double eqX = Math.Max(0.0, Math.Min(1.0, obj.rect.x)) * Width;
             double eqY = Math.Max(0.0, Math.Min(1.0, obj.rect.y)) * Height;
+            string formulaStr = obj.latex ?? obj.text ?? obj.label ?? "";
 
             var eqBorder = new Border
             {
                 Background = new SolidColorBrush(Color.FromRgb(255, 255, 255)),
-                BorderBrush = new SolidColorBrush(Color.FromRgb(226, 232, 240)),
-                BorderThickness = new Thickness(1),
+                BorderBrush = new SolidColorBrush(Color.FromRgb(203, 213, 225)),
+                BorderThickness = new Thickness(1.5),
                 CornerRadius = new CornerRadius(10),
                 Padding = new Thickness(14, 10, 14, 10),
-                Effect = new DropShadowEffect { Color = Colors.Black, BlurRadius = 14, Opacity = 0.12, ShadowDepth = 3 }
+                Effect = new DropShadowEffect { Color = Colors.Black, BlurRadius = 14, Opacity = 0.14, ShadowDepth = 3 },
+                Opacity = immediate ? 1.0 : 0.0
             };
             var eqStack = new StackPanel();
             var eqText = new TextBlock
             {
-                Text = obj.latex ?? obj.text ?? "",
+                Text = immediate ? formulaStr : "",
                 Foreground = new SolidColorBrush(Color.FromRgb(15, 23, 42)),
                 FontSize = 15,
                 FontWeight = FontWeights.SemiBold,
                 FontFamily = new FontFamily("Segoe Print, Consolas, Segoe UI")
             };
             eqStack.Children.Add(eqText);
+
+            var eqUlCanvas = new Canvas { Height = 8, Margin = new Thickness(0, 2, 0, 0), IsHitTestVisible = false };
+            eqStack.Children.Add(eqUlCanvas);
+
             eqBorder.Child = eqStack;
             Canvas.SetLeft(eqBorder, Math.Max(10, Math.Min(Width - 320, eqX)));
             Canvas.SetTop(eqBorder, Math.Max(10, Math.Min(Height - 100, eqY)));
             _canvas.Children.Add(eqBorder);
+
+            if (!immediate && !string.IsNullOrEmpty(formulaStr))
+            {
+                eqBorder.BeginAnimation(UIElement.OpacityProperty, new System.Windows.Media.Animation.DoubleAnimation(0.0, 1.0, new Duration(TimeSpan.FromMilliseconds(180))));
+                int idx = 0;
+                var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(26) };
+                timer.Tick += (s, e) =>
+                {
+                    if (_isDismissing) { timer.Stop(); return; }
+                    idx = Math.Min(formulaStr.Length, idx + 2);
+                    eqText.Text = formulaStr.Substring(0, idx);
+                    if (idx >= formulaStr.Length)
+                    {
+                        timer.Stop();
+                        double uw = Math.Max(80, Math.Min(260, eqText.ActualWidth > 20 ? eqText.ActualWidth : 140));
+                        var uPts = new List<Point>();
+                        for (int k = 0; k <= 16; k++)
+                        {
+                            double u = (double)k / 16;
+                            uPts.Add(new Point(u * uw, 3.0 + 1.2 * Math.Sin(u * Math.PI * 2.0)));
+                        }
+                        AnimateHandDrawnPolyline(eqUlCanvas, uPts, Color.FromRgb(0x02, 0x84, 0xC7), 2.2, 320, false);
+                    }
+                };
+                timer.Start();
+            }
+        }
+
+        // Renders a hand-sketched red X (`cross`) or diagonal cancellation slash (`slash`/`strike`) through a term or mistake
+        private void RenderCrossOrStrike(SceneObjectPayload obj, bool immediate = false)
+        {
+            double rx = 0, ry = 0, rw = 36, rh = 28;
+            if (obj.rect != null)
+            {
+                rx = Math.Max(0.0, Math.Min(1.0, obj.rect.x)) * Width;
+                ry = Math.Max(0.0, Math.Min(1.0, obj.rect.y)) * Height;
+                rw = Math.Max(20, Math.Min(1.0, obj.rect.w) * Width);
+                rh = Math.Max(18, Math.Min(1.0, obj.rect.h) * Height);
+            }
+            else if (obj.from != null)
+            {
+                rx = Math.Max(0.0, Math.Min(1.0, obj.from.x)) * Width - 18;
+                ry = Math.Max(0.0, Math.Min(1.0, obj.from.y)) * Height - 14;
+            }
+            else return;
+
+            Color strokeCol = string.IsNullOrWhiteSpace(obj.color)
+                ? Color.FromRgb(0xE1, 0x1D, 0x48)
+                : ParseSceneColor(obj.color, Color.FromRgb(0xE1, 0x1D, 0x48));
+
+            string style = (obj.style ?? obj.type ?? "").ToLowerInvariant();
+            bool isSingleSlash = style.Contains("slash") || style.Contains("strike");
+
+            // Stroke 1: bottom-left to top-right diagonal cancellation slash with slight human hand arc
+            var slash1 = new List<Point>();
+            for (int i = 0; i <= 16; i++)
+            {
+                double u = (double)i / 16;
+                slash1.Add(new Point(
+                    rx - 4 + u * (rw + 8),
+                    ry + rh + 3 - u * (rh + 6) - Math.Sin(u * Math.PI) * 2.2));
+            }
+
+            if (isSingleSlash)
+            {
+                AnimateHandDrawnPolyline(_canvas, slash1, strokeCol, 3.6, 420, immediate);
+            }
+            else
+            {
+                // Full hand-drawn X mark: Stroke 1 (top-left to bottom-right) then Stroke 2 (top-right to bottom-left)
+                var strokeA = new List<Point>();
+                for (int i = 0; i <= 14; i++)
+                {
+                    double u = (double)i / 14;
+                    strokeA.Add(new Point(
+                        rx - 3 + u * (rw + 6),
+                        ry - 2 + u * (rh + 4) + Math.Sin(u * Math.PI) * 1.8));
+                }
+                var strokeB = new List<Point>();
+                for (int i = 0; i <= 14; i++)
+                {
+                    double u = (double)i / 14;
+                    strokeB.Add(new Point(
+                        rx + rw + 3 - u * (rw + 6),
+                        ry - 2 + u * (rh + 4) - Math.Sin(u * Math.PI) * 1.8));
+                }
+                AnimateHandDrawnPolyline(_canvas, strokeA, strokeCol, 3.8, 300, immediate, () =>
+                {
+                    AnimateHandDrawnPolyline(_canvas, strokeB, strokeCol, 3.8, 300, immediate);
+                });
+            }
+
+            string labelText = !string.IsNullOrWhiteSpace(obj.label) ? obj.label : obj.text;
+            if (!string.IsNullOrWhiteSpace(labelText))
+            {
+                var tag = CreateAnnotationLabel(labelText, strokeCol);
+                tag.Opacity = immediate ? 1.0 : 0.0;
+                Canvas.SetLeft(tag, Math.Max(12, Math.Min(Width - 200, rx)));
+                Canvas.SetTop(tag, Math.Max(12, ry - 38));
+                _canvas.Children.Add(tag);
+                if (!immediate)
+                {
+                    tag.BeginAnimation(UIElement.OpacityProperty, new System.Windows.Media.Animation.DoubleAnimation(0.0, 1.0, new Duration(TimeSpan.FromMilliseconds(220))) { BeginTime = TimeSpan.FromMilliseconds(380) });
+                }
+            }
+        }
+
+        // Renders a hand-sketched double marker underline or red wavy squiggle right beneath a target expression
+        private void RenderUnderline(SceneObjectPayload obj, bool immediate = false)
+        {
+            if (obj.rect == null) return;
+            double rx = Math.Max(0.0, Math.Min(1.0, obj.rect.x)) * Width;
+            double ry = Math.Max(0.0, Math.Min(1.0, obj.rect.y)) * Height;
+            double rw = Math.Max(28, Math.Min(1.0, obj.rect.w) * Width);
+            double rh = Math.Max(16, Math.Min(1.0, obj.rect.h) * Height);
+            double baseY = ry + rh + 3.0;
+
+            string style = (obj.style ?? obj.type ?? "").ToLowerInvariant();
+            bool isWavy = style.Contains("wavy") || style.Contains("squiggle");
+
+            Color strokeCol = string.IsNullOrWhiteSpace(obj.color)
+                ? (isWavy ? Color.FromRgb(0xE1, 0x1D, 0x48) : Color.FromRgb(0x02, 0x84, 0xC7))
+                : ParseSceneColor(obj.color, Color.FromRgb(0x02, 0x84, 0xC7));
+
+            if (isWavy)
+            {
+                var wavyPts = new List<Point>();
+                int waves = Math.Max(4, (int)(rw / 10.0));
+                int steps = waves * 6;
+                for (int i = 0; i <= steps; i++)
+                {
+                    double u = (double)i / steps;
+                    wavyPts.Add(new Point(rx + u * rw, baseY + Math.Sin(u * Math.PI * waves) * 3.2));
+                }
+                AnimateHandDrawnPolyline(_canvas, wavyPts, strokeCol, 3.0, 520, immediate);
+            }
+            else
+            {
+                // Double tutor underline: top stroke left-to-right, then slightly shorter second stroke underneath
+                var line1 = new List<Point>();
+                for (int i = 0; i <= 20; i++)
+                {
+                    double u = (double)i / 20;
+                    line1.Add(new Point(rx + u * rw, baseY - 1.6 * Math.Sin(u * Math.PI)));
+                }
+                var line2 = new List<Point>();
+                for (int i = 0; i <= 18; i++)
+                {
+                    double u = (double)i / 18;
+                    line2.Add(new Point(rx + rw * 0.04 + u * (rw * 0.92), baseY + 5.5 + 1.4 * Math.Sin(u * Math.PI)));
+                }
+                AnimateHandDrawnPolyline(_canvas, line1, strokeCol, 3.2, 340, immediate, () =>
+                {
+                    AnimateHandDrawnPolyline(_canvas, line2, strokeCol, 2.8, 280, immediate);
+                });
+            }
+
+            string labelText = !string.IsNullOrWhiteSpace(obj.label) ? obj.label : obj.text;
+            if (!string.IsNullOrWhiteSpace(labelText))
+            {
+                var tag = CreateAnnotationLabel(labelText, strokeCol);
+                tag.Opacity = immediate ? 1.0 : 0.0;
+                Canvas.SetLeft(tag, Math.Max(12, Math.Min(Width - 200, rx)));
+                Canvas.SetTop(tag, Math.Min(Height - 48, baseY + 10));
+                _canvas.Children.Add(tag);
+                if (!immediate)
+                {
+                    tag.BeginAnimation(UIElement.OpacityProperty, new System.Windows.Media.Animation.DoubleAnimation(0.0, 1.0, new Duration(TimeSpan.FromMilliseconds(220))) { BeginTime = TimeSpan.FromMilliseconds(450) });
+                }
+            }
+        }
+
+        // Renders a hand-sketched horizontal under-brace ⏟ (or vertical side-brace } for tall code blocks)
+        private void RenderCurlyBrace(SceneObjectPayload obj, bool immediate = false)
+        {
+            if (obj.rect == null) return;
+            double rx = Math.Max(0.0, Math.Min(1.0, obj.rect.x)) * Width;
+            double ry = Math.Max(0.0, Math.Min(1.0, obj.rect.y)) * Height;
+            double rw = Math.Max(32, Math.Min(1.0, obj.rect.w) * Width);
+            double rh = Math.Max(20, Math.Min(1.0, obj.rect.h) * Height);
+
+            Color strokeCol = ParseSceneColor(obj.color, Color.FromRgb(0x02, 0x84, 0xC7));
+            bool isVerticalSideBrace = (rh > rw * 1.35) || string.Equals(obj.style, "vertical", StringComparison.OrdinalIgnoreCase);
+
+            var bracePts = new List<Point>();
+            if (isVerticalSideBrace)
+            {
+                // Right-side vertical curly brace } alongside a multi-line code block
+                double bx = rx + rw + 6;
+                double midY = ry + rh * 0.5;
+                int steps = 32;
+                for (int i = 0; i <= steps; i++)
+                {
+                    double u = (double)i / steps;
+                    double py = ry + u * rh;
+                    double offset = 8.0;
+                    if (u < 0.12) offset = (u / 0.12) * 8.0;
+                    else if (u > 0.88) offset = ((1.0 - u) / 0.12) * 8.0;
+                    else if (Math.Abs(u - 0.5) < 0.10) offset = 8.0 + (1.0 - Math.Abs(u - 0.5) / 0.10) * 8.0;
+                    bracePts.Add(new Point(bx + offset, py));
+                }
+                AnimateHandDrawnPolyline(_canvas, bracePts, strokeCol, 3.2, 560, immediate);
+
+                string labelText = !string.IsNullOrWhiteSpace(obj.label) ? obj.label : obj.text;
+                if (!string.IsNullOrWhiteSpace(labelText))
+                {
+                    var tag = CreateAnnotationLabel(labelText, strokeCol);
+                    tag.Opacity = immediate ? 1.0 : 0.0;
+                    Canvas.SetLeft(tag, Math.Min(Width - 220, bx + 22));
+                    Canvas.SetTop(tag, Math.Max(12, midY - 16));
+                    _canvas.Children.Add(tag);
+                    if (!immediate)
+                    {
+                        tag.BeginAnimation(UIElement.OpacityProperty, new System.Windows.Media.Animation.DoubleAnimation(0.0, 1.0, new Duration(TimeSpan.FromMilliseconds(220))) { BeginTime = TimeSpan.FromMilliseconds(440) });
+                    }
+                }
+            }
+            else
+            {
+                // Horizontal under-brace ⏟ beneath a sub-expression like (1 + 2) -> "Evaluates to 3"
+                double by = ry + rh + 4;
+                double midX = rx + rw * 0.5;
+                int steps = 32;
+                for (int i = 0; i <= steps; i++)
+                {
+                    double u = (double)i / steps;
+                    double px = rx + u * rw;
+                    double offset = 7.0;
+                    if (u < 0.12) offset = (u / 0.12) * 7.0;
+                    else if (u > 0.88) offset = ((1.0 - u) / 0.12) * 7.0;
+                    else if (Math.Abs(u - 0.5) < 0.10) offset = 7.0 + (1.0 - Math.Abs(u - 0.5) / 0.10) * 7.0;
+                    bracePts.Add(new Point(px, by + offset));
+                }
+                AnimateHandDrawnPolyline(_canvas, bracePts, strokeCol, 3.2, 540, immediate);
+
+                string labelText = !string.IsNullOrWhiteSpace(obj.label) ? obj.label : obj.text;
+                if (!string.IsNullOrWhiteSpace(labelText))
+                {
+                    var tag = CreateAnnotationLabel(labelText, strokeCol);
+                    tag.Opacity = immediate ? 1.0 : 0.0;
+                    Canvas.SetLeft(tag, Math.Max(12, Math.Min(Width - 200, midX - 45)));
+                    Canvas.SetTop(tag, Math.Min(Height - 48, by + 18));
+                    _canvas.Children.Add(tag);
+                    if (!immediate)
+                    {
+                        tag.BeginAnimation(UIElement.OpacityProperty, new System.Windows.Media.Animation.DoubleAnimation(0.0, 1.0, new Duration(TimeSpan.FromMilliseconds(220))) { BeginTime = TimeSpan.FromMilliseconds(440) });
+                    }
+                }
+            }
+        }
+
+        // Renders a hand-sketched magnifying loupe around a tiny exponent, negative sign, or small UI icon
+        private void RenderMagnifyLoupe(SceneObjectPayload obj, bool immediate = false)
+        {
+            if (obj.rect == null && obj.from == null) return;
+            double cx = obj.rect != null
+                ? (Math.Max(0.0, Math.Min(1.0, obj.rect.x)) + Math.Max(0.02, obj.rect.w) * 0.5) * Width
+                : Math.Max(0.0, Math.Min(1.0, obj.from.x)) * Width;
+            double cy = obj.rect != null
+                ? (Math.Max(0.0, Math.Min(1.0, obj.rect.y)) + Math.Max(0.02, obj.rect.h) * 0.5) * Height
+                : Math.Max(0.0, Math.Min(1.0, obj.from.y)) * Height;
+
+            Color strokeCol = ParseSceneColor(obj.color, Color.FromRgb(0x7C, 0x3A, 0xED));
+            double r = 24.0;
+            var ringPts = BuildHandDrawnCirclePoints(cx, cy, r, r, (cx + cy) * 0.02);
+            // Add a magnifying glass handle at bottom-right (45 degrees)
+            double hx0 = cx + r * 0.72;
+            double hy0 = cy + r * 0.72;
+            for (int i = 0; i <= 8; i++)
+            {
+                double u = (double)i / 8;
+                ringPts.Add(new Point(hx0 + u * 16.0, hy0 + u * 16.0));
+            }
+            AnimateHandDrawnPolyline(_canvas, ringPts, strokeCol, 3.4, 600, immediate);
+
+            string labelText = !string.IsNullOrWhiteSpace(obj.label) ? obj.label : obj.text;
+            if (!string.IsNullOrWhiteSpace(labelText))
+            {
+                var tag = CreateAnnotationLabel("🔍 " + labelText, strokeCol);
+                tag.Opacity = immediate ? 1.0 : 0.0;
+                Canvas.SetLeft(tag, Math.Max(12, Math.Min(Width - 220, cx + 28)));
+                Canvas.SetTop(tag, Math.Max(12, cy - 34));
+                _canvas.Children.Add(tag);
+                if (!immediate)
+                {
+                    tag.BeginAnimation(UIElement.OpacityProperty, new System.Windows.Media.Animation.DoubleAnimation(0.0, 1.0, new Duration(TimeSpan.FromMilliseconds(220))) { BeginTime = TimeSpan.FromMilliseconds(460) });
+                }
+            }
         }
 
         private void RenderSpotlight(SceneObjectPayload obj)
@@ -3577,7 +3978,7 @@ namespace FlinchApp
                     modernPanel.Children.Add(arrowConnCanvas);
                 }
 
-                // Live synchronized handwriting effect: each step appears and writes only when the bot speaks that step!
+                // Live synchronized handwriting effect: each step appears and writes at the exact millisecond the bot speaks that step's sentence!
                 if (!immediate)
                 {
                     string targetStr = cleanStepText;
@@ -3586,8 +3987,12 @@ namespace FlinchApp
                     Canvas capturedArrow = arrowConnCanvas;
                     Canvas capturedFinalUl = finalUnderlineCanvas;
                     bool capturedIsFinal = isFinalConclusion;
-                    int startDelay = 280 + stepIndex * msPerStepWindow;
-                    int writeDurationMs = Math.Max(750, Math.Min(1600, (int)(msPerStepWindow * 0.72)));
+                    int startDelay = ResolveSpokenDelayMs(null, stepIndex, totalValidSteps);
+                    int nextDelay = (stepIndex + 1 < totalValidSteps)
+                        ? ResolveSpokenDelayMs(null, stepIndex + 1, totalValidSteps)
+                        : _speechDurationMs;
+                    int stepWindow = Math.Max(900, nextDelay - startDelay);
+                    int writeDurationMs = Math.Max(680, Math.Min(1850, (int)(stepWindow * 0.76)));
 
                     Task.Delay(startDelay).ContinueWith(_ =>
                     {
@@ -3636,6 +4041,97 @@ namespace FlinchApp
             }
 
             mainStack.Children.Add(modernPanel);
+
+            // 2B. Optional Hand-Sketched Coordinate Graph or Number Line inside the Whiteboard!
+            if (!string.IsNullOrWhiteSpace(obj.graph))
+            {
+                string gSpec = obj.graph.Trim();
+                var graphBorder = new Border
+                {
+                    Background = new SolidColorBrush(Color.FromRgb(248, 250, 252)),
+                    BorderBrush = new SolidColorBrush(Color.FromRgb(226, 232, 240)),
+                    BorderThickness = new Thickness(1),
+                    CornerRadius = new CornerRadius(8),
+                    Padding = new Thickness(10, 8, 10, 8),
+                    Margin = new Thickness(0, 8, 0, 4)
+                };
+                double gw = Math.Max(200, boardW - 68);
+                double gh = gSpec.ToLowerInvariant().StartsWith("numberline") ? 56 : 118;
+                var graphCanvas = new Canvas { Width = gw, Height = gh, ClipToBounds = true };
+
+                if (gSpec.ToLowerInvariant().StartsWith("numberline"))
+                {
+                    // Hand-drawn horizontal number line with ticks (-5 .. 5) and highlighted inequality ray
+                    double ny = gh * 0.58;
+                    var axisPts = new List<Point>();
+                    for (int k = 0; k <= 20; k++)
+                    {
+                        double u = (double)k / 20;
+                        axisPts.Add(new Point(12 + u * (gw - 24), ny + Math.Sin(u * Math.PI * 2.0) * 1.1));
+                    }
+                    AnimateHandDrawnPolyline(graphCanvas, axisPts, Color.FromRgb(71, 85, 105), 2.2, 420, immediate);
+
+                    for (int tv = -4; tv <= 4; tv += 2)
+                    {
+                        double tx = 12 + ((tv + 5.0) / 10.0) * (gw - 24);
+                        var tick = new Line { X1 = tx, Y1 = ny - 5, X2 = tx, Y2 = ny + 5, Stroke = new SolidColorBrush(Color.FromRgb(100, 116, 139)), StrokeThickness = 1.6 };
+                        graphCanvas.Children.Add(tick);
+                        var lbl = new TextBlock { Text = tv.ToString(), FontSize = 10, Foreground = new SolidColorBrush(Color.FromRgb(100, 116, 139)), FontFamily = new FontFamily("Segoe Print, Segoe UI") };
+                        Canvas.SetLeft(lbl, tx - 5);
+                        Canvas.SetTop(lbl, ny + 7);
+                        graphCanvas.Children.Add(lbl);
+                    }
+                }
+                else
+                {
+                    // Hand-sketched X and Y axes + function curve
+                    double ox = gw * 0.5;
+                    double oy = gh * 0.55;
+                    var xAxis = new List<Point> { new Point(14, oy), new Point(gw * 0.5, oy - 1), new Point(gw - 14, oy) };
+                    var yAxis = new List<Point> { new Point(ox, gh - 8), new Point(ox + 1, gh * 0.5), new Point(ox, 8) };
+                    AnimateHandDrawnPolyline(graphCanvas, xAxis, Color.FromRgb(148, 163, 184), 1.8, 300, immediate);
+                    AnimateHandDrawnPolyline(graphCanvas, yAxis, Color.FromRgb(148, 163, 184), 1.8, 300, immediate);
+
+                    var curvePts = new List<Point>();
+                    string gLow = gSpec.ToLowerInvariant();
+                    bool isParabola = gLow.Contains("^2") || gLow.Contains("x2") || gLow.Contains("parabola") || gLow.Contains("quadratic");
+                    bool isSine = gLow.Contains("sin") || gLow.Contains("cos") || gLow.Contains("wave");
+                    for (int k = 0; k <= 36; k++)
+                    {
+                        double u = (double)k / 36; // 0..1
+                        double xVal = (u - 0.5) * 4.0; // -2..2
+                        double yVal;
+                        if (isParabola) yVal = (xVal * xVal) - 1.2;
+                        else if (isSine) yVal = Math.Sin(xVal * 2.2) * 1.4;
+                        else yVal = 0.75 * xVal + 0.3;
+
+                        double px = ox + (xVal / 2.2) * (gw * 0.42);
+                        double py = oy - (yVal / 2.6) * (gh * 0.42);
+                        py = Math.Max(6, Math.Min(gh - 6, py));
+                        curvePts.Add(new Point(px, py));
+                    }
+
+                    int graphDelay = immediate ? 0 : Math.Max(600, (int)(_speechDurationMs * 0.45));
+                    if (graphDelay <= 0)
+                    {
+                        AnimateHandDrawnPolyline(graphCanvas, curvePts, Color.FromRgb(0x02, 0x84, 0xC7), 2.8, 650, true);
+                    }
+                    else
+                    {
+                        Task.Delay(graphDelay).ContinueWith(_ =>
+                        {
+                            Dispatcher.BeginInvoke(new Action(() =>
+                            {
+                                if (_isDismissing) return;
+                                AnimateHandDrawnPolyline(graphCanvas, curvePts, Color.FromRgb(0x02, 0x84, 0xC7), 2.8, 700, false);
+                            }));
+                        });
+                    }
+                }
+
+                graphBorder.Child = graphCanvas;
+                mainStack.Children.Add(graphBorder);
+            }
 
             // 3. Optional Alternative Convention Toggle
             if (!string.IsNullOrWhiteSpace(obj.altExplanation))
@@ -4696,6 +5192,9 @@ namespace FlinchApp
                                                         altExplanation = oDict.ContainsKey("altExplanation") && oDict["altExplanation"] != null ? oDict["altExplanation"].ToString() : null,
                                                         imageUrl = oDict.ContainsKey("imageUrl") && oDict["imageUrl"] != null ? oDict["imageUrl"].ToString() : null,
                                                         subtitle = oDict.ContainsKey("subtitle") && oDict["subtitle"] != null ? oDict["subtitle"].ToString() : null,
+                                                        style = oDict.ContainsKey("style") && oDict["style"] != null ? oDict["style"].ToString() : null,
+                                                        spokenTrigger = oDict.ContainsKey("spokenTrigger") && oDict["spokenTrigger"] != null ? oDict["spokenTrigger"].ToString() : null,
+                                                        graph = oDict.ContainsKey("graph") && oDict["graph"] != null ? oDict["graph"].ToString() : null,
                                                         step = oDict.ContainsKey("step") && oDict["step"] != null ? Convert.ToInt32(oDict["step"]) : (int?)null,
                                                         delayMs = oDict.ContainsKey("delayMs") && oDict["delayMs"] != null ? Convert.ToInt32(oDict["delayMs"]) : (int?)null,
                                                         radius = oDict.ContainsKey("radius") && oDict["radius"] != null ? Convert.ToDouble(oDict["radius"]) : (double?)null,
@@ -8370,7 +8869,7 @@ private void FinishRecordingAndSend()
                                 ? (int)(GetWavDurationSeconds(audioWav) * 1000)
                                 : 10000;
                             FlinchEnv.Log(string.Format("[Flinch] Displaying visual overlay with {0} objects (speechMs={1}) for transcript: '{2}'", scene.objects.Count, speechMs, transcript));
-                            OverlayWindow.ShowScene(GeminiClient.LastActiveTargetBounds, scene, speechMs);
+                            OverlayWindow.ShowScene(GeminiClient.LastActiveTargetBounds, scene, speechMs, answer);
                         }
                         else if (IsVisualExplainIntent(lowerTrans, action))
                         {
