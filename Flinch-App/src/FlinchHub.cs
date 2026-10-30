@@ -78,7 +78,7 @@ namespace FlinchApp
         public AutomationConfig()
         {
             EmailGuardianEnabled = true;
-            DownloadsOrganizerEnabled = true;
+            DownloadsOrganizerEnabled = false;
             DailyBriefingEnabled = false;
             ClipboardContextEnabled = true;
             EmailIntervalMinutes = 15;

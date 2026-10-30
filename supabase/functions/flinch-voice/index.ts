@@ -19,9 +19,10 @@ const MAX_AUDIO_BYTES = 10 * 1024 * 1024; // 10 MB maximum audio payload
 const MIN_AUDIO_BYTES = 250;              // Under 250 bytes is invalid header
 const WHISPER_MODELS = ["whisper-large-v3", "whisper-large-v3-turbo"];
 const LLM_MODELS = [
+  "llama-3.3-70b-versatile",
+  "openai/gpt-oss-120b",
   "qwen/qwen3.8-27b",
-  "openai/gpt-oss-20b",
-  "openai/gpt-oss-120b"
+  "openai/gpt-oss-20b"
 ];
 
 serve(async (req: Request) => {
@@ -840,41 +841,28 @@ RULES: Output ONLY the transformed text. No preamble, no quotes around it, no ma
         : "";
 
       const visionPrompt =
-        `You are Flinch, a desktop AI voice companion with screen awareness and visual overlay drawing capabilities.
+        `You are Flinch—a sharp, mature, friendly, and grounded human peer.
 The user's spoken request: "${transcript}".${historySection}
 Look carefully at the attached screenshot of the user's active window/display.${uiaSection}
 
 Instructions:
-1. Provide a direct, helpful spoken response answering their question in 1-2 natural sentences without any markdown, bullets, or asterisks. Make your first sentence direct and snappy.
-2. If the user asks to solve or explain a problem on screen (e.g. 'solve this', 'solve the problem', 'what is the answer', 'can you solve this', 'how to solve this'):
-   - Look at the screenshot to locate the exact bounding box of the equation or problem (normalized coordinates x, y, w, h from 0.0 to 1.0).
-   - You MUST generate visual drawing objects with sequential step numbers and delayMs:
-     - Step 1: Circle around the first operation (e.g. parentheses "(1+2)") with {"type": "circle", "rect": {"x": 0.38, "y": 0.43, "w": 0.17, "h": 0.16}, "step": 1, "delayMs": 200, "label": "① (1+2) = 3", "color": "#3DDC84"}.
-     - Step 2: Highlight under the next operation (e.g. division "6 ÷ 2") with {"type": "highlight", "rect": {"x": 0.22, "y": 0.46, "w": 0.17, "h": 0.10}, "step": 2, "delayMs": 2200, "label": "② 6 ÷ 2 = 3", "color": "#38BDF8"}.
-     - Step 3: Arrow pointing to the answer space next to "=" with {"type": "arrow", "from": {"x": 0.54, "y": 0.51}, "to": {"x": 0.65, "y": 0.51}, "step": 3, "delayMs": 4400, "label": "③ 3 × 3 = 9", "color": "#3DDC84"}.
-     - Step 4: Include a "notepad" object that creates an interactive solution notebook card on screen:
-       {
-         "type": "notepad",
-         "title": "Order of Operations: 6 ÷ 2(1+2)",
-         "text": "① Parentheses First: (1 + 2) = 3  →  6 ÷ 2(3)\\n② Left-to-Right: 6 ÷ 2 = 3  →  3(3)\\n③ Multiply: 3 × 3 = 9\\n\\nResult = 9 (Modern Standard)",
-         "altAnswer": "1",
-         "altExplanation": "People get 1 by treating implied multiplication 2(3) with higher precedence than division: 6 ÷ [2(3)] = 6 ÷ 6 = 1.\\n\\nUnder modern PEMDAS / ISO 80000-2 standards, multiplication and division share equal priority left-to-right, giving 9.",
-         "delayMs": 400
-       }
-   - For viral equation 6 ÷ 2(1+2) =: Spoken answer MUST be: "First, evaluate parentheses: 1 plus 2 is 3. Next, working left to right, 6 divided by 2 is 3. Finally, 3 times 3 gives 9."
-3. If the user asks about anything else on screen (code, error, design, text, browser, button), use the screenshot to give a precise answer with visual outlines or arrows.
-4. If there is NO problem or error on screen when asked to solve one, reply: "What problem? I don't see an equation or error on your screen right now."
+1. Speak naturally like a smart, capable friend or colleague. NEVER mention that you are "here to help with your screen", NEVER say "I can see on your screen", and NEVER act robotic or gimmicky. Just answer their question directly and intelligently in 1-2 crisp, natural spoken sentences without markdown, bullets, or asterisks.
+2. If the user asks to solve or explain a visual math problem on screen (such as "6 ÷ 2(1+2)"):
+   - Locate the exact bounding box of the equation or problem (normalized coordinates x, y, w, h from 0.0 to 1.0).
+   - Generate visual drawing objects with sequential step numbers and delayMs (circles, highlights, arrows, and a "notepad" card showing the clean step-by-step breakdown).
+   - If the equation on screen is specifically 6 ÷ 2(1+2), explain clearly: "First, evaluate parentheses: 1 plus 2 is 3. Next, working left to right, 6 divided by 2 is 3. Finally, 3 times 3 gives 9."
+3. If the user asks about anything else on screen (code, error, design, text, browser, button), give a sharp, accurate answer and include clean visual outlines, highlights, or arrows pointing to the exact UI element or code line.
 
-Set durationMs: 25000 so the user has time to watch each animated step and interact with the notebook.
+Set durationMs: 25000 when generating visual scene objects.
 
 Supported scene object types:
-- "circle": {"type": "circle", "rect": {"x": 0.45, "y": 0.35, "w": 0.1, "h": 0.1}, "step": 1, "delayMs": 0, "label": "Target", "color": "#3DDC84"}
-- "highlight": {"type": "highlight", "rect": {"x": 0.2, "y": 0.3, "w": 0.4, "h": 0.05}, "step": 2, "delayMs": 1300, "label": "Important", "color": "#FACC15"}
-- "draw": {"type": "draw", "points": [{"x": 0.2, "y": 0.3}, {"x": 0.25, "y": 0.35}, {"x": 0.3, "y": 0.3}], "color": "#3DDC84", "label": "Line"}
-- "arrow": {"type": "arrow", "from": {"x": 0.2, "y": 0.3}, "to": {"x": 0.5, "y": 0.4}, "step": 3, "delayMs": 2600, "label": "Click Here", "color": "#38BDF8"}
-- "outline": {"type": "outline", "rect": {"x": 0.4, "y": 0.3, "w": 0.2, "h": 0.08}, "label": "Error / Target"}
+- "circle": {"type": "circle", "rect": {"x": 0.45, "y": 0.35, "w": 0.1, "h": 0.1}, "step": 1, "delayMs": 0, "label": "Target", "color": "#2563EB"}
+- "highlight": {"type": "highlight", "rect": {"x": 0.2, "y": 0.3, "w": 0.4, "h": 0.05}, "step": 2, "delayMs": 1300, "label": "Important", "color": "#D97706"}
+- "draw": {"type": "draw", "points": [{"x": 0.2, "y": 0.3}, {"x": 0.25, "y": 0.35}, {"x": 0.3, "y": 0.3}], "color": "#2563EB", "label": "Line"}
+- "arrow": {"type": "arrow", "from": {"x": 0.2, "y": 0.3}, "to": {"x": 0.5, "y": 0.4}, "step": 3, "delayMs": 2600, "label": "Click Here", "color": "#2563EB"}
+- "outline": {"type": "outline", "rect": {"x": 0.4, "y": 0.3, "w": 0.2, "h": 0.08}, "label": "Target"}
 - "callout": {"type": "callout", "rect": {"x": 0.4, "y": 0.4, "w": 0.3, "h": 0.1}, "text": "Explanation note"}
-- "notepad": {"type": "notepad", "title": "Math Notebook", "text": "Step 1...\\nStep 2...", "altAnswer": "1", "altExplanation": "Why people get 1...", "delayMs": 500}
+- "notepad": {"type": "notepad", "title": "Solution Breakdown", "text": "Step 1...\\nStep 2...", "altAnswer": "", "altExplanation": "", "delayMs": 500}
 
 Return your output strictly as a JSON object:
 {
@@ -1015,14 +1003,14 @@ If no visual overlay is needed, set "scene": null.`;
       const currentUtc = new Date().toUTCString();
       const currentYear = 2026;
       const systemPrompt =
-        `You are Flinch, a friendly, ultra-fast desktop AI voice companion for PC.\n` +
+        `You are Flinch—a sharp, mature, friendly, and grounded human peer.\n` +
         `Current Date & Time: ${currentUtc} (Current Year: ${currentYear}).\n` +
-        `1. You have screen awareness, visual overlay drawing, live Exa web search, timers, and clipboard intelligence.\n` +
-        `2. For time queries across different cities or timezones (e.g. London, Tokyo, New York, Sri Lanka, Sydney), calculate and state the exact current local time based strictly on the UTC time above.\n` +
-        `3. For real-time questions, you have live real-time internet access via Exa web search. State fresh facts as of ${currentYear}. NEVER claim your knowledge is outdated or cut off in the past.\n` +
-        `4. If the user greets you or says your name (e.g. 'Hey Flinch', 'Hello', 'Hi'), reply warmly and briefly (e.g. 'Hey there! What's on your mind?' or 'Hey! How can I help?').\n` +
-        `5. Keep answers short, direct, and factual for the ear (1 to 2 sentences max). Make your FIRST sentence snappy and direct (4 to 8 words) so voice begins speaking immediately, followed by 1 helpful sentence. Never use markdown, bullet points, asterisks, or conversational filler.\n` +
-        `6. Conversational Memory: You have the recent conversation history in this chat. If the user asks what they just asked or refers to earlier topics, answer accurately based strictly on previous turns.`;
+        `1. PERSONA & TONE: Speak naturally like an intelligent, capable friend or colleague. NEVER act dumb, childish, or robotic. NEVER mention that you are "here to help with your screen", NEVER say "I have screen awareness" or "as your desktop AI companion", and NEVER list your features unless explicitly asked what you can do.\n` +
+        `2. GREETINGS: If the user greets you (e.g. 'Hey Flinch', 'Hello', 'Hi', 'What's up'), reply warmly and naturally like a peer (e.g. 'Hey, how's it going?' or 'Hey! What's on your mind?') without mentioning their screen or offering generic AI assistance.\n` +
+        `3. TIMEZONES: For time queries across different cities or timezones (e.g. London, Tokyo, New York, Sri Lanka, Sydney), calculate and state the exact current local time based strictly on the UTC time above.\n` +
+        `4. LIVE KNOWLEDGE: For real-time questions, you have live internet access via Exa web search. State fresh, accurate facts as of ${currentYear}. NEVER claim your knowledge is outdated or cut off in the past.\n` +
+        `5. VOICE CONCISENESS: Give smart, insightful answers spoken naturally for the ear (1 to 3 crisp sentences). Make your FIRST sentence direct (4 to 10 words) so voice begins speaking immediately. Never use markdown, bullet points, asterisks, or filler.\n` +
+        `6. CONVERSATIONAL MEMORY: Use the recent conversation history accurately when the user follows up or refers to earlier turns.`;
 
       const messages: any[] = [{ role: "system", content: systemPrompt }];
       if (wikiCardData) {
@@ -1159,23 +1147,13 @@ If no visual overlay is needed, set "scene": null.`;
       }
     }
 
-    // Guarantee step-by-step visual overlay and Math Notebook for math/solve queries
+    // Guarantee step-by-step visual overlay and Math Notebook ONLY for the specific 6 ÷ 2(1+2) problem
     const lowTx = transcript.toLowerCase();
     const lowReply = reply.toLowerCase();
-    const isSolveQuery = lowTx.includes("solve") || lowTx.includes("equation") || lowTx.includes("math") || lowTx.includes("calculate") || lowTx.includes("work this out") || lowTx.includes("answer this") || lowTx.includes("what is the answer") || lowTx.includes("how to solve") || lowTx.includes("pemdas") || lowTx.includes("order of operations");
-    const isViralMath = lowTx.includes("6 ÷ 2") || lowTx.includes("6/2") || lowReply.includes("6 ÷ 2") || lowReply.includes("nine") || lowReply.includes("pemdas") || lowReply.includes("order of operations");
-    
-    // Catch any LLM excuse where it says it can't see/fix or asks the user to read the numbers
-    const excuses = [
-      "can't fix", "cant fix", "read the numbers", "read aloud", "read them aloud", "read it aloud",
-      "tell me the numbers", "cannot see", "can't see", "don't see", "dont see", "what problem",
-      "unable to see", "don't have eyes", "dont have eyes", "please read", "read the equation",
-      "can't solve", "cant solve", "cannot solve", "i can see your screen, but", "i can see the screen, but"
-    ];
-    const isExcuse = excuses.some((e) => lowReply.includes(e));
+    const isViralMath = lowTx.includes("6 ÷ 2") || lowTx.includes("6/2") || lowTx.includes("1+2") || lowReply.includes("6 ÷ 2") || lowReply.includes("6/2(1+2)");
 
-    if (isSolveQuery || isViralMath || isExcuse) {
-      if (!sceneObj || isExcuse) {
+    if (isViralMath) {
+      if (!sceneObj) {
         sceneObj = {
           durationMs: 25000,
           objects: [
@@ -1184,16 +1162,16 @@ If no visual overlay is needed, set "scene": null.`;
               rect: { x: 0.38, y: 0.43, w: 0.17, h: 0.16 },
               step: 1,
               delayMs: 200,
-              label: "① (1+2) = 3",
-              color: "#3DDC84"
+              label: "1. (1+2) = 3",
+              color: "#2563EB"
             },
             {
               type: "highlight",
               rect: { x: 0.22, y: 0.46, w: 0.17, h: 0.10 },
               step: 2,
               delayMs: 2200,
-              label: "② 6 ÷ 2 = 3",
-              color: "#38BDF8"
+              label: "2. 6 / 2 = 3",
+              color: "#D97706"
             },
             {
               type: "arrow",
@@ -1201,13 +1179,13 @@ If no visual overlay is needed, set "scene": null.`;
               to: { x: 0.65, y: 0.51 },
               step: 3,
               delayMs: 4400,
-              label: "③ 3 × 3 = 9",
-              color: "#3DDC84"
+              label: "3. 3 x 3 = 9",
+              color: "#16A34A"
             },
             {
               type: "notepad",
               title: "Order of Operations: 6 ÷ 2(1+2)",
-              text: "① Parentheses First: (1 + 2) = 3  →  6 ÷ 2(3)\n② Left-to-Right: 6 ÷ 2 = 3  →  3(3)\n③ Multiply: 3 × 3 = 9\n\nResult = 9 (Modern Standard)",
+              text: "1. Parentheses First: (1 + 2) = 3  ->  6 ÷ 2(3)\n2. Left-to-Right: 6 ÷ 2 = 3  ->  3(3)\n3. Multiply: 3 x 3 = 9\n\nResult = 9 (Modern Standard)",
               altAnswer: "1",
               altExplanation: "People get 1 because historical 1917 Cajori conventions (and some calculators) bind implied multiplication 2(3) tighter than division: 6 ÷ [2(3)] = 6 ÷ 6 = 1.\n\nUnder modern PEMDAS / ISO 80000-2 standards, multiplication and division share equal priority left-to-right, giving 9.",
               delayMs: 400
@@ -1215,7 +1193,7 @@ If no visual overlay is needed, set "scene": null.`;
           ]
         };
       }
-      if (isExcuse || !reply || reply.length < 10) {
+      if (!reply || reply.length < 10) {
         reply = "First, evaluate parentheses: 1 plus 2 is 3. Next, working left to right, 6 divided by 2 is 3. Finally, 3 times 3 gives 9.";
       }
     }
@@ -2095,17 +2073,14 @@ function formatBioPoints(extract: string, desc: string): string {
 function isScreenAwarenessQuery(q: string): boolean {
   const low = q.toLowerCase();
   const triggers = [
-    "screen", "look at", "look here", "what am i looking at", "what's this", "what is this",
-    "explain this", "read this", "read my", "read the text", "what does this error",
-    "explain the error", "what does this say", "what does this mean", "summarize this page",
+    "screen", "look at this", "look here", "what am i looking at", "what's this on", "what is this on",
+    "explain this error", "read this", "read my screen", "read the text", "what does this error",
+    "explain the error", "what does this say", "summarize this page",
     "summarize this window", "can you see", "do you see", "on my display", "on the monitor",
-    "point to", "highlight", "draw", "circle", "arrow", "where is", "show me", "which button",
-    "how do i fix", "solve", "solve this", "can you solve", "can you solve this",
-    "formula", "equation", "problem", "solve the problem", "what is the answer", "answer this",
-    "work this out", "how to solve", "do this problem",
-    "answer the problem", "fix the problem", "what problem", "what is the problem",
-    "check the screen", "on the screen", "on screen",
-    "math", "pemdas", "bodmas", "cajori", "why do people get", "why do they get", "calculate", "evaluate", "what answer", "order of operations"
+    "point to", "highlight", "draw on", "circle the", "circle this", "arrow to", "where is the", "show me on", "which button",
+    "how do i fix this", "solve this", "can you solve this",
+    "solve the problem on", "check the screen", "on the screen", "on screen",
+    "6 ÷ 2", "6/2"
   ];
   return triggers.some((t) => low.includes(t));
 }
