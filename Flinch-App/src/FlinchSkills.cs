@@ -20,9 +20,9 @@ namespace FlinchApp
     //   2. Daily push-to-talk memory ("what did we talk about yesterday?", "what did I ask earlier?")
     //   3. Smart context reminders   ("remind me when I open Chrome to...", "remind me at 5 to call mom")
     //   4. Pomodoro and focus mode   ("start pomodoro", "focus for 25 minutes", "stop focus")
-    //   5. Voice-driven file work    ("find my Sri Lanka essay", "zip my Flinch folder", "rename latest download")
+    //   5. Voice-driven file work    ("find my project report", "zip my Flinch folder", "rename latest download")
     //   6. Proactive nudges          (error dialog detection, long idle/work stretch breaks)
-    //   7. Quick screen translate    ("translate this page to Sinhala", "translate this screen to French")
+    //   7. Quick screen translate    ("translate this page to Spanish", "translate this screen to French")
     //   8. Voice & emotion picker    ("switch voice to Autumn", "change voice to Daniel", "set voice to auto")
     // NOTE: compiled with the .NET Framework 4 C# compiler (C# 5): no ?., no $"", no out var.
     // =========================================================================

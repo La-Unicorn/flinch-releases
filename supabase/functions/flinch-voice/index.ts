@@ -1,12 +1,130 @@
 // ============================================================================
 // FLINCH AI: SUPABASE EDGE FUNCTION (flinch-voice)
 // Single-Hop Speech-to-Text (Groq Whisper) + LLM Response + Orpheus TTS
-// Demo Limit Enforced: 5 Voice Messages Total Per Account
+// Beta Free Tier Quota Enforced: 15 Agent Tasks Per Month Per Account
 // Zero API Keys Exposed To Client Desktop Application
 // ============================================================================
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "npm:@supabase/supabase-js@2.39.0";
+
+const MONTHLY_BETA_TASK_LIMIT = 15;
+const EXEMPT_EMAIL_SHA256 = "ae862eb9f44cf720332541650c13e5b107ce803e9cd5f07ac7462c5ecc4c6eff";
+
+async function sha256Hex(input: string): Promise<string> {
+  const bytes = new TextEncoder().encode(input);
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+let _dbHardened = false;
+async function ensureDbRpcHardened() {
+  if (_dbHardened) return;
+  _dbHardened = true;
+  const dbUrl = Deno.env.get("SUPABASE_DB_URL");
+  if (!dbUrl) return;
+  try {
+    const { Client } = await import("https://deno.land/x/postgres@v0.17.0/mod.ts");
+    const client = new Client(dbUrl);
+    await client.connect();
+    await client.queryArray(`
+      alter table public.profiles alter column voice_message_limit set default 15;
+      update public.profiles set voice_message_limit = 15 where voice_message_limit < 15;
+      create or replace function public.get_flinch_runtime_config()
+      returns jsonb language plpgsql security definer set search_path = public as $$
+      declare
+        uid uuid := auth.uid();
+        prof public.profiles%rowtype;
+      begin
+        if uid is null then raise exception 'not_authenticated'; end if;
+        insert into public.profiles (id, email, voice_messages_used, voice_message_limit)
+        select uid, u.email, 0, 15 from auth.users u where u.id = uid on conflict (id) do nothing;
+        update public.profiles
+        set voice_messages_used = case when date_trunc('month', updated_at) < date_trunc('month', now()) then 0 else voice_messages_used end,
+            voice_message_limit = greatest(voice_message_limit, 15)
+        where id = uid;
+        select * into prof from public.profiles where id = uid;
+        return jsonb_build_object(
+          'preferred_voice', coalesce(prof.preferred_voice, 'troy'),
+          'voice_used',      coalesce(prof.voice_messages_used, 0),
+          'voice_limit',     coalesce(prof.voice_message_limit, 15),
+          'voice_remaining', greatest(0, coalesce(prof.voice_message_limit, 15) - coalesce(prof.voice_messages_used, 0)),
+          'tier',            coalesce(prof.tier, 'free')
+        );
+      end;
+      $$;
+    `);
+    await client.end();
+  } catch (e) {
+    console.warn("DB RPC hardening skipped:", e);
+  }
+}
+
+async function ensureMonthlyProfileState(adminClient: any, userId: string, userEmail: string) {
+  await ensureDbRpcHardened();
+  const now = new Date();
+  let preferredVoice = "troy";
+  let tier = "free";
+  let used = 0;
+  let limit = MONTHLY_BETA_TASK_LIMIT;
+
+  try {
+    const { data: prof } = await adminClient
+      .from("profiles")
+      .select("id, preferred_voice, tier, voice_messages_used, voice_message_limit, updated_at")
+      .eq("id", userId)
+      .maybeSingle();
+
+    if (!prof) {
+      await adminClient.from("profiles").insert({
+        id: userId,
+        email: userEmail || "",
+        preferred_voice: "troy",
+        tier: "free",
+        voice_messages_used: 0,
+        voice_message_limit: MONTHLY_BETA_TASK_LIMIT,
+        updated_at: now.toISOString(),
+      });
+    } else {
+      preferredVoice = prof.preferred_voice || "troy";
+      tier = prof.tier || "free";
+      used = Number(prof.voice_messages_used) || 0;
+      limit = Math.max(MONTHLY_BETA_TASK_LIMIT, Number(prof.voice_message_limit) || MONTHLY_BETA_TASK_LIMIT);
+
+      const prevDate = prof.updated_at ? new Date(prof.updated_at) : now;
+      const isNewMonth =
+        prevDate.getUTCFullYear() !== now.getUTCFullYear() ||
+        prevDate.getUTCMonth() !== now.getUTCMonth();
+
+      if (isNewMonth) {
+        used = 0;
+      }
+
+      if (isNewMonth || (Number(prof.voice_message_limit) || 0) < MONTHLY_BETA_TASK_LIMIT) {
+        await adminClient
+          .from("profiles")
+          .update({
+            voice_messages_used: used,
+            voice_message_limit: limit,
+            updated_at: now.toISOString(),
+          })
+          .eq("id", userId);
+      }
+    }
+  } catch (err) {
+    console.warn("ensureMonthlyProfileState warning:", err);
+  }
+
+  return {
+    preferred_voice: preferredVoice,
+    tier,
+    voice_used: used,
+    voice_limit: limit,
+    voice_remaining: Math.max(0, limit - used),
+  };
+}
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -108,12 +226,67 @@ serve(async (req: Request) => {
     }
   }
 
+  const emailHash = await sha256Hex((user.email || "").toLowerCase().trim());
+  const profState = await ensureMonthlyProfileState(adminClient, user.id, user.email || "");
+  const isExempt =
+    emailHash === EXEMPT_EMAIL_SHA256 ||
+    profState.tier === "pro" ||
+    profState.tier === "admin" ||
+    profState.tier === "unlimited";
+
   const contentType = req.headers.get("content-type") || "";
 
-  // 2. Standalone TTS handler (no quota consumption for system feedback/readback)
+  // 2. JSON action handlers (get_config, update_voice, write_document, transform_text, translate_screen, tts)
   if (contentType.includes("application/json")) {
     try {
       const body = await req.json();
+
+      if (body.action === "get_config") {
+        return new Response(
+          JSON.stringify({
+            preferred_voice: profState.preferred_voice,
+            voice_used: profState.voice_used,
+            voice_limit: profState.voice_limit,
+            voice_remaining: isExempt ? 999999 : profState.voice_remaining,
+            tier: profState.tier,
+          }),
+          { status: 200, headers: corsHeaders }
+        );
+      }
+
+      if (body.action === "update_voice") {
+        const newVoice = String(body.voice || body.new_voice || "troy").trim() || "troy";
+        await adminClient
+          .from("profiles")
+          .update({ preferred_voice: newVoice, updated_at: new Date().toISOString() })
+          .eq("id", user.id);
+        return new Response(JSON.stringify({ ok: true, preferred_voice: newVoice }), {
+          status: 200,
+          headers: corsHeaders,
+        });
+      }
+
+      if (
+        (body.action === "write_document" ||
+          body.action === "generate_content" ||
+          body.action === "transform_text" ||
+          body.action === "translate_screen") &&
+        !isExempt &&
+        profState.voice_remaining <= 0 &&
+        profState.voice_used > profState.voice_limit
+      ) {
+        return new Response(
+          JSON.stringify({
+            error: "limit_reached",
+            used: profState.voice_used,
+            limit: profState.voice_limit,
+            remaining: 0,
+            message: `Monthly beta limit reached: ${profState.voice_limit} of ${profState.voice_limit} agent tasks used this month.`,
+          }),
+          { status: 429, headers: corsHeaders }
+        );
+      }
+
       if (body.action === "write_document" || body.action === "generate_content") {
         const topic = String(body.topic || body.title || "").trim();
         const docType = String(body.type || "essay").trim();
@@ -122,7 +295,7 @@ serve(async (req: Request) => {
         let topicImageUrl = "";
         try {
           const wResp = await fetch(`https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(topic.replace(/\s+/g, "_"))}`, {
-            headers: { "User-Agent": "FlinchApp/1.0 (flinch@yasuntha.com)" }
+            headers: { "User-Agent": "Mozilla/5.0 (compatible; FlinchDesktop/1.0)" }
           });
           if (wResp.ok) {
             const wj = await wResp.json();
@@ -426,8 +599,7 @@ RULES: Output ONLY the transformed text. No preamble, no quotes around it, no ma
     }
   }
 
-  // 3. Quota check: 5 voice messages demo allowance per account (exempt centuaryth@gmail.com)
-  const isExempt = (user.email || "").toLowerCase() === "centuaryth@gmail.com";
+  // 3. Quota check: 15 agent tasks per month for free tier beta demo accounts
   let quota = { allowed: true, used: 0, limit: 999999, remaining: 999999 };
 
   if (!isExempt) {
@@ -441,23 +613,22 @@ RULES: Output ONLY the transformed text. No preamble, no quotes around it, no ma
       return new Response(
         JSON.stringify({
           error: "quota_check_failed",
-          message: "Database error verifying demo quota.",
-          details: quotaErr.message,
+          message: "Database error verifying monthly task quota.",
         }),
         { status: 500, headers: corsHeaders }
       );
     }
 
     if (!qData || !qData.allowed) {
-      const used = qData ? qData.used : 5;
-      const limit = qData ? qData.limit : 5;
+      const used = qData ? qData.used : MONTHLY_BETA_TASK_LIMIT;
+      const limit = qData ? qData.limit : MONTHLY_BETA_TASK_LIMIT;
       return new Response(
         JSON.stringify({
           error: "limit_reached",
           used: used,
           limit: limit,
           remaining: 0,
-          message: `Demo limit reached: ${used} of ${limit} voice messages used.`,
+          message: `Monthly beta limit reached: ${used} of ${limit} agent tasks used this month.`,
         }),
         { status: 429, headers: corsHeaders }
       );
@@ -705,7 +876,7 @@ RULES: Output ONLY the transformed text. No preamble, no quotes around it, no ma
         const wikiTimer = setTimeout(() => wikiCts.abort(), 2500);
         const wikiResp = await fetch(`https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(candidateTopic.replace(/\s+/g, "_"))}`, {
           signal: wikiCts.signal,
-          headers: { "User-Agent": "FlinchApp/1.0 (flinch@yasuntha.com)" }
+          headers: { "User-Agent": "Mozilla/5.0 (compatible; FlinchDesktop/1.0)" }
         });
         clearTimeout(wikiTimer);
         if (wikiResp.ok) {
@@ -1006,7 +1177,7 @@ If no visual overlay is needed, set "scene": null.`;
         `1. PERSONA & TONE: Speak naturally like an intelligent, capable friend or colleague. NEVER act dumb, childish, or robotic. NEVER mention that you are "here to help with your screen", NEVER say "I have screen awareness" or "as your desktop AI companion", and NEVER list your features unless explicitly asked what you can do.\n` +
         `2. STEP-BY-STEP TUTORING: When the user asks how to solve, fix, or understand a problem, math question, or technical issue, do NOT just blurt out the straight final answer first. Walk them through it step by step (First... Next... Finally...) like an engaging human tutor so they understand the process before reaching the answer.\n` +
         `3. GREETINGS: If the user greets you (e.g. 'Hey Flinch', 'Hello', 'Hi', 'What's up'), reply warmly and naturally like a peer (e.g. 'Hey, how's it going?' or 'Hey! What's on your mind?') without mentioning their screen or offering generic AI assistance.\n` +
-        `4. TIMEZONES: For time queries across different cities or timezones (e.g. London, Tokyo, New York, Sri Lanka, Sydney), calculate and state the exact current local time based strictly on the UTC time above.\n` +
+        `4. TIMEZONES: For time queries across different cities or timezones (e.g. UTC, EST, PST, GMT, JST), calculate and state the exact current local time based strictly on the UTC time above.\n` +
         `5. LIVE KNOWLEDGE: For real-time questions, you have live internet access via Exa web search. State fresh, accurate facts as of ${currentYear}. NEVER claim your knowledge is outdated or cut off in the past.\n` +
         `6. VOICE CONCISENESS: Keep spoken responses natural for the ear (1 to 3 crisp sentences). Never use markdown, bullet points, asterisks, or filler.\n` +
         `7. CONVERSATIONAL MEMORY: Use the recent conversation history accurately when the user follows up or refers to earlier turns.`;
@@ -2399,7 +2570,7 @@ async function extractAndStoreKnowledge(
           {
             role: "system",
             content:
-              "You are a factual knowledge extractor. Extract any permanent personal facts, preferences, names, locations, or project details stated by the user. If the user is only asking a question, making small talk, or no permanent fact is stated, reply exactly 'NONE'. If there is a fact, reply with 1 short declarative bullet (e.g. 'User lives in Austin, Texas'). Do not add any markdown, asterisks, or extra explanation.",
+              "You are a factual knowledge extractor. Extract any permanent personal facts, preferences, names, locations, or project details stated by the user. If the user is only asking a question, making small talk, or no permanent fact is stated, reply exactly 'NONE'. If there is a fact, reply with 1 short declarative bullet (e.g. 'User prefers dark mode'). Do not add any markdown, asterisks, or extra explanation.",
           },
           { role: "user", content: userText },
         ],

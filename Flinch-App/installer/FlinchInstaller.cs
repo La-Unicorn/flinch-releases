@@ -15,7 +15,7 @@ using Path = System.IO.Path;
 
 [assembly: AssemblyTitle("Flinch Setup & Uninstaller")]
 [assembly: AssemblyDescription("Flinch voice companion installer & uninstaller")]
-[assembly: AssemblyCompany("Reech")]
+[assembly: AssemblyCompany("Flinch")]
 [assembly: AssemblyProduct("Flinch")]
 [assembly: AssemblyVersion("1.0.0.0")]
 
@@ -187,8 +187,8 @@ namespace FlinchInstaller
             progress(90, "Registering with Windows…");
             using (RegistryKey k = Registry.CurrentUser.CreateSubKey(Paths.UninstallKey))
             {
-                k.SetValue("DisplayName", "Flinch (Demo)");
-                k.SetValue("Publisher", "Reech");
+                k.SetValue("DisplayName", "Flinch");
+                k.SetValue("Publisher", "Flinch");
                 k.SetValue("DisplayVersion", "1.0.0");
                 k.SetValue("InstallLocation", Paths.InstallDir);
                 string icoPath = Path.Combine(Paths.InstallDir, "flinch.ico");
@@ -399,7 +399,7 @@ namespace FlinchInstaller
 
             _choosePanel.Children.Add(new TextBlock
             {
-                Text = "Demo Build · 5 voice messages per account",
+                Text = "Beta Build · 15 agent tasks per month",
                 FontSize = 11,
                 Foreground = Muted,
                 HorizontalAlignment = HorizontalAlignment.Center,

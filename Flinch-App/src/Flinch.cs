@@ -25,10 +25,10 @@ using System.Windows.Threading;
 using System.Windows.Automation;
 
 [assembly: AssemblyTitle("Flinch")]
-[assembly: AssemblyDescription("Flinch Desktop AI Voice Companion")]
-[assembly: AssemblyCompany("Reech")]
+[assembly: AssemblyDescription("Flinch Desktop AI Companion")]
+[assembly: AssemblyCompany("Flinch")]
 [assembly: AssemblyProduct("Flinch")]
-[assembly: AssemblyCopyright("Copyright © 2026 Reech")]
+[assembly: AssemblyCopyright("Copyright © 2026 Flinch")]
 [assembly: AssemblyVersion("1.0.0.0")]
 [assembly: AssemblyFileVersion("1.0.0.0")]
 
@@ -609,26 +609,15 @@ namespace FlinchApp
     }
 
     // =========================================================================
-    // Environment, Rules & API Configuration (.env + RULES.md)
+    // Runtime Configuration
     // =========================================================================
     internal static class FlinchEnv
     {
         public static string SupabaseUrl = "";
         public static string SupabaseAnonKey = "";
         public static string VoiceName = "troy";
-        public static string LogFilePath = "";
-        public static string SystemRules =
-            "You are Flinch—a sharp, mature, friendly, and grounded human peer.\n" +
-            "1. Sound like an intelligent, capable friend or colleague: natural, composed, and friendly. Use normal contractions ('it's', 'you're', 'that's').\n" +
-            "2. NEVER mention that you are 'here to help with your screen', NEVER say 'I have screen awareness' or 'as your desktop AI companion', and NEVER list your features unless explicitly asked.\n" +
-            "3. NEVER mention or describe your own tone out loud, and NEVER start responses with 'Oh man', 'Oh boy', 'Well,', or 'Ah,'. Lead straight into a thoughtful, direct answer.\n" +
-            "4. Do NOT use <chuckle> on normal questions, news, prices, or everyday tasks.\n" +
-            "5. Make your FIRST sentence crisp and direct (4 to 10 words) so voice synthesis starts fast, then continue naturally (1-3 sentences).\n" +
-            "6. Write strictly for the ear: no markdown, no asterisks, no bullet lists. Say numbers and symbols naturally out loud.\n" +
-            "7. Candid honesty: never be a yes-man. Give smart, nuanced, and accurate answers.";
-
         public static string GitHubRepo = "La-Unicorn/flinch-releases";
-        public static string BuildVersion = "0.1.0";
+        public static string BuildVersion = "1.0.0";
         public static string BuildTimeUtc = "";
         public static int MicDeviceId = -1;
         public static string HotkeyMode = "Alt+V";
@@ -713,16 +702,11 @@ namespace FlinchApp
 
         public static void Log(string msg)
         {
-            try
-            {
-                string path = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "flinch_debug.log");
-                System.IO.File.AppendAllText(path, string.Format("[{0:yyyy-MM-dd HH:mm:ss.fff}] {1}\r\n", DateTime.UtcNow, msg));
-            }
-            catch { }
+            // Zero plaintext disk logging in production builds to prevent reverse-engineering leaks
         }
     }
     // =========================================================================
-    // Supabase Authentication, DPAPI Persistent PC Session & Backend Key Vault
+    // Supabase Authentication & DPAPI Persistent PC Session
     // =========================================================================
     internal sealed class FlinchAuthSession
     {
@@ -744,7 +728,7 @@ namespace FlinchApp
 
         private static readonly HttpClient AuthHttp = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
         public static FlinchAuthSession CurrentSession { get; private set; }
-        public const int DemoVoiceLimit = 5;
+        public const int DemoVoiceLimit = 15;
         public static int VoiceRemaining = -1;
         public static bool QuotaExhausted { get { return VoiceRemaining == 0; } }
 
@@ -897,7 +881,7 @@ namespace FlinchApp
             needsConfirmationCode = false;
             if (!IsConfigured)
             {
-                error = "SUPABASE_URL or SUPABASE_ANON_KEY is missing in .env";
+                error = "Authentication service is currently unavailable.";
                 return false;
             }
 
@@ -955,7 +939,7 @@ namespace FlinchApp
             needsConfirmationCode = false;
             if (!IsConfigured)
             {
-                error = "SUPABASE_URL or SUPABASE_ANON_KEY is missing in .env";
+                error = "Authentication service is currently unavailable.";
                 return false;
             }
 
@@ -1005,7 +989,7 @@ namespace FlinchApp
             error = "";
             if (!IsConfigured)
             {
-                error = "SUPABASE_URL or SUPABASE_ANON_KEY is missing in .env";
+                error = "Authentication service is currently unavailable.";
                 return false;
             }
 
@@ -1130,9 +1114,9 @@ namespace FlinchApp
 
             try
             {
-                string url = FlinchEnv.SupabaseUrl + "/rest/v1/rpc/get_flinch_runtime_config";
+                string url = FlinchEnv.SupabaseUrl + "/functions/v1/flinch-voice";
                 int status;
-                string resp = SendSupabaseRequest(HttpMethod.Post, url, "{}", CurrentSession.AccessToken, out status);
+                string resp = SendSupabaseRequest(HttpMethod.Post, url, "{\"action\":\"get_config\"}", CurrentSession.AccessToken, out status);
                 if (status >= 200 && status < 300 && !string.IsNullOrWhiteSpace(resp))
                 {
                     var jss = new JavaScriptSerializer();
@@ -1159,18 +1143,10 @@ namespace FlinchApp
                         }
                         SaveSessionToDisk(CurrentSession);
                     }
-
-                    FlinchEnv.Log("Loaded user runtime profile from Supabase (voice=" + FlinchEnv.VoiceName + ", remaining=" + VoiceRemaining + ").");
                     return true;
                 }
 
-                if (status == 404)
-                {
-                    error = "Supabase table/RPC not initialized yet. Please run SUPABASE_DEMO_LIMIT.sql in your Supabase SQL Editor.";
-                    return false;
-                }
-
-                error = ExtractSupabaseError(resp, "Failed to load runtime config from Supabase (" + status + ").");
+                error = ExtractSupabaseError(resp, "Could not load account profile (" + status + ").");
                 return false;
             }
             catch (Exception ex)
@@ -1191,8 +1167,8 @@ namespace FlinchApp
                 try
                 {
                     var jss = new JavaScriptSerializer();
-                    string url = FlinchEnv.SupabaseUrl + "/rest/v1/rpc/update_flinch_voice";
-                    string body = jss.Serialize(new Dictionary<string, object> { { "new_voice", voiceName } });
+                    string url = FlinchEnv.SupabaseUrl + "/functions/v1/flinch-voice";
+                    string body = jss.Serialize(new Dictionary<string, object> { { "action", "update_voice" }, { "voice", voiceName } });
                     int status;
                     SendSupabaseRequest(HttpMethod.Post, url, body, CurrentSession.AccessToken, out status);
                 }
@@ -1200,49 +1176,21 @@ namespace FlinchApp
             });
         }
 
-        // Atomically spends one of the account's demo voice messages on the server. Never trusts the client counter.
         public static bool ConsumeVoiceMessage(out int remaining, out string error)
         {
-            remaining = 0;
+            remaining = VoiceRemaining >= 0 ? VoiceRemaining : DemoVoiceLimit;
             error = "";
             if (CurrentSession == null || string.IsNullOrWhiteSpace(CurrentSession.AccessToken))
             {
                 error = "Please sign in again.";
                 return false;
             }
-            try
+            if (QuotaExhausted)
             {
-                string url = FlinchEnv.SupabaseUrl + "/rest/v1/rpc/consume_voice_message";
-                int status;
-                string resp = SendSupabaseRequest(HttpMethod.Post, url, "{}", CurrentSession.AccessToken, out status);
-                if (status == 401 && !string.IsNullOrWhiteSpace(CurrentSession.RefreshToken))
-                {
-                    string rErr;
-                    if (RefreshSession(CurrentSession.RefreshToken, out rErr))
-                        resp = SendSupabaseRequest(HttpMethod.Post, url, "{}", CurrentSession.AccessToken, out status);
-                }
-                if (status >= 200 && status < 300 && !string.IsNullOrWhiteSpace(resp))
-                {
-                    var root = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(resp);
-                    bool allowed = root != null && root.ContainsKey("allowed") && root["allowed"] is bool && (bool)root["allowed"];
-                    if (root != null && root.ContainsKey("remaining") && root["remaining"] != null)
-                        int.TryParse(root["remaining"].ToString(), out remaining);
-                    VoiceRemaining = remaining;
-                    if (!allowed)
-                    {
-                        error = "Demo limit reached: " + DemoVoiceLimit + " of " + DemoVoiceLimit + " voice messages used.";
-                        return false;
-                    }
-                    return true;
-                }
-                error = ExtractSupabaseError(resp, "Could not verify your demo allowance.");
+                error = "Monthly beta limit reached: " + DemoVoiceLimit + " of " + DemoVoiceLimit + " agent tasks used this month.";
                 return false;
             }
-            catch (Exception ex)
-            {
-                error = ex.Message;
-                return false;
-            }
+            return true;
         }
         private static string SendSupabaseRequest(HttpMethod method, string url, string jsonBody, string bearerToken, out int statusCode)
         {
@@ -3118,7 +3066,7 @@ namespace FlinchApp
                         {
                             using (var hc = new HttpClient { Timeout = TimeSpan.FromSeconds(5) })
                             {
-                                hc.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", "FlinchApp/1.0 (https://yasuntha.com; flinch@yasuntha.com)");
+                                hc.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) FlinchDesktop/1.0");
                                 byte[] imgBytes = hc.GetByteArrayAsync(capturedUrl).GetAwaiter().GetResult();
                                 if (imgBytes != null && imgBytes.Length > 100) applyImgBytes(imgBytes);
                             }
@@ -3133,7 +3081,7 @@ namespace FlinchApp
                             {
                                 using (var hc = new HttpClient { Timeout = TimeSpan.FromSeconds(5) })
                                 {
-                                    hc.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", "FlinchApp/1.0 (https://yasuntha.com; flinch@yasuntha.com)");
+                                    hc.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) FlinchDesktop/1.0");
                                     byte[] imgBytes = hc.GetByteArrayAsync(capturedUrl).GetAwaiter().GetResult();
                                     if (imgBytes != null && imgBytes.Length > 100)
                                     {
@@ -4240,7 +4188,7 @@ namespace FlinchApp
                             {
                                 SupabaseAuthClient.VoiceRemaining = 0;
                                 remaining = 0;
-                                error = "Demo limit reached: 5 of 5 voice messages used.";
+                                error = "Monthly beta limit reached: " + SupabaseAuthClient.DemoVoiceLimit + " of " + SupabaseAuthClient.DemoVoiceLimit + " agent tasks used this month.";
                                 return false;
                             }
 
@@ -7512,7 +7460,7 @@ namespace FlinchApp
 
             if (SupabaseAuthClient.QuotaExhausted)
             {
-                SetIslandState(IslandState.Error, "", "Demo limit reached: " + SupabaseAuthClient.DemoVoiceLimit + " of " + SupabaseAuthClient.DemoVoiceLimit + " voice messages used.");
+                SetIslandState(IslandState.Error, "", "Monthly beta limit reached: " + SupabaseAuthClient.DemoVoiceLimit + " of " + SupabaseAuthClient.DemoVoiceLimit + " agent tasks used this month.");
                 return;
             }
 
@@ -7882,7 +7830,7 @@ private void FinishRecordingAndSend()
                             return;
                         }
 
-                        // Autonomous Background Writing & Presentation Tasks (e.g. "write an essay about sri lanka", "create a presentation about elon musk with voice")
+                        // Autonomous Background Writing & Presentation Tasks
                         bool isWritingTask = (lowerTrans.Contains("write") || lowerTrans.Contains("generate") || lowerTrans.Contains("draft") || lowerTrans.Contains("create") || lowerTrans.Contains("make"))
                             && (lowerTrans.Contains("essay") || lowerTrans.Contains("report") || lowerTrans.Contains("article") || lowerTrans.Contains("paper") || lowerTrans.Contains("document") || lowerTrans.Contains("story") || lowerTrans.Contains("presentation") || lowerTrans.Contains("slides") || lowerTrans.Contains("slide deck") || lowerTrans.Contains("slideshow"));
 
@@ -7910,7 +7858,7 @@ private void FinishRecordingAndSend()
                             }
                             if (string.IsNullOrWhiteSpace(topic))
                             {
-                                topic = "Sri Lanka";
+                                topic = "General Overview";
                             }
 
                             // Detect external app requests (Discord, WhatsApp, Telegram, etc.)
@@ -7949,7 +7897,7 @@ private void FinishRecordingAndSend()
                             topic = Regex.Replace(topic, @"(?i)\s*and\s+(send|save)\s+it.*$", "").Trim();
                             topic = topic.Trim(',', '.', '!', ' ', ';', ':', '"', '\'');
 
-                            if (string.IsNullOrWhiteSpace(topic)) topic = "Sri Lanka";
+                            if (string.IsNullOrWhiteSpace(topic)) topic = "General Overview";
 
                             string replyText;
                             if (docType == "presentation")
@@ -10009,249 +9957,11 @@ private void FinishRecordingAndSend()
             ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12;
             FlinchEnv.Load();
 
-            if (args != null && args.Length > 0 && args[0] == "--testdraw")
-            {
-                try
-                {
-                    var app = System.Windows.Application.Current ?? new System.Windows.Application();
-                    string outDir = (args.Length > 1 && Directory.Exists(args[1])) ? args[1] : System.IO.Path.GetTempPath();
-                    int w = 1280;
-                    int h = 720;
-                    var bounds = new NativeMethods.RECT { Left = 0, Top = 0, Right = w, Bottom = h };
-
-                    // 1. Test Scene 1: Screen Drawing Overlay (Code Error Highlight, Arrow, Circle, & Reference Card)
-                    var scene1 = new ScenePayload
-                    {
-                        durationMs = 15000,
-                        objects = new List<SceneObjectPayload>
-                        {
-                            new SceneObjectPayload
-                            {
-                                type = "circle",
-                                color = "#EF4444",
-                                label = "Step 1: Start Debugging",
-                                rect = new SceneRect { x = 0.068, y = 0.105, w = 0.135, h = 0.068 }
-                            },
-                            new SceneObjectPayload
-                            {
-                                type = "highlight",
-                                color = "#D97706",
-                                label = "Step 2: NullReferenceException on line 42",
-                                rect = new SceneRect { x = 0.08, y = 0.28, w = 0.42, h = 0.055 }
-                            },
-                            new SceneObjectPayload
-                            {
-                                type = "arrow",
-                                color = "#0284C7",
-                                label = "Step 3: Check ctx.Session before .AccessToken",
-                                from = new ScenePoint { x = 0.30, y = 0.47 },
-                                to = new ScenePoint { x = 0.21, y = 0.345 }
-                            },
-                            new SceneObjectPayload
-                            {
-                                type = "notepad",
-                                title = "Fixing Line 42 Step-by-Step",
-                                subtitle = "Whiteboard Guide • NullReferenceException",
-                                text = "Step 1: Look at line 42 — ctx.Session is being dereferenced without checking if Session is null first.\nStep 2: When an unauthenticated guest calls ProcessSession, ctx.Session evaluates to null and crashes.\nStep 3: Add a null-conditional operator (ctx?.Session?.AccessToken) or guard clause before calling .Trim().\nResult: Use string token = ctx?.Session?.AccessToken?.Trim() ?? \"\";"
-                            }
-                        }
-                    };
-
-                    var overlayWin = new OverlayWindow(bounds, scene1, true);
-
-                    // Build a realistic desktop & code editor backdrop under the transparent overlay for the verification capture
-                    var composite1 = new Canvas { Width = w, Height = h, Background = new SolidColorBrush(Color.FromRgb(241, 245, 249)) };
-
-                    // Mock IDE window on the left side of the desktop
-                    var ideWin = new Border
-                    {
-                        Width = 640,
-                        Height = 480,
-                        Background = new SolidColorBrush(Color.FromRgb(255, 255, 255)),
-                        BorderBrush = new SolidColorBrush(Color.FromRgb(203, 213, 225)),
-                        BorderThickness = new Thickness(1),
-                        CornerRadius = new CornerRadius(10),
-                        Effect = new DropShadowEffect { Color = Colors.Black, BlurRadius = 18, Opacity = 0.08, ShadowDepth = 4 }
-                    };
-                    var ideStack = new StackPanel { Margin = new Thickness(24, 20, 24, 20) };
-                    ideStack.Children.Add(new TextBlock
-                    {
-                        Text = "Program.cs — Visual Studio",
-                        Foreground = new SolidColorBrush(Color.FromRgb(100, 116, 139)),
-                        FontSize = 12,
-                        FontWeight = FontWeights.SemiBold,
-                        FontFamily = new FontFamily("Segoe UI Semibold, Segoe UI"),
-                        Margin = new Thickness(0, 0, 0, 18)
-                    });
-                    var toolbarRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 22) };
-                    toolbarRow.Children.Add(new Border
-                    {
-                        Background = new SolidColorBrush(Color.FromRgb(241, 245, 249)),
-                        BorderBrush = new SolidColorBrush(Color.FromRgb(203, 213, 225)),
-                        BorderThickness = new Thickness(1),
-                        CornerRadius = new CornerRadius(6),
-                        Padding = new Thickness(12, 6, 12, 6),
-                        Child = new TextBlock { Text = "▶ Start Debugging", Foreground = new SolidColorBrush(Color.FromRgb(15, 23, 42)), FontSize = 12, FontFamily = new FontFamily("Segoe UI Semibold") }
-                    });
-                    ideStack.Children.Add(toolbarRow);
-
-                    string[] codeLines = new[]
-                    {
-                        "39   public void ProcessSession(UserContext ctx)",
-                        "40   {",
-                        "41       var config = LoadConfiguration();",
-                        "42       string token = ctx.Session.AccessToken.Trim();",
-                        "43       InitializeClient(token, config);",
-                        "44   }"
-                    };
-                    foreach (var cl in codeLines)
-                    {
-                        ideStack.Children.Add(new TextBlock
-                        {
-                            Text = cl,
-                            Foreground = new SolidColorBrush(Color.FromRgb(51, 65, 85)),
-                            FontSize = 13.5,
-                            FontFamily = new FontFamily("Consolas"),
-                            Margin = new Thickness(0, 4, 0, 4)
-                        });
-                    }
-                    ideWin.Child = ideStack;
-                    Canvas.SetLeft(ideWin, 64);
-                    Canvas.SetTop(ideWin, 42);
-                    composite1.Children.Add(ideWin);
-
-                    // Move rendered overlay canvas into composite for crisp RenderTargetBitmap snapshot
-                    overlayWin.Content = null;
-                    composite1.Children.Add(overlayWin.RootCanvas);
-                    composite1.Measure(new Size(w, h));
-                    composite1.Arrange(new Rect(0, 0, w, h));
-                    composite1.UpdateLayout();
-
-                    var rtb1 = new System.Windows.Media.Imaging.RenderTargetBitmap(w, h, 96, 96, PixelFormats.Pbgra32);
-                    rtb1.Render(composite1);
-                    var enc1 = new System.Windows.Media.Imaging.PngBitmapEncoder();
-                    enc1.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(rtb1));
-                    string outOverlayPath = System.IO.Path.Combine(outDir, "overlay_screen_drawing_verified.png");
-                    using (var fs = new FileStream(outOverlayPath, FileMode.Create, FileAccess.Write))
-                    {
-                        enc1.Save(fs);
-                    }
-                    FlinchEnv.Log("Saved overlay verification screenshot: " + outOverlayPath);
-
-                    // 2. Test Scene 2: Sensitive Action Approval Gate (Human-Crafted UI)
-                    var composite2 = new Canvas { Width = w, Height = h, Background = new SolidColorBrush(Color.FromRgb(241, 245, 249)) };
-
-                    // Show two realistic approval cards side-by-side or centered to showcase both standard & destructive actions
-                    var actClose = new ActionPayload
-                    {
-                        type = "close_app",
-                        target = "chrome",
-                        name = "Close Google Chrome",
-                        requires_approval = true,
-                        description = "Terminates running Google Chrome windows. Any unsaved form data or open tabs may be closed.",
-                        command = "taskkill /IM chrome.exe"
-                    };
-                    var approvalWin1 = new ActionApprovalWindow(actClose, _ => { }, _ => { });
-                    approvalWin1.Content = null;
-                    Canvas.SetLeft(approvalWin1.CardRoot, 210);
-                    Canvas.SetTop(approvalWin1.CardRoot, 190);
-                    composite2.Children.Add(approvalWin1.CardRoot);
-
-                    var actCmd = new ActionPayload
-                    {
-                        type = "run_command",
-                        target = "ipconfig /flushdns",
-                        name = "Flush DNS Resolver Cache",
-                        requires_approval = true,
-                        description = "Executes ipconfig /flushdns to clear and reset the Windows DNS resolver cache.",
-                        command = "ipconfig /flushdns"
-                    };
-                    var approvalWin2 = new ActionApprovalWindow(actCmd, _ => { }, _ => { });
-                    approvalWin2.Content = null;
-                    Canvas.SetLeft(approvalWin2.CardRoot, 650);
-                    Canvas.SetTop(approvalWin2.CardRoot, 190);
-                    composite2.Children.Add(approvalWin2.CardRoot);
-
-                    composite2.Measure(new Size(w, h));
-                    composite2.Arrange(new Rect(0, 0, w, h));
-                    composite2.UpdateLayout();
-
-                    var rtb2 = new System.Windows.Media.Imaging.RenderTargetBitmap(w, h, 96, 96, PixelFormats.Pbgra32);
-                    rtb2.Render(composite2);
-                    var enc2 = new System.Windows.Media.Imaging.PngBitmapEncoder();
-                    enc2.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(rtb2));
-                    string outApprovalPath = System.IO.Path.Combine(outDir, "sensitive_action_approval_verified.png");
-                    using (var fs = new FileStream(outApprovalPath, FileMode.Create, FileAccess.Write))
-                    {
-                        enc2.Save(fs);
-                    }
-                    FlinchEnv.Log("Saved approval UI verification screenshot: " + outApprovalPath);
-                    Console.WriteLine("VERIFIED_SCREENSHOTS_SAVED");
-                    return 0;
-                }
-                catch (Exception ex)
-                {
-                    FlinchEnv.Log("TEST_DRAW_ERROR: " + ex.ToString());
-                    Console.WriteLine("TEST_DRAW_ERROR: " + ex.Message);
-                    return 1;
-                }
-            }
-
-            if (args != null && args.Length > 0 && args[0] == "--selftest")
-            {
-                try
-                {
-                    string restoreErr;
-                    SupabaseAuthClient.TryRestoreSavedSession(out restoreErr);
-
-                    var totalSw = Stopwatch.StartNew();
-                    FlinchEnv.Log("Running Flinch.exe --selftest (Minimalist Notch)...");
-                    string testWavPath = (args.Length > 1 && File.Exists(args[1])) ? args[1] : "";
-                    byte[] wavBytes = !string.IsNullOrEmpty(testWavPath) ? File.ReadAllBytes(testWavPath) : new byte[0];
-                    string tx = "";
-                    string ans = "";
-                    byte[] audioBytes = null;
-                    int remaining = 0;
-                    string err = "";
-                    bool ok = false;
-
-                    if (wavBytes.Length > 44)
-                    {
-                        ok = GeminiClient.ProcessVoiceTurnInCloud(wavBytes, out tx, out ans, out audioBytes, out remaining, out err);
-                    }
-                    else
-                    {
-                        audioBytes = GeminiClient.SynthesizeSpeechFast("Flinch cloud brain online.");
-                        ok = audioBytes != null && audioBytes.Length > 44;
-                    }
-                    totalSw.Stop();
-
-                    if (audioBytes != null && audioBytes.Length > 44)
-                    {
-                        var playSw = Stopwatch.StartNew();
-                        using (var ms = new MemoryStream(audioBytes))
-                        using (var sp = new System.Media.SoundPlayer(ms))
-                        {
-                            sp.PlaySync();
-                        }
-                        playSw.Stop();
-                    }
-                    return ok ? 0 : 1;
-                }
-                catch (Exception ex)
-                {
-                    FlinchEnv.Log("SELFTEST_ERROR=" + ex.Message);
-                    return 2;
-                }
-            }
-
             bool createdNew;
             using (var mutex = new Mutex(true, "Global\\FlinchNativeIslandAppMutex", out createdNew))
             {
-                FlinchEnv.Log("Main mutex check: createdNew=" + createdNew);
                 if (!createdNew)
                 {
-                    FlinchEnv.Log("Another Flinch instance is already running (mutex locked). Exiting.");
                     return 0;
                 }
                 var app = new Application

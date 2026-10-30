@@ -246,7 +246,7 @@ namespace FlinchApp
 
                             if (statusCode == 429)
                             {
-                                errorMessage = "Daily limit reached. Resets at midnight.";
+                                errorMessage = "Monthly beta limit reached: 15 of 15 agent tasks used this month.";
                                 return false;
                             }
 
@@ -391,10 +391,7 @@ namespace FlinchApp
                     string[] candidates = new[]
                     {
                         Path.Combine(appDir, "assets", "whiteboard"),
-                        Path.Combine(appDir, "Flinch-App", "assets", "whiteboard"),
-                        Path.Combine(Directory.GetParent(appDir).FullName, "assets", "whiteboard"),
-                        Path.Combine(Directory.GetParent(appDir).FullName, "Flinch-App", "assets", "whiteboard"),
-                        Path.Combine(Directory.GetParent(Directory.GetParent(appDir).FullName).FullName, "Flinch-App", "assets", "whiteboard")
+                        Path.Combine(Directory.GetParent(appDir).FullName, "assets", "whiteboard")
                     };
                     string whiteboardDir = candidates[0];
                     foreach (var c in candidates)

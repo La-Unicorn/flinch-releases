@@ -65,11 +65,11 @@ $srcFiles = @(
     (Join-Path $root 'src\FlinchSkills.cs'),
     $gen
 )
-& $csc /nologo /target:winexe /win32icon:$ico "/win32manifest:$manifest" "/resource:$ico,flinch.ico" "/resource:$catPng,cat_logo.png" /out:$appExe $wpf $sys $speech $srcFiles
+& $csc /nologo /optimize+ /debug- /target:winexe /win32icon:$ico "/win32manifest:$manifest" "/resource:$ico,flinch.ico" "/resource:$catPng,cat_logo.png" /out:$appExe $wpf $sys $speech $srcFiles
 if ($LASTEXITCODE -ne 0) { throw 'Flinch.exe compile failed' }
 
 $setupExe = Join-Path $dist 'FlinchSetup.exe'
-& $csc /nologo /target:winexe /win32icon:$ico "/win32manifest:$manifest" "/resource:$appExe,Flinch.exe" "/resource:$ico,flinch.ico" "/resource:$catPng,cat_logo.png" /out:$setupExe $wpf '/r:System.Xaml.dll' '/r:System.Windows.Forms.dll' (Join-Path $root 'installer\FlinchInstaller.cs')
+& $csc /nologo /optimize+ /debug- /target:winexe /win32icon:$ico "/win32manifest:$manifest" "/resource:$appExe,Flinch.exe" "/resource:$ico,flinch.ico" "/resource:$catPng,cat_logo.png" /out:$setupExe $wpf '/r:System.Xaml.dll' '/r:System.Windows.Forms.dll' (Join-Path $root 'installer\FlinchInstaller.cs')
 if ($LASTEXITCODE -ne 0) { throw 'Installer compile failed' }
 
 # Ensure assets are copied to dist

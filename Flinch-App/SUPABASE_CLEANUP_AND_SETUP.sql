@@ -104,20 +104,17 @@ ON CONFLICT (key_name) DO UPDATE
 SET key_value = EXCLUDED.key_value,
     updated_at = now();
 
--- 4. AUTHENTICATED-ONLY RPC TO FETCH RUNTIME CONFIG & PREFERRED VOICE
+-- 4. AUTHENTICATED-ONLY RPC TO FETCH RUNTIME CONFIG & PREFERRED VOICE (ZERO API KEYS RETURNED)
 CREATE OR REPLACE FUNCTION public.get_flinch_runtime_config()
 RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public, flinch_private
+SET search_path = public
 AS $$
 DECLARE
     v_uid UUID;
     v_voice TEXT;
     v_tier TEXT;
-    v_groq TEXT;
-    v_gemini TEXT;
-    v_exa TEXT;
 BEGIN
     v_uid := auth.uid();
     IF v_uid IS NULL THEN
@@ -134,17 +131,10 @@ BEGIN
         v_tier := 'free';
     END IF;
 
-    SELECT key_value INTO v_groq   FROM flinch_private.secrets WHERE key_name = 'GROQ_API_KEY';
-    SELECT key_value INTO v_gemini FROM flinch_private.secrets WHERE key_name = 'GEMINI_API_KEY';
-    SELECT key_value INTO v_exa    FROM flinch_private.secrets WHERE key_name = 'EXA_API_KEY';
-
     RETURN jsonb_build_object(
         'user_id',         v_uid,
         'preferred_voice', v_voice,
-        'tier',            v_tier,
-        'groq_api_key',    COALESCE(v_groq, ''),
-        'gemini_api_key',  COALESCE(v_gemini, ''),
-        'exa_api_key',     COALESCE(v_exa, '')
+        'tier',            v_tier
     );
 END;
 $$;
