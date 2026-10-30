@@ -109,6 +109,15 @@ namespace FlinchApp
         [return: MarshalAs(UnmanagedType.Bool)]
         public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
 
+        [DllImport("user32.dll")]
+        public static extern bool SetCursorPos(int X, int Y);
+
+        [DllImport("user32.dll")]
+        public static extern void mouse_event(uint dwFlags, int dx, int dy, uint dwData, IntPtr dwExtraInfo);
+
+        public const uint MOUSEEVENTF_LEFTDOWN = 0x0002;
+        public const uint MOUSEEVENTF_LEFTUP = 0x0004;
+
         public static void MakeToolWindow(IntPtr hwnd)
         {
             int ex = GetWindowLong(hwnd, GWL_EXSTYLE);
@@ -1212,6 +1221,11 @@ namespace FlinchApp
         public int seconds;
         public string text;
         public string label;
+        public bool requires_approval;
+        public string description;
+        public string command;
+        public double x;
+        public double y;
     }
 
     // =========================================================================
@@ -1930,6 +1944,8 @@ namespace FlinchApp
         private readonly DispatcherTimer _autoDismissTimer;
         private bool _isDismissing = false;
 
+        public Canvas RootCanvas { get { return _canvas; } }
+
         public static void ShowScene(NativeMethods.RECT targetBounds, ScenePayload scene)
         {
             if (scene == null || scene.objects == null || scene.objects.Count == 0)
@@ -1940,22 +1956,24 @@ namespace FlinchApp
 
             FlinchEnv.Log(string.Format("[OverlayWindow] ShowScene invoked with {0} objects.", scene.objects.Count));
 
-            Application.Current.Dispatcher.BeginInvoke(new Action(() =>
+            Action showAction = () =>
             {
                 try
                 {
-                    CloseCurrent();
+                    // Synchronously close any existing instance BEFORE creating the new one (fixes race condition)
+                    CloseCurrentSync();
 
-                    var ps = System.Windows.Forms.Screen.PrimaryScreen;
+                    int dipW = Math.Max(800, (int)SystemParameters.PrimaryScreenWidth);
+                    int dipH = Math.Max(600, (int)SystemParameters.PrimaryScreenHeight);
                     targetBounds = new NativeMethods.RECT
                     {
-                        Left = ps.Bounds.Left,
-                        Top = ps.Bounds.Top,
-                        Right = ps.Bounds.Right,
-                        Bottom = ps.Bounds.Bottom
+                        Left = 0,
+                        Top = 0,
+                        Right = dipW,
+                        Bottom = dipH
                     };
 
-                    var win = new OverlayWindow(targetBounds, scene);
+                    var win = new OverlayWindow(targetBounds, scene, false);
                     lock (_instanceLock)
                     {
                         _activeInstance = win;
@@ -1967,7 +1985,7 @@ namespace FlinchApp
                     if (hwnd != IntPtr.Zero)
                     {
                         NativeMethods.MakeToolWindow(hwnd);
-                        NativeMethods.SetWindowPos(hwnd, new IntPtr(-1), 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0040); // HWND_TOPMOST | SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW
+                        NativeMethods.SetWindowPos(hwnd, new IntPtr(-1), 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0040);
                     }
 
                     FlinchEnv.Log(string.Format("[OverlayWindow] Window active on screen at ({0},{1}) {2}x{3}", win.Left, win.Top, win.Width, win.Height));
@@ -1976,25 +1994,48 @@ namespace FlinchApp
                 {
                     FlinchEnv.Log("[OverlayWindow] ShowScene exception: " + ex.ToString());
                 }
-            }));
+            };
+
+            if (Application.Current != null && Application.Current.Dispatcher != null)
+            {
+                if (Application.Current.Dispatcher.CheckAccess())
+                    showAction();
+                else
+                    Application.Current.Dispatcher.BeginInvoke(showAction);
+            }
+            else
+            {
+                showAction();
+            }
+        }
+
+        private static void CloseCurrentSync()
+        {
+            OverlayWindow toClose = null;
+            lock (_instanceLock)
+            {
+                toClose = _activeInstance;
+                _activeInstance = null;
+            }
+            if (toClose != null)
+            {
+                try { toClose.Close(); } catch { }
+            }
         }
 
         public static void CloseCurrent()
         {
-            Application.Current.Dispatcher.BeginInvoke(new Action(() =>
+            if (Application.Current != null && Application.Current.Dispatcher != null && !Application.Current.Dispatcher.CheckAccess())
             {
-                lock (_instanceLock)
-                {
-                    if (_activeInstance != null)
-                    {
-                        try { _activeInstance.Close(); } catch { }
-                        _activeInstance = null;
-                    }
-                }
-            }));
+                Application.Current.Dispatcher.BeginInvoke(new Action(CloseCurrentSync));
+            }
+            else
+            {
+                CloseCurrentSync();
+            }
         }
 
-        public OverlayWindow(NativeMethods.RECT targetBounds, ScenePayload scene)
+        public OverlayWindow(NativeMethods.RECT targetBounds, ScenePayload scene, bool immediateRender = false)
         {
             WindowStyle = WindowStyle.None;
             AllowsTransparency = true;
@@ -2016,51 +2057,68 @@ namespace FlinchApp
             };
             Content = _canvas;
 
-            // 1. Top-right floating dismiss pill: [ ✕ Dismiss (Esc) ]
+            // 1. Top-right floating dismiss pill: clean human-crafted design
             var dismissBorder = new Border
             {
-                Background = new SolidColorBrush(Color.FromArgb(240, 24, 28, 38)),
-                BorderBrush = new SolidColorBrush(Color.FromArgb(180, 148, 163, 184)),
-                BorderThickness = new Thickness(1.5),
-                CornerRadius = new CornerRadius(14),
-                Padding = new Thickness(12, 6, 14, 6),
+                Background = new SolidColorBrush(Color.FromRgb(255, 255, 255)),
+                BorderBrush = new SolidColorBrush(Color.FromRgb(226, 232, 240)),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(8),
+                Padding = new Thickness(12, 6, 12, 6),
                 Cursor = Cursors.Hand,
-                Effect = new DropShadowEffect { BlurRadius = 14, Opacity = 0.7, ShadowDepth = 2 }
+                Effect = new DropShadowEffect { Color = Colors.Black, BlurRadius = 12, Opacity = 0.12, ShadowDepth = 2 }
             };
             var dismissStack = new StackPanel { Orientation = Orientation.Horizontal };
             dismissStack.Children.Add(new TextBlock
             {
-                Text = "✕",
-                Foreground = new SolidColorBrush(Color.FromRgb(248, 113, 113)),
-                FontWeight = FontWeights.Bold,
-                FontSize = 13,
-                Margin = new Thickness(0, 0, 7, 0)
-            });
-            dismissStack.Children.Add(new TextBlock
-            {
-                Text = "Dismiss Overlay (Esc)",
-                Foreground = Brushes.White,
+                Text = "Dismiss",
+                Foreground = new SolidColorBrush(Color.FromRgb(15, 23, 42)),
                 FontSize = 12,
                 FontWeight = FontWeights.SemiBold,
-                FontFamily = new FontFamily("Segoe UI Semibold, Segoe UI")
+                FontFamily = new FontFamily("Segoe UI Semibold, Segoe UI"),
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(0, 0, 8, 0)
             });
+            var escKeycap = new Border
+            {
+                Background = new SolidColorBrush(Color.FromRgb(241, 245, 249)),
+                BorderBrush = new SolidColorBrush(Color.FromRgb(203, 213, 225)),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(4),
+                Padding = new Thickness(5, 1, 5, 1),
+                VerticalAlignment = VerticalAlignment.Center,
+                Child = new TextBlock
+                {
+                    Text = "Esc",
+                    Foreground = new SolidColorBrush(Color.FromRgb(100, 116, 139)),
+                    FontSize = 10.5,
+                    FontFamily = new FontFamily("Consolas, Segoe UI")
+                }
+            };
+            dismissStack.Children.Add(escKeycap);
             dismissBorder.Child = dismissStack;
             dismissBorder.MouseLeftButtonDown += (s, e) => DismissWithAnimation();
 
-            Canvas.SetRight(dismissBorder, 22);
-            Canvas.SetTop(dismissBorder, 22);
+            Canvas.SetRight(dismissBorder, 24);
+            Canvas.SetTop(dismissBorder, 24);
             _canvas.Children.Add(dismissBorder);
 
             // 2. Render each scene object onto the Canvas
-            RenderSceneObjects(scene);
+            RenderSceneObjects(scene, immediateRender);
 
-            // 3. Entrance animation: Smooth fade-in
-            Opacity = 0.0;
-            var fadeIn = new System.Windows.Media.Animation.DoubleAnimation(0.0, 1.0, new Duration(TimeSpan.FromMilliseconds(220)));
-            BeginAnimation(UIElement.OpacityProperty, fadeIn);
+            if (immediateRender)
+            {
+                Opacity = 1.0;
+            }
+            else
+            {
+                Opacity = 0.0;
+                var fadeIn = new System.Windows.Media.Animation.DoubleAnimation(0.0, 1.0, new Duration(TimeSpan.FromMilliseconds(180)));
+                BeginAnimation(UIElement.OpacityProperty, fadeIn);
+            }
 
-            // 4. Auto-dismiss timer (default 15 seconds so user has time to view)
-            int duration = scene.durationMs >= 4000 ? scene.durationMs : 15000;
+            // 4. Auto-dismiss timer (default 18 seconds so user has time to view)
+            int duration = scene.durationMs >= 4000 ? scene.durationMs : 18000;
             _autoDismissTimer = new DispatcherTimer
             {
                 Interval = TimeSpan.FromMilliseconds(duration)
@@ -2084,7 +2142,7 @@ namespace FlinchApp
             };
         }
 
-        private void RenderSceneObjects(ScenePayload scene)
+        private void RenderSceneObjects(ScenePayload scene, bool immediateRender = false)
         {
             if (scene.objects == null || scene.objects.Count == 0) return;
 
@@ -2095,24 +2153,23 @@ namespace FlinchApp
                 if (obj == null) continue;
 
                 int delay = 0;
-                if (obj.delayMs.HasValue && obj.delayMs.Value >= 0)
+                if (!immediateRender)
                 {
-                    delay = obj.delayMs.Value;
-                }
-                else if (obj.step.HasValue && obj.step.Value > 1)
-                {
-                    delay = (obj.step.Value - 1) * 1300;
-                }
-                else if (scene.objects.Count > 1)
-                {
-                    delay = i * 1100;
+                    if (obj.delayMs.HasValue && obj.delayMs.Value >= 0)
+                    {
+                        delay = obj.delayMs.Value;
+                    }
+                    else if (obj.step.HasValue && obj.step.Value > 1)
+                    {
+                        delay = (obj.step.Value - 1) * 900;
+                    }
                 }
 
                 if (delay > maxDelay) maxDelay = delay;
 
-                if (delay <= 0)
+                if (delay <= 0 || immediateRender)
                 {
-                    RenderSingleObject(obj);
+                    RenderSingleObject(obj, immediateRender);
                 }
                 else
                 {
@@ -2122,47 +2179,47 @@ namespace FlinchApp
                         Dispatcher.BeginInvoke(new Action(() =>
                         {
                             if (_isDismissing) return;
-                            RenderSingleObject(obj);
+                            RenderSingleObject(obj, false);
                         }));
                     });
                 }
             }
 
-            int totalLifeMs = Math.Max(scene.durationMs, maxDelay + 9000);
+            int totalLifeMs = Math.Max(scene.durationMs, maxDelay + 12000);
             if (_autoDismissTimer != null)
             {
                 _autoDismissTimer.Interval = TimeSpan.FromMilliseconds(totalLifeMs);
             }
         }
 
-        private void RenderSingleObject(SceneObjectPayload obj)
+        private void RenderSingleObject(SceneObjectPayload obj, bool immediate = false)
         {
             if (obj == null || _isDismissing) return;
             string type = (obj.type ?? "").ToLowerInvariant().Trim();
 
             if (type == "arrow" && obj.from != null && obj.to != null)
             {
-                RenderArrow(obj);
+                RenderArrow(obj, immediate);
             }
             else if (type == "circle" || type == "ring")
             {
-                RenderCircle(obj);
+                RenderCircle(obj, immediate);
             }
             else if (type == "draw" || type == "pen" || type == "path" || type == "line")
             {
-                RenderDraw(obj);
+                RenderDraw(obj, immediate);
             }
             else if (type == "highlight")
             {
-                RenderHighlight(obj);
+                RenderHighlight(obj, immediate);
             }
             else if (type == "outline" && obj.rect != null)
             {
-                RenderOutline(obj);
+                RenderOutline(obj, immediate);
             }
             else if (type == "callout" && obj.rect != null)
             {
-                RenderCallout(obj);
+                RenderCallout(obj, immediate);
             }
             else if (type == "equation" && obj.rect != null)
             {
@@ -2174,7 +2231,7 @@ namespace FlinchApp
             }
             else if (type == "notepad" || type == "notebook")
             {
-                RenderNotepadBook(obj);
+                RenderNotepadBook(obj, immediate);
             }
         }
 
@@ -2184,18 +2241,23 @@ namespace FlinchApp
             try
             {
                 colorStr = colorStr.Trim();
+                // Map legacy neon green #3DDC84 to crisp human-crafted Cobalt Blue #0284C7
+                if (colorStr.Equals("#3DDC84", StringComparison.OrdinalIgnoreCase) ||
+                    colorStr.Equals("green", StringComparison.OrdinalIgnoreCase) ||
+                    colorStr.Equals("mint", StringComparison.OrdinalIgnoreCase))
+                {
+                    return Color.FromRgb(0x02, 0x84, 0xC7);
+                }
                 if (colorStr.StartsWith("#"))
                 {
                     return (Color)ColorConverter.ConvertFromString(colorStr);
                 }
-                if (colorStr.Equals("green", StringComparison.OrdinalIgnoreCase) || colorStr.Equals("mint", StringComparison.OrdinalIgnoreCase))
-                    return Color.FromRgb(0x3D, 0xDC, 0x84);
                 if (colorStr.Equals("white", StringComparison.OrdinalIgnoreCase))
                     return Colors.White;
                 if (colorStr.Equals("yellow", StringComparison.OrdinalIgnoreCase))
-                    return Color.FromRgb(0xFA, 0xCC, 0x15);
+                    return Color.FromRgb(0xD9, 0x77, 0x06);
                 if (colorStr.Equals("cyan", StringComparison.OrdinalIgnoreCase) || colorStr.Equals("blue", StringComparison.OrdinalIgnoreCase))
-                    return Color.FromRgb(0x38, 0xBD, 0xF8);
+                    return Color.FromRgb(0x02, 0x84, 0xC7);
                 return (Color)ColorConverter.ConvertFromString(colorStr);
             }
             catch
@@ -2204,7 +2266,41 @@ namespace FlinchApp
             }
         }
 
-        private void RenderCircle(SceneObjectPayload obj)
+        private static Border CreateAnnotationLabel(string text, Color accentColor)
+        {
+            var stack = new StackPanel { Orientation = Orientation.Horizontal };
+            stack.Children.Add(new Border
+            {
+                Width = 6,
+                Height = 6,
+                CornerRadius = new CornerRadius(3),
+                Background = new SolidColorBrush(accentColor),
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(0, 0, 7, 0)
+            });
+            stack.Children.Add(new TextBlock
+            {
+                Text = text,
+                Foreground = new SolidColorBrush(Color.FromRgb(15, 23, 42)),
+                FontSize = 12,
+                FontWeight = FontWeights.SemiBold,
+                FontFamily = new FontFamily("Segoe UI Semibold, Segoe UI"),
+                VerticalAlignment = VerticalAlignment.Center
+            });
+
+            return new Border
+            {
+                Background = new SolidColorBrush(Color.FromRgb(255, 255, 255)),
+                BorderBrush = new SolidColorBrush(Color.FromRgb(203, 213, 225)),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(6),
+                Padding = new Thickness(10, 5, 10, 5),
+                Child = stack,
+                Effect = new DropShadowEffect { Color = Colors.Black, BlurRadius = 10, Opacity = 0.14, ShadowDepth = 2 }
+            };
+        }
+
+        private void RenderCircle(SceneObjectPayload obj, bool immediate = false)
         {
             double cx = 0, cy = 0, radius = 35.0;
             if (obj.from != null)
@@ -2228,66 +2324,59 @@ namespace FlinchApp
             }
             else return;
 
-            radius = Math.Max(15.0, Math.Min(350.0, radius));
-            Color strokeCol = ParseSceneColor(obj.color, Color.FromRgb(0x3D, 0xDC, 0x84));
-            double strokeW = obj.strokeWidth.HasValue && obj.strokeWidth.Value > 0 ? obj.strokeWidth.Value : 3.5;
+            radius = Math.Max(18.0, Math.Min(350.0, radius));
+            Color strokeCol = ParseSceneColor(obj.color, Color.FromRgb(0x02, 0x84, 0xC7));
+            double strokeW = obj.strokeWidth.HasValue && obj.strokeWidth.Value > 0 ? obj.strokeWidth.Value : 2.5;
 
-            var st = new ScaleTransform(0.1, 0.1, radius, radius);
             var circleEl = new Ellipse
             {
                 Width = radius * 2.0,
                 Height = radius * 2.0,
                 Stroke = new SolidColorBrush(strokeCol),
                 StrokeThickness = strokeW,
-                Fill = new SolidColorBrush(Color.FromArgb(24, strokeCol.R, strokeCol.G, strokeCol.B)),
-                Effect = new DropShadowEffect { Color = strokeCol, BlurRadius = 18, Opacity = 0.95, ShadowDepth = 0 },
-                RenderTransform = st,
-                Opacity = 0.0
+                Fill = new SolidColorBrush(Color.FromArgb(22, strokeCol.R, strokeCol.G, strokeCol.B)),
+                Effect = new DropShadowEffect { Color = Colors.Black, BlurRadius = 8, Opacity = 0.15, ShadowDepth = 1 },
+                Opacity = immediate ? 1.0 : 0.0
             };
             Canvas.SetLeft(circleEl, cx - radius);
             Canvas.SetTop(circleEl, cy - radius);
             _canvas.Children.Add(circleEl);
 
-            var ease = new BackEase { Amplitude = 0.35, EasingMode = EasingMode.EaseOut };
-            var scaleAnim = new System.Windows.Media.Animation.DoubleAnimation(0.1, 1.0, new Duration(TimeSpan.FromMilliseconds(420))) { EasingFunction = ease };
-            var fadeAnim = new System.Windows.Media.Animation.DoubleAnimation(0.0, 1.0, new Duration(TimeSpan.FromMilliseconds(200)));
-            st.BeginAnimation(ScaleTransform.ScaleXProperty, scaleAnim);
-            st.BeginAnimation(ScaleTransform.ScaleYProperty, scaleAnim);
-            circleEl.BeginAnimation(UIElement.OpacityProperty, fadeAnim);
+            if (!immediate)
+            {
+                var st = new ScaleTransform(0.85, 0.85, radius, radius);
+                circleEl.RenderTransform = st;
+                var scaleAnim = new System.Windows.Media.Animation.DoubleAnimation(0.85, 1.0, new Duration(TimeSpan.FromMilliseconds(260)))
+                {
+                    EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
+                };
+                var fadeAnim = new System.Windows.Media.Animation.DoubleAnimation(0.0, 1.0, new Duration(TimeSpan.FromMilliseconds(180)));
+                st.BeginAnimation(ScaleTransform.ScaleXProperty, scaleAnim);
+                st.BeginAnimation(ScaleTransform.ScaleYProperty, scaleAnim);
+                circleEl.BeginAnimation(UIElement.OpacityProperty, fadeAnim);
+            }
 
             if (!string.IsNullOrWhiteSpace(obj.label) || !string.IsNullOrWhiteSpace(obj.text))
             {
                 string labelText = !string.IsNullOrWhiteSpace(obj.label) ? obj.label : obj.text;
-                var tag = new Border
-                {
-                    Background = new SolidColorBrush(Color.FromArgb(240, 15, 23, 42)),
-                    BorderBrush = new SolidColorBrush(strokeCol),
-                    BorderThickness = new Thickness(1.5),
-                    CornerRadius = new CornerRadius(6),
-                    Padding = new Thickness(8, 4, 8, 4),
-                    Child = new TextBlock
-                    {
-                        Text = labelText,
-                        Foreground = Brushes.White,
-                        FontSize = 12,
-                        FontFamily = new FontFamily("Segoe UI Bold, Segoe UI")
-                    },
-                    Effect = new DropShadowEffect { Color = strokeCol, BlurRadius = 12, Opacity = 0.7, ShadowDepth = 2 },
-                    Opacity = 0.0
-                };
-                Canvas.SetLeft(tag, Math.Max(10, Math.Min(Width - 220, cx - 35)));
-                Canvas.SetTop(tag, Math.Max(10, cy - radius - 30));
+                var tag = CreateAnnotationLabel(labelText, strokeCol);
+                tag.Opacity = immediate ? 1.0 : 0.0;
+                Canvas.SetLeft(tag, Math.Max(12, Math.Min(Width - 220, cx - 40)));
+                Canvas.SetTop(tag, Math.Max(12, cy - radius - 34));
                 _canvas.Children.Add(tag);
 
-                var tagFade = new System.Windows.Media.Animation.DoubleAnimation(0.0, 1.0, new Duration(TimeSpan.FromMilliseconds(250)))
+                if (!immediate)
                 {
-                    BeginTime = TimeSpan.FromMilliseconds(250)
-                };
-                tag.BeginAnimation(UIElement.OpacityProperty, tagFade);
+                    var tagFade = new System.Windows.Media.Animation.DoubleAnimation(0.0, 1.0, new Duration(TimeSpan.FromMilliseconds(200)))
+                    {
+                        BeginTime = TimeSpan.FromMilliseconds(120)
+                    };
+                    tag.BeginAnimation(UIElement.OpacityProperty, tagFade);
+                }
             }
         }
 
-        private void RenderHighlight(SceneObjectPayload obj)
+        private void RenderHighlight(SceneObjectPayload obj, bool immediate = false)
         {
             if (obj.rect == null) return;
             double rx = Math.Max(0.0, Math.Min(1.0, obj.rect.x)) * Width;
@@ -2295,63 +2384,54 @@ namespace FlinchApp
             double rw = Math.Max(32, Math.Min(1.0, obj.rect.w) * Width);
             double rh = Math.Max(24, Math.Min(1.0, obj.rect.h) * Height);
 
-            Color fillCol = ParseSceneColor(obj.color, Color.FromRgb(0xFA, 0xCC, 0x15));
+            Color fillCol = ParseSceneColor(obj.color, Color.FromRgb(0x02, 0x84, 0xC7));
             var highlightBox = new Border
             {
-                Width = 0.0,
+                Width = immediate ? rw : 0.0,
                 Height = rh,
-                Background = new SolidColorBrush(Color.FromArgb(115, fillCol.R, fillCol.G, fillCol.B)),
+                Background = new SolidColorBrush(Color.FromArgb(32, fillCol.R, fillCol.G, fillCol.B)),
                 BorderBrush = new SolidColorBrush(fillCol),
-                BorderThickness = new Thickness(2.8),
+                BorderThickness = new Thickness(2.0),
                 CornerRadius = new CornerRadius(6),
-                Effect = new DropShadowEffect { Color = fillCol, BlurRadius = 24, Opacity = 0.95, ShadowDepth = 0 }
+                Effect = new DropShadowEffect { Color = Colors.Black, BlurRadius = 10, Opacity = 0.12, ShadowDepth = 2 }
             };
             Canvas.SetLeft(highlightBox, rx);
             Canvas.SetTop(highlightBox, ry);
             _canvas.Children.Add(highlightBox);
 
-            var sweepAnim = new System.Windows.Media.Animation.DoubleAnimation(0.0, rw, new Duration(TimeSpan.FromMilliseconds(450)))
+            if (!immediate)
             {
-                EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
-            };
-            highlightBox.BeginAnimation(FrameworkElement.WidthProperty, sweepAnim);
+                var sweepAnim = new System.Windows.Media.Animation.DoubleAnimation(0.0, rw, new Duration(TimeSpan.FromMilliseconds(320)))
+                {
+                    EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
+                };
+                highlightBox.BeginAnimation(FrameworkElement.WidthProperty, sweepAnim);
+            }
 
             if (!string.IsNullOrWhiteSpace(obj.label) || !string.IsNullOrWhiteSpace(obj.text))
             {
                 string labelText = !string.IsNullOrWhiteSpace(obj.label) ? obj.label : obj.text;
-                var tag = new Border
-                {
-                    Background = new SolidColorBrush(Color.FromArgb(245, 15, 23, 42)),
-                    BorderBrush = new SolidColorBrush(fillCol),
-                    BorderThickness = new Thickness(2.0),
-                    CornerRadius = new CornerRadius(6),
-                    Padding = new Thickness(9, 4, 9, 4),
-                    Child = new TextBlock
-                    {
-                        Text = labelText,
-                        Foreground = Brushes.White,
-                        FontSize = 12.5,
-                        FontFamily = new FontFamily("Segoe UI Bold, Segoe UI")
-                    },
-                    Effect = new DropShadowEffect { Color = fillCol, BlurRadius = 14, Opacity = 0.85, ShadowDepth = 2 },
-                    Opacity = 0.0
-                };
+                var tag = CreateAnnotationLabel(labelText, fillCol);
+                tag.Opacity = immediate ? 1.0 : 0.0;
                 Canvas.SetLeft(tag, rx);
-                Canvas.SetTop(tag, Math.Max(0, ry - 30));
+                Canvas.SetTop(tag, Math.Max(8, ry - 34));
                 _canvas.Children.Add(tag);
 
-                var tagFade = new System.Windows.Media.Animation.DoubleAnimation(0.0, 1.0, new Duration(TimeSpan.FromMilliseconds(220)))
+                if (!immediate)
                 {
-                    BeginTime = TimeSpan.FromMilliseconds(300)
-                };
-                tag.BeginAnimation(UIElement.OpacityProperty, tagFade);
+                    var tagFade = new System.Windows.Media.Animation.DoubleAnimation(0.0, 1.0, new Duration(TimeSpan.FromMilliseconds(200)))
+                    {
+                        BeginTime = TimeSpan.FromMilliseconds(160)
+                    };
+                    tag.BeginAnimation(UIElement.OpacityProperty, tagFade);
+                }
             }
         }
 
-        private void RenderDraw(SceneObjectPayload obj)
+        private void RenderDraw(SceneObjectPayload obj, bool immediate = false)
         {
-            Color strokeCol = ParseSceneColor(obj.color, Color.FromRgb(0x3D, 0xDC, 0x84));
-            double strokeW = obj.strokeWidth.HasValue && obj.strokeWidth.Value > 0 ? obj.strokeWidth.Value : 4.0;
+            Color strokeCol = ParseSceneColor(obj.color, Color.FromRgb(0x02, 0x84, 0xC7));
+            double strokeW = obj.strokeWidth.HasValue && obj.strokeWidth.Value > 0 ? obj.strokeWidth.Value : 3.0;
 
             if (obj.points != null && obj.points.Count >= 2)
             {
@@ -2371,40 +2451,33 @@ namespace FlinchApp
                     StrokeLineJoin = PenLineJoin.Round,
                     StrokeStartLineCap = PenLineCap.Round,
                     StrokeEndLineCap = PenLineCap.Round,
-                    Effect = new DropShadowEffect { Color = strokeCol, BlurRadius = 14, Opacity = 0.85, ShadowDepth = 0 },
-                    Opacity = 0.0
+                    Opacity = immediate ? 1.0 : 0.0
                 };
                 _canvas.Children.Add(polyline);
 
-                var drawFade = new System.Windows.Media.Animation.DoubleAnimation(0.0, 1.0, new Duration(TimeSpan.FromMilliseconds(300)));
-                polyline.BeginAnimation(UIElement.OpacityProperty, drawFade);
+                if (!immediate)
+                {
+                    var drawFade = new System.Windows.Media.Animation.DoubleAnimation(0.0, 1.0, new Duration(TimeSpan.FromMilliseconds(220)));
+                    polyline.BeginAnimation(UIElement.OpacityProperty, drawFade);
+                }
 
                 if (!string.IsNullOrWhiteSpace(obj.label))
                 {
                     var firstPt = pts[0];
-                    var tag = new Border
-                    {
-                        Background = new SolidColorBrush(strokeCol),
-                        CornerRadius = new CornerRadius(4),
-                        Padding = new Thickness(6, 2, 6, 2),
-                        Child = new TextBlock
-                        {
-                            Text = obj.label,
-                            Foreground = new SolidColorBrush(Color.FromRgb(15, 23, 42)),
-                            FontSize = 11,
-                            FontFamily = new FontFamily("Segoe UI Bold, Segoe UI")
-                        },
-                        Opacity = 0.0
-                    };
-                    Canvas.SetLeft(tag, Math.Max(10, Math.Min(Width - 140, firstPt.X)));
-                    Canvas.SetTop(tag, Math.Max(10, firstPt.Y - 24));
+                    var tag = CreateAnnotationLabel(obj.label, strokeCol);
+                    tag.Opacity = immediate ? 1.0 : 0.0;
+                    Canvas.SetLeft(tag, Math.Max(10, Math.Min(Width - 160, firstPt.X)));
+                    Canvas.SetTop(tag, Math.Max(10, firstPt.Y - 32));
                     _canvas.Children.Add(tag);
 
-                    var tagFade = new System.Windows.Media.Animation.DoubleAnimation(0.0, 1.0, new Duration(TimeSpan.FromMilliseconds(200)))
+                    if (!immediate)
                     {
-                        BeginTime = TimeSpan.FromMilliseconds(200)
-                    };
-                    tag.BeginAnimation(UIElement.OpacityProperty, tagFade);
+                        var tagFade = new System.Windows.Media.Animation.DoubleAnimation(0.0, 1.0, new Duration(TimeSpan.FromMilliseconds(180)))
+                        {
+                            BeginTime = TimeSpan.FromMilliseconds(120)
+                        };
+                        tag.BeginAnimation(UIElement.OpacityProperty, tagFade);
+                    }
                 }
             }
             else if (!string.IsNullOrWhiteSpace(obj.path))
@@ -2420,50 +2493,55 @@ namespace FlinchApp
                         StrokeLineJoin = PenLineJoin.Round,
                         StrokeStartLineCap = PenLineCap.Round,
                         StrokeEndLineCap = PenLineCap.Round,
-                        Effect = new DropShadowEffect { Color = strokeCol, BlurRadius = 14, Opacity = 0.85, ShadowDepth = 0 },
-                        Opacity = 0.0
+                        Opacity = immediate ? 1.0 : 0.0
                     };
                     _canvas.Children.Add(pathEl);
-                    pathEl.BeginAnimation(UIElement.OpacityProperty, new System.Windows.Media.Animation.DoubleAnimation(0.0, 1.0, new Duration(TimeSpan.FromMilliseconds(300))));
+                    if (!immediate)
+                    {
+                        pathEl.BeginAnimation(UIElement.OpacityProperty, new System.Windows.Media.Animation.DoubleAnimation(0.0, 1.0, new Duration(TimeSpan.FromMilliseconds(220))));
+                    }
                 }
                 catch { }
             }
         }
 
-        private void RenderArrow(SceneObjectPayload obj)
+        private void RenderArrow(SceneObjectPayload obj, bool immediate = false)
         {
             double startX = Math.Max(0.0, Math.Min(1.0, obj.from.x)) * Width;
             double startY = Math.Max(0.0, Math.Min(1.0, obj.from.y)) * Height;
             double endX = Math.Max(0.0, Math.Min(1.0, obj.to.x)) * Width;
             double endY = Math.Max(0.0, Math.Min(1.0, obj.to.y)) * Height;
 
-            Color strokeCol = ParseSceneColor(obj.color, Color.FromRgb(0x38, 0xBD, 0xF8));
+            Color strokeCol = ParseSceneColor(obj.color, Color.FromRgb(0x02, 0x84, 0xC7));
             var arrowLine = new Line
             {
                 X1 = startX,
                 Y1 = startY,
-                X2 = startX,
-                Y2 = startY,
+                X2 = immediate ? endX : startX,
+                Y2 = immediate ? endY : startY,
                 Stroke = new SolidColorBrush(strokeCol),
-                StrokeThickness = 3.5,
+                StrokeThickness = 2.8,
                 StrokeStartLineCap = PenLineCap.Round,
                 StrokeEndLineCap = PenLineCap.Round,
-                Effect = new DropShadowEffect { Color = strokeCol, BlurRadius = 16, Opacity = 0.9, ShadowDepth = 0 }
+                Effect = new DropShadowEffect { Color = Colors.Black, BlurRadius = 6, Opacity = 0.16, ShadowDepth = 1 }
             };
             _canvas.Children.Add(arrowLine);
 
-            var lineAnimX = new System.Windows.Media.Animation.DoubleAnimation(startX, endX, new Duration(TimeSpan.FromMilliseconds(380)))
+            if (!immediate)
             {
-                EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
-            };
-            var lineAnimY = new System.Windows.Media.Animation.DoubleAnimation(startY, endY, new Duration(TimeSpan.FromMilliseconds(380)))
-            {
-                EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
-            };
-            arrowLine.BeginAnimation(Line.X2Property, lineAnimX);
-            arrowLine.BeginAnimation(Line.Y2Property, lineAnimY);
+                var lineAnimX = new System.Windows.Media.Animation.DoubleAnimation(startX, endX, new Duration(TimeSpan.FromMilliseconds(280)))
+                {
+                    EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
+                };
+                var lineAnimY = new System.Windows.Media.Animation.DoubleAnimation(startY, endY, new Duration(TimeSpan.FromMilliseconds(280)))
+                {
+                    EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
+                };
+                arrowLine.BeginAnimation(Line.X2Property, lineAnimX);
+                arrowLine.BeginAnimation(Line.Y2Property, lineAnimY);
+            }
 
-            double arrowLen = 16.0;
+            double arrowLen = 14.0;
             double arrowAngle = Math.PI / 6.0;
             double angle = Math.Atan2(endY - startY, endX - startX);
 
@@ -2471,134 +2549,97 @@ namespace FlinchApp
             var p2 = new Point(endX - arrowLen * Math.Cos(angle - arrowAngle), endY - arrowLen * Math.Sin(angle - arrowAngle));
             var p3 = new Point(endX - arrowLen * Math.Cos(angle + arrowAngle), endY - arrowLen * Math.Sin(angle + arrowAngle));
 
-            var tipSt = new ScaleTransform(0.0, 0.0, endX, endY);
             var tip = new Polygon
             {
                 Points = new PointCollection(new[] { p1, p2, p3 }),
                 Fill = new SolidColorBrush(strokeCol),
-                Effect = new DropShadowEffect { Color = strokeCol, BlurRadius = 16, Opacity = 0.9, ShadowDepth = 0 },
-                RenderTransform = tipSt,
-                Opacity = 0.0
+                Opacity = immediate ? 1.0 : 0.0
             };
             _canvas.Children.Add(tip);
 
-            var tipAnim = new System.Windows.Media.Animation.DoubleAnimation(0.0, 1.0, new Duration(TimeSpan.FromMilliseconds(220)))
+            if (!immediate)
             {
-                BeginTime = TimeSpan.FromMilliseconds(320),
-                EasingFunction = new BackEase { Amplitude = 0.4, EasingMode = EasingMode.EaseOut }
-            };
-            tipSt.BeginAnimation(ScaleTransform.ScaleXProperty, tipAnim);
-            tipSt.BeginAnimation(ScaleTransform.ScaleYProperty, tipAnim);
-            tip.BeginAnimation(UIElement.OpacityProperty, new System.Windows.Media.Animation.DoubleAnimation(0.0, 1.0, new Duration(TimeSpan.FromMilliseconds(150))) { BeginTime = TimeSpan.FromMilliseconds(320) });
+                tip.BeginAnimation(UIElement.OpacityProperty, new System.Windows.Media.Animation.DoubleAnimation(0.0, 1.0, new Duration(TimeSpan.FromMilliseconds(150))) { BeginTime = TimeSpan.FromMilliseconds(220) });
+            }
 
             if (!string.IsNullOrWhiteSpace(obj.label) || !string.IsNullOrWhiteSpace(obj.text))
             {
                 string labelText = !string.IsNullOrWhiteSpace(obj.label) ? obj.label : obj.text;
-                var labelBorder = new Border
-                {
-                    Background = new SolidColorBrush(Color.FromArgb(240, 15, 23, 42)),
-                    BorderBrush = new SolidColorBrush(strokeCol),
-                    BorderThickness = new Thickness(1.5),
-                    CornerRadius = new CornerRadius(8),
-                    Padding = new Thickness(8, 4, 8, 4),
-                    Child = new TextBlock
-                    {
-                        Text = labelText,
-                        Foreground = Brushes.White,
-                        FontSize = 11.5,
-                        FontFamily = new FontFamily("Segoe UI Semibold, Segoe UI")
-                    },
-                    Effect = new DropShadowEffect { BlurRadius = 10, Opacity = 0.7, ShadowDepth = 2 },
-                    Opacity = 0.0
-                };
-                Canvas.SetLeft(labelBorder, Math.Max(10, Math.Min(Width - 160, (startX + endX) / 2.0 - 30)));
-                Canvas.SetTop(labelBorder, Math.Max(10, Math.Min(Height - 40, (startY + endY) / 2.0 - 28)));
+                var labelBorder = CreateAnnotationLabel(labelText, strokeCol);
+                labelBorder.Opacity = immediate ? 1.0 : 0.0;
+                Canvas.SetLeft(labelBorder, Math.Max(12, Math.Min(Width - 180, startX - 20)));
+                Canvas.SetTop(labelBorder, Math.Max(12, Math.Min(Height - 44, startY - 36)));
                 _canvas.Children.Add(labelBorder);
 
-                var tagFade = new System.Windows.Media.Animation.DoubleAnimation(0.0, 1.0, new Duration(TimeSpan.FromMilliseconds(200)))
+                if (!immediate)
                 {
-                    BeginTime = TimeSpan.FromMilliseconds(350)
-                };
-                labelBorder.BeginAnimation(UIElement.OpacityProperty, tagFade);
+                    var tagFade = new System.Windows.Media.Animation.DoubleAnimation(0.0, 1.0, new Duration(TimeSpan.FromMilliseconds(180)))
+                    {
+                        BeginTime = TimeSpan.FromMilliseconds(220)
+                    };
+                    labelBorder.BeginAnimation(UIElement.OpacityProperty, tagFade);
+                }
             }
         }
 
-        private void RenderOutline(SceneObjectPayload obj)
+        private void RenderOutline(SceneObjectPayload obj, bool immediate = false)
         {
             double rx = Math.Max(0.0, Math.Min(1.0, obj.rect.x)) * Width;
             double ry = Math.Max(0.0, Math.Min(1.0, obj.rect.y)) * Height;
             double rw = Math.Max(20, Math.Min(1.0, obj.rect.w) * Width);
             double rh = Math.Max(20, Math.Min(1.0, obj.rect.h) * Height);
 
-            Color strokeCol = ParseSceneColor(obj.color, Color.FromRgb(56, 189, 248));
-            var st = new ScaleTransform(0.92, 0.92, rx + rw / 2.0, ry + rh / 2.0);
+            Color strokeCol = ParseSceneColor(obj.color, Color.FromRgb(0x02, 0x84, 0xC7));
             var outlineBorder = new Border
             {
                 Width = rw,
                 Height = rh,
-                BorderThickness = new Thickness(2.5),
+                BorderThickness = new Thickness(2.0),
                 BorderBrush = new SolidColorBrush(strokeCol),
-                CornerRadius = new CornerRadius(8),
-                Background = new SolidColorBrush(Color.FromArgb(24, strokeCol.R, strokeCol.G, strokeCol.B)),
-                Effect = new DropShadowEffect { Color = strokeCol, BlurRadius = 16, Opacity = 0.85, ShadowDepth = 0 },
-                RenderTransform = st,
-                Opacity = 0.0
+                CornerRadius = new CornerRadius(6),
+                Background = new SolidColorBrush(Color.FromArgb(18, strokeCol.R, strokeCol.G, strokeCol.B)),
+                Opacity = immediate ? 1.0 : 0.0
             };
             Canvas.SetLeft(outlineBorder, rx);
             Canvas.SetTop(outlineBorder, ry);
             _canvas.Children.Add(outlineBorder);
 
-            var popAnim = new System.Windows.Media.Animation.DoubleAnimation(0.92, 1.0, new Duration(TimeSpan.FromMilliseconds(320)))
+            if (!immediate)
             {
-                EasingFunction = new BackEase { Amplitude = 0.3, EasingMode = EasingMode.EaseOut }
-            };
-            st.BeginAnimation(ScaleTransform.ScaleXProperty, popAnim);
-            st.BeginAnimation(ScaleTransform.ScaleYProperty, popAnim);
-            outlineBorder.BeginAnimation(UIElement.OpacityProperty, new System.Windows.Media.Animation.DoubleAnimation(0.0, 1.0, new Duration(TimeSpan.FromMilliseconds(200))));
+                outlineBorder.BeginAnimation(UIElement.OpacityProperty, new System.Windows.Media.Animation.DoubleAnimation(0.0, 1.0, new Duration(TimeSpan.FromMilliseconds(180))));
+            }
 
             if (!string.IsNullOrWhiteSpace(obj.label) || !string.IsNullOrWhiteSpace(obj.text))
             {
                 string labelText = !string.IsNullOrWhiteSpace(obj.label) ? obj.label : obj.text;
-                var tag = new Border
-                {
-                    Background = new SolidColorBrush(strokeCol),
-                    CornerRadius = new CornerRadius(4),
-                    Padding = new Thickness(6, 2, 6, 2),
-                    Child = new TextBlock
-                    {
-                        Text = labelText,
-                        Foreground = new SolidColorBrush(Color.FromRgb(15, 23, 42)),
-                        FontSize = 11,
-                        FontFamily = new FontFamily("Segoe UI Bold, Segoe UI")
-                    },
-                    Opacity = 0.0
-                };
+                var tag = CreateAnnotationLabel(labelText, strokeCol);
+                tag.Opacity = immediate ? 1.0 : 0.0;
                 Canvas.SetLeft(tag, rx);
-                Canvas.SetTop(tag, Math.Max(0, ry - 22));
+                Canvas.SetTop(tag, Math.Max(8, ry - 32));
                 _canvas.Children.Add(tag);
 
-                tag.BeginAnimation(UIElement.OpacityProperty, new System.Windows.Media.Animation.DoubleAnimation(0.0, 1.0, new Duration(TimeSpan.FromMilliseconds(200))) { BeginTime = TimeSpan.FromMilliseconds(250) });
+                if (!immediate)
+                {
+                    tag.BeginAnimation(UIElement.OpacityProperty, new System.Windows.Media.Animation.DoubleAnimation(0.0, 1.0, new Duration(TimeSpan.FromMilliseconds(180))) { BeginTime = TimeSpan.FromMilliseconds(120) });
+                }
             }
         }
 
-        private void RenderCallout(SceneObjectPayload obj)
+        private void RenderCallout(SceneObjectPayload obj, bool immediate = false)
         {
             double cx = Math.Max(0.0, Math.Min(1.0, obj.rect.x)) * Width;
             double cy = Math.Max(0.0, Math.Min(1.0, obj.rect.y)) * Height;
 
-            Color strokeCol = ParseSceneColor(obj.color, Color.FromRgb(0x3D, 0xDC, 0x84));
-            var st = new ScaleTransform(0.85, 0.85, 50, 20);
             var calloutBorder = new Border
             {
-                Background = new SolidColorBrush(Color.FromArgb(245, 15, 23, 42)),
-                BorderBrush = new SolidColorBrush(strokeCol),
-                BorderThickness = new Thickness(2),
+                Background = new SolidColorBrush(Color.FromRgb(255, 255, 255)),
+                BorderBrush = new SolidColorBrush(Color.FromRgb(226, 232, 240)),
+                BorderThickness = new Thickness(1),
                 CornerRadius = new CornerRadius(10),
-                Padding = new Thickness(12, 10, 12, 10),
-                MaxWidth = Math.Min(380, Width * 0.5),
-                Effect = new DropShadowEffect { Color = strokeCol, BlurRadius = 18, Opacity = 0.8, ShadowDepth = 3 },
-                RenderTransform = st,
-                Opacity = 0.0
+                Padding = new Thickness(14, 12, 14, 12),
+                MaxWidth = Math.Min(360, Width * 0.45),
+                Effect = new DropShadowEffect { Color = Colors.Black, BlurRadius = 16, Opacity = 0.14, ShadowDepth = 4 },
+                Opacity = immediate ? 1.0 : 0.0
             };
             var stack = new StackPanel();
             if (!string.IsNullOrWhiteSpace(obj.label))
@@ -2606,32 +2647,31 @@ namespace FlinchApp
                 stack.Children.Add(new TextBlock
                 {
                     Text = obj.label,
-                    Foreground = new SolidColorBrush(strokeCol),
-                    FontSize = 11,
-                    FontFamily = new FontFamily("Segoe UI Bold, Segoe UI"),
-                    Margin = new Thickness(0, 0, 0, 3)
+                    Foreground = new SolidColorBrush(Color.FromRgb(15, 23, 42)),
+                    FontSize = 12.5,
+                    FontWeight = FontWeights.SemiBold,
+                    FontFamily = new FontFamily("Segoe UI Semibold, Segoe UI"),
+                    Margin = new Thickness(0, 0, 0, 4)
                 });
             }
             stack.Children.Add(new TextBlock
             {
                 Text = obj.text ?? obj.label ?? "",
-                Foreground = Brushes.White,
-                FontSize = 13,
-                FontFamily = new FontFamily("Segoe UI Semibold, Segoe UI"),
-                TextWrapping = TextWrapping.Wrap
+                Foreground = new SolidColorBrush(Color.FromRgb(71, 85, 105)),
+                FontSize = 12.5,
+                FontFamily = new FontFamily("Segoe UI"),
+                TextWrapping = TextWrapping.Wrap,
+                LineHeight = 18
             });
             calloutBorder.Child = stack;
-            Canvas.SetLeft(calloutBorder, Math.Max(10, Math.Min(Width - 390, cx)));
-            Canvas.SetTop(calloutBorder, Math.Max(10, Math.Min(Height - 120, cy)));
+            Canvas.SetLeft(calloutBorder, Math.Max(12, Math.Min(Width - 380, cx)));
+            Canvas.SetTop(calloutBorder, Math.Max(12, Math.Min(Height - 120, cy)));
             _canvas.Children.Add(calloutBorder);
 
-            var popAnim = new System.Windows.Media.Animation.DoubleAnimation(0.85, 1.0, new Duration(TimeSpan.FromMilliseconds(320)))
+            if (!immediate)
             {
-                EasingFunction = new BackEase { Amplitude = 0.3, EasingMode = EasingMode.EaseOut }
-            };
-            st.BeginAnimation(ScaleTransform.ScaleXProperty, popAnim);
-            st.BeginAnimation(ScaleTransform.ScaleYProperty, popAnim);
-            calloutBorder.BeginAnimation(UIElement.OpacityProperty, new System.Windows.Media.Animation.DoubleAnimation(0.0, 1.0, new Duration(TimeSpan.FromMilliseconds(200))));
+                calloutBorder.BeginAnimation(UIElement.OpacityProperty, new System.Windows.Media.Animation.DoubleAnimation(0.0, 1.0, new Duration(TimeSpan.FromMilliseconds(180))));
+            }
         }
 
         private void RenderEquation(SceneObjectPayload obj)
@@ -2641,30 +2681,22 @@ namespace FlinchApp
 
             var eqBorder = new Border
             {
-                Background = new SolidColorBrush(Color.FromArgb(245, 17, 24, 39)),
-                BorderBrush = new SolidColorBrush(Color.FromRgb(168, 85, 247)),
-                BorderThickness = new Thickness(1.5),
+                Background = new SolidColorBrush(Color.FromRgb(255, 255, 255)),
+                BorderBrush = new SolidColorBrush(Color.FromRgb(226, 232, 240)),
+                BorderThickness = new Thickness(1),
                 CornerRadius = new CornerRadius(10),
                 Padding = new Thickness(14, 10, 14, 10),
-                Effect = new DropShadowEffect { Color = Color.FromRgb(168, 85, 247), BlurRadius = 14, Opacity = 0.5, ShadowDepth = 2 }
+                Effect = new DropShadowEffect { Color = Colors.Black, BlurRadius = 14, Opacity = 0.12, ShadowDepth = 3 }
             };
             var eqStack = new StackPanel();
-            var eqHeader = new TextBlock
-            {
-                Text = "📐 FORMULA",
-                Foreground = new SolidColorBrush(Color.FromRgb(192, 132, 252)),
-                FontSize = 10,
-                FontFamily = new FontFamily("Segoe UI Bold, Segoe UI"),
-                Margin = new Thickness(0, 0, 0, 4)
-            };
             var eqText = new TextBlock
             {
                 Text = obj.latex ?? obj.text ?? "",
-                Foreground = new SolidColorBrush(Color.FromRgb(243, 232, 255)),
+                Foreground = new SolidColorBrush(Color.FromRgb(15, 23, 42)),
                 FontSize = 15,
+                FontWeight = FontWeights.SemiBold,
                 FontFamily = new FontFamily("Consolas, Cambria Math, Segoe UI")
             };
-            eqStack.Children.Add(eqHeader);
             eqStack.Children.Add(eqText);
             eqBorder.Child = eqStack;
             Canvas.SetLeft(eqBorder, Math.Max(10, Math.Min(Width - 320, eqX)));
@@ -2684,23 +2716,22 @@ namespace FlinchApp
                 Width = sw,
                 Height = sh,
                 BorderThickness = new Thickness(2),
-                BorderBrush = new SolidColorBrush(Color.FromArgb(180, 250, 204, 21)),
-                Background = new SolidColorBrush(Color.FromArgb(25, 250, 204, 21)),
-                CornerRadius = new CornerRadius(Math.Min(sw, sh) / 4.0),
-                Effect = new DropShadowEffect { Color = Color.FromRgb(250, 204, 21), BlurRadius = 20, Opacity = 0.8, ShadowDepth = 0 }
+                BorderBrush = new SolidColorBrush(Color.FromRgb(0x02, 0x84, 0xC7)),
+                Background = new SolidColorBrush(Color.FromArgb(20, 0x02, 0x84, 0xC7)),
+                CornerRadius = new CornerRadius(8)
             };
             Canvas.SetLeft(spotBorder, sx);
             Canvas.SetTop(spotBorder, sy);
             _canvas.Children.Add(spotBorder);
         }
 
-        private void RenderNotepadBook(SceneObjectPayload obj)
+        private void RenderNotepadBook(SceneObjectPayload obj, bool immediate = false)
         {
             if (obj == null || _isDismissing) return;
 
-            double cardW = Math.Min(420, Width * 0.45);
-            double cardX = Width - cardW - 32;
-            double cardY = 70;
+            double cardW = Math.Min(400, Width * 0.42);
+            double cardX = Width - cardW - 28;
+            double cardY = 68;
 
             if (obj.rect != null && obj.rect.w > 0.05)
             {
@@ -2708,92 +2739,120 @@ namespace FlinchApp
                 cardY = Math.Max(40, Math.Min(Height - 380, obj.rect.y * Height));
             }
 
+            // Human-crafted clean white surface card (#FFFFFF, 1px #E2E8F0 border, subtle natural drop shadow)
             var cardBorder = new Border
             {
                 Width = cardW,
-                Background = new SolidColorBrush(Color.FromArgb(246, 17, 24, 39)),
-                BorderBrush = new SolidColorBrush(Color.FromRgb(0x3D, 0xDC, 0x84)),
-                BorderThickness = new Thickness(1.8),
-                CornerRadius = new CornerRadius(14),
-                Padding = new Thickness(18, 16, 18, 16),
-                Effect = new DropShadowEffect { Color = Color.FromRgb(0x3D, 0xDC, 0x84), BlurRadius = 24, Opacity = 0.55, ShadowDepth = 4 },
-                Opacity = 0.0
+                Background = new SolidColorBrush(Color.FromRgb(255, 255, 255)),
+                BorderBrush = new SolidColorBrush(Color.FromRgb(226, 232, 240)),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(12),
+                Padding = new Thickness(20, 18, 20, 18),
+                Effect = new DropShadowEffect { Color = Colors.Black, BlurRadius = 22, Opacity = 0.14, ShadowDepth = 6 },
+                Opacity = immediate ? 1.0 : 0.0
             };
 
             var mainStack = new StackPanel();
 
-            // Card Header
-            var headerRow = new DockPanel { LastChildFill = false, Margin = new Thickness(0, 0, 0, 10) };
-            var headerStack = new StackPanel { Orientation = Orientation.Horizontal };
-            headerStack.Children.Add(new TextBlock
-            {
-                Text = !string.IsNullOrWhiteSpace(obj.imageUrl) ? "👤 " : "📓 ",
-                FontSize = 14,
-                VerticalAlignment = VerticalAlignment.Center
-            });
-            headerStack.Children.Add(new TextBlock
-            {
-                Text = string.IsNullOrWhiteSpace(obj.title) ? "Topic Overview" : obj.title,
-                Foreground = new SolidColorBrush(Color.FromRgb(0x3D, 0xDC, 0x84)),
-                FontWeight = FontWeights.Bold,
-                FontSize = 14,
-                FontFamily = new FontFamily("Segoe UI Semibold, Segoe UI"),
-                VerticalAlignment = VerticalAlignment.Center
-            });
-            headerRow.Children.Add(headerStack);
-            mainStack.Children.Add(headerRow);
-
-            // Wikimedia Portrait / Topic Image Row (if available)
+            // Portrait + Bio Header or Clean Title Header
             if (!string.IsNullOrWhiteSpace(obj.imageUrl))
             {
                 try
                 {
-                    var bioDock = new DockPanel { Margin = new Thickness(0, 0, 0, 12) };
-                    var bi = new System.Windows.Media.Imaging.BitmapImage();
-                    bi.BeginInit();
-                    bi.UriSource = new Uri(obj.imageUrl);
-                    bi.CacheOption = System.Windows.Media.Imaging.BitmapCacheOption.OnLoad;
-                    bi.EndInit();
-
+                    var bioDock = new DockPanel { Margin = new Thickness(0, 0, 0, 14) };
                     var img = new Image
                     {
-                        Source = bi,
-                        Width = 92,
-                        Height = 92,
+                        Width = 72,
+                        Height = 72,
                         Stretch = Stretch.UniformToFill,
-                        Clip = new RectangleGeometry(new Rect(0, 0, 92, 92), 10, 10)
+                        Clip = new RectangleGeometry(new Rect(0, 0, 72, 72), 8, 8)
                     };
                     var imgBorder = new Border
                     {
-                        BorderBrush = new SolidColorBrush(Color.FromRgb(0x3D, 0xDC, 0x84)),
-                        BorderThickness = new Thickness(2),
-                        CornerRadius = new CornerRadius(12),
+                        Width = 74,
+                        Height = 74,
+                        Background = new SolidColorBrush(Color.FromRgb(241, 245, 249)),
+                        BorderBrush = new SolidColorBrush(Color.FromRgb(226, 232, 240)),
+                        BorderThickness = new Thickness(1),
+                        CornerRadius = new CornerRadius(9),
                         Margin = new Thickness(0, 0, 14, 0),
-                        Effect = new DropShadowEffect { Color = Color.FromRgb(0x3D, 0xDC, 0x84), BlurRadius = 14, Opacity = 0.65, ShadowDepth = 2 },
+                        Visibility = Visibility.Collapsed,
                         Child = img
                     };
                     DockPanel.SetDock(imgBorder, Dock.Left);
                     bioDock.Children.Add(imgBorder);
 
+                    string capturedUrl = obj.imageUrl;
+                    Action<byte[]> applyImgBytes = (imgBytes) =>
+                    {
+                        try
+                        {
+                            using (var ms = new MemoryStream(imgBytes))
+                            {
+                                var bi = new System.Windows.Media.Imaging.BitmapImage();
+                                bi.BeginInit();
+                                bi.CacheOption = System.Windows.Media.Imaging.BitmapCacheOption.OnLoad;
+                                bi.StreamSource = ms;
+                                bi.EndInit();
+                                bi.Freeze();
+                                img.Source = bi;
+                                imgBorder.Visibility = Visibility.Visible;
+                            }
+                        }
+                        catch { }
+                    };
+
+                    if (immediate)
+                    {
+                        try
+                        {
+                            using (var hc = new HttpClient { Timeout = TimeSpan.FromSeconds(5) })
+                            {
+                                hc.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", "FlinchApp/1.0 (https://yasuntha.com; flinch@yasuntha.com)");
+                                byte[] imgBytes = hc.GetByteArrayAsync(capturedUrl).GetAwaiter().GetResult();
+                                if (imgBytes != null && imgBytes.Length > 100) applyImgBytes(imgBytes);
+                            }
+                        }
+                        catch { }
+                    }
+                    else
+                    {
+                        Task.Run(() =>
+                        {
+                            try
+                            {
+                                using (var hc = new HttpClient { Timeout = TimeSpan.FromSeconds(5) })
+                                {
+                                    hc.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", "FlinchApp/1.0 (https://yasuntha.com; flinch@yasuntha.com)");
+                                    byte[] imgBytes = hc.GetByteArrayAsync(capturedUrl).GetAwaiter().GetResult();
+                                    if (imgBytes != null && imgBytes.Length > 100)
+                                    {
+                                        Dispatcher.BeginInvoke(new Action(() => applyImgBytes(imgBytes)));
+                                    }
+                                }
+                            }
+                            catch { }
+                        });
+                    }
+
                     var bioTextStack = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
                     bioTextStack.Children.Add(new TextBlock
                     {
                         Text = string.IsNullOrWhiteSpace(obj.title) ? "Overview" : obj.title,
-                        Foreground = Brushes.White,
+                        Foreground = new SolidColorBrush(Color.FromRgb(15, 23, 42)),
                         FontSize = 16,
-                        FontWeight = FontWeights.Bold,
-                        FontFamily = new FontFamily("Segoe UI Bold, Segoe UI")
+                        FontWeight = FontWeights.SemiBold,
+                        FontFamily = new FontFamily("Segoe UI Semibold, Segoe UI")
                     });
                     if (!string.IsNullOrWhiteSpace(obj.subtitle))
                     {
                         bioTextStack.Children.Add(new TextBlock
                         {
                             Text = obj.subtitle,
-                            Foreground = new SolidColorBrush(Color.FromRgb(0x86, 0xEF, 0xAC)),
+                            Foreground = new SolidColorBrush(Color.FromRgb(100, 116, 139)),
                             FontSize = 12,
-                            FontWeight = FontWeights.SemiBold,
-                            FontFamily = new FontFamily("Segoe UI, Segoe UI Semibold"),
-                            Margin = new Thickness(0, 4, 0, 0),
+                            FontFamily = new FontFamily("Segoe UI"),
+                            Margin = new Thickness(0, 3, 0, 0),
                             TextWrapping = TextWrapping.Wrap
                         });
                     }
@@ -2802,161 +2861,157 @@ namespace FlinchApp
                 }
                 catch { }
             }
+            else
+            {
+                var titleStack = new StackPanel { Margin = new Thickness(0, 0, 0, 12) };
+                titleStack.Children.Add(new TextBlock
+                {
+                    Text = string.IsNullOrWhiteSpace(obj.title) ? "Reference Note" : obj.title,
+                    Foreground = new SolidColorBrush(Color.FromRgb(15, 23, 42)),
+                    FontWeight = FontWeights.SemiBold,
+                    FontSize = 16,
+                    FontFamily = new FontFamily("Segoe UI Semibold, Segoe UI")
+                });
+                if (!string.IsNullOrWhiteSpace(obj.subtitle))
+                {
+                    titleStack.Children.Add(new TextBlock
+                    {
+                        Text = obj.subtitle,
+                        Foreground = new SolidColorBrush(Color.FromRgb(100, 116, 139)),
+                        FontSize = 12,
+                        FontFamily = new FontFamily("Segoe UI"),
+                        Margin = new Thickness(0, 3, 0, 0),
+                        TextWrapping = TextWrapping.Wrap
+                    });
+                }
+                mainStack.Children.Add(titleStack);
+            }
 
-            // Divider line
+            // Crisp 1px neutral divider
             mainStack.Children.Add(new Border
             {
                 Height = 1,
-                Background = new SolidColorBrush(Color.FromArgb(50, 255, 255, 255)),
+                Background = new SolidColorBrush(Color.FromRgb(241, 245, 249)),
                 Margin = new Thickness(0, 0, 0, 12)
             });
 
-            // Modern Solution Panel
+            // Content Rows
             var modernPanel = new StackPanel();
             string solutionText = obj.text ?? "";
             var lines = solutionText.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
             foreach (var line in lines)
             {
-                bool isResult = line.IndexOf("Result", StringComparison.OrdinalIgnoreCase) >= 0 || line.IndexOf("Answer", StringComparison.OrdinalIgnoreCase) >= 0 || line.IndexOf("= 9", StringComparison.OrdinalIgnoreCase) >= 0;
+                bool isResult = line.IndexOf("Result", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                line.IndexOf("Answer", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                line.IndexOf("= 9", StringComparison.OrdinalIgnoreCase) >= 0;
+
                 var lineBorder = new Border
                 {
-                    Background = isResult ? new SolidColorBrush(Color.FromArgb(50, 0x3D, 0xDC, 0x84)) : new SolidColorBrush(Color.FromArgb(30, 255, 255, 255)),
-                    BorderBrush = isResult ? new SolidColorBrush(Color.FromRgb(0x3D, 0xDC, 0x84)) : Brushes.Transparent,
-                    BorderThickness = new Thickness(isResult ? 1 : 0),
+                    Background = isResult
+                        ? new SolidColorBrush(Color.FromRgb(240, 249, 255))
+                        : new SolidColorBrush(Color.FromRgb(248, 250, 252)),
+                    BorderBrush = isResult
+                        ? new SolidColorBrush(Color.FromRgb(186, 230, 253))
+                        : new SolidColorBrush(Color.FromRgb(241, 245, 249)),
+                    BorderThickness = new Thickness(1),
                     CornerRadius = new CornerRadius(6),
-                    Padding = new Thickness(10, 6, 10, 6),
+                    Padding = new Thickness(12, 8, 12, 8),
                     Margin = new Thickness(0, 0, 0, 6)
                 };
                 lineBorder.Child = new TextBlock
                 {
                     Text = line,
-                    Foreground = isResult ? new SolidColorBrush(Color.FromRgb(0x86, 0xEF, 0xAC)) : Brushes.White,
-                    FontSize = isResult ? 13 : 12,
-                    FontWeight = isResult ? FontWeights.Bold : FontWeights.Normal,
-                    FontFamily = new FontFamily("Segoe UI, Consolas"),
-                    TextWrapping = TextWrapping.Wrap
+                    Foreground = isResult
+                        ? new SolidColorBrush(Color.FromRgb(3, 105, 161))
+                        : new SolidColorBrush(Color.FromRgb(51, 65, 85)),
+                    FontSize = 12.5,
+                    FontWeight = isResult ? FontWeights.SemiBold : FontWeights.Normal,
+                    FontFamily = new FontFamily("Segoe UI"),
+                    TextWrapping = TextWrapping.Wrap,
+                    LineHeight = 18
                 };
                 modernPanel.Children.Add(lineBorder);
             }
-
-            // Alternative Panel (Why people get 1)
-            var altPanel = new StackPanel { Visibility = Visibility.Collapsed };
-            var altHeader = new TextBlock
-            {
-                Text = "Historical / Implied Convention:",
-                Foreground = new SolidColorBrush(Color.FromRgb(0xF5, 0x9E, 0x0B)),
-                FontWeight = FontWeights.Bold,
-                FontSize = 12.5,
-                Margin = new Thickness(0, 0, 0, 6)
-            };
-            altPanel.Children.Add(altHeader);
-
-            string altExplanation = string.IsNullOrWhiteSpace(obj.altExplanation)
-                ? "People get 1 because historical 1917 Cajori rules (and some calculators) bind implied multiplication tighter than division: 6 ÷ [2(3)] = 6 ÷ 6 = 1.\n\nModern algebraic standard (PEMDAS/ISO 80000-2) evaluates left-to-right, giving 9."
-                : obj.altExplanation;
-
-            var altTextBorder = new Border
-            {
-                Background = new SolidColorBrush(Color.FromArgb(40, 0xF5, 0x9E, 0x0B)),
-                BorderBrush = new SolidColorBrush(Color.FromRgb(0xF5, 0x9E, 0x0B)),
-                BorderThickness = new Thickness(1),
-                CornerRadius = new CornerRadius(8),
-                Padding = new Thickness(10, 8, 10, 8),
-                Margin = new Thickness(0, 0, 0, 8)
-            };
-            altTextBorder.Child = new TextBlock
-            {
-                Text = altExplanation,
-                Foreground = new SolidColorBrush(Color.FromRgb(254, 243, 199)),
-                FontSize = 11.5,
-                FontFamily = new FontFamily("Segoe UI, Consolas"),
-                TextWrapping = TextWrapping.Wrap,
-                LineHeight = 17
-            };
-            altPanel.Children.Add(altTextBorder);
-
-            // Interactive Clickable Button: "Why do people get 1?"
-            var switchBtn = new Border
-            {
-                Background = new SolidColorBrush(Color.FromArgb(60, 56, 189, 248)),
-                BorderBrush = new SolidColorBrush(Color.FromRgb(56, 189, 248)),
-                BorderThickness = new Thickness(1.2),
-                CornerRadius = new CornerRadius(20),
-                Padding = new Thickness(12, 6, 12, 6),
-                HorizontalAlignment = HorizontalAlignment.Center,
-                Cursor = Cursors.Hand,
-                Margin = new Thickness(0, 8, 0, 0)
-            };
-            var btnText = new TextBlock
-            {
-                Text = "❓ Why do people get 1? (Click to view)",
-                Foreground = new SolidColorBrush(Color.FromRgb(186, 230, 253)),
-                FontSize = 11.5,
-                FontWeight = FontWeights.SemiBold,
-                FontFamily = new FontFamily("Segoe UI Semibold, Segoe UI")
-            };
-            switchBtn.Child = btnText;
-
-            bool isShowingAlt = false;
-            switchBtn.MouseLeftButtonDown += (s, e) =>
-            {
-                e.Handled = true;
-                isShowingAlt = !isShowingAlt;
-                if (isShowingAlt)
-                {
-                    modernPanel.Visibility = Visibility.Collapsed;
-                    altPanel.Visibility = Visibility.Visible;
-                    btnText.Text = "← Back to Modern Solution (9)";
-                    switchBtn.BorderBrush = new SolidColorBrush(Color.FromRgb(0x3D, 0xDC, 0x84));
-                    switchBtn.Background = new SolidColorBrush(Color.FromArgb(60, 0x3D, 0xDC, 0x84));
-                    btnText.Foreground = new SolidColorBrush(Color.FromRgb(0x86, 0xEF, 0xAC));
-
-                    Task.Run(() =>
-                    {
-                        try
-                        {
-                            byte[] speechBytes = GeminiClient.SynthesizeSpeechFast("People get 1 because under historical implied multiplication conventions, 2 times 3 is calculated first, yielding 6 divided by 6 equals 1. Under modern PEMDAS, left-to-right division gives 9.");
-                            if (speechBytes != null && speechBytes.Length > 44)
-                            {
-                                using (var ms = new MemoryStream(speechBytes))
-                                using (var sp = new System.Media.SoundPlayer(ms))
-                                {
-                                    sp.PlaySync();
-                                }
-                            }
-                        }
-                        catch { }
-                    });
-                }
-                else
-                {
-                    modernPanel.Visibility = Visibility.Visible;
-                    altPanel.Visibility = Visibility.Collapsed;
-                    btnText.Text = "❓ Why do people get 1? (Click to view)";
-                    switchBtn.BorderBrush = new SolidColorBrush(Color.FromRgb(56, 189, 248));
-                    switchBtn.Background = new SolidColorBrush(Color.FromArgb(60, 56, 189, 248));
-                    btnText.Foreground = new SolidColorBrush(Color.FromRgb(186, 230, 253));
-                }
-            };
-
             mainStack.Children.Add(modernPanel);
-            mainStack.Children.Add(altPanel);
-            mainStack.Children.Add(switchBtn);
+
+            // Optional Alternative Panel (only shown when altExplanation is provided)
+            if (!string.IsNullOrWhiteSpace(obj.altExplanation))
+            {
+                var altPanel = new StackPanel { Visibility = Visibility.Collapsed };
+                var altTextBorder = new Border
+                {
+                    Background = new SolidColorBrush(Color.FromRgb(254, 252, 232)),
+                    BorderBrush = new SolidColorBrush(Color.FromRgb(253, 224, 71)),
+                    BorderThickness = new Thickness(1),
+                    CornerRadius = new CornerRadius(6),
+                    Padding = new Thickness(12, 8, 12, 8),
+                    Margin = new Thickness(0, 0, 0, 8)
+                };
+                altTextBorder.Child = new TextBlock
+                {
+                    Text = obj.altExplanation,
+                    Foreground = new SolidColorBrush(Color.FromRgb(113, 63, 18)),
+                    FontSize = 12,
+                    FontFamily = new FontFamily("Segoe UI"),
+                    TextWrapping = TextWrapping.Wrap,
+                    LineHeight = 17
+                };
+                altPanel.Children.Add(altTextBorder);
+
+                var switchBtn = new Border
+                {
+                    Background = new SolidColorBrush(Color.FromRgb(248, 250, 252)),
+                    BorderBrush = new SolidColorBrush(Color.FromRgb(203, 213, 225)),
+                    BorderThickness = new Thickness(1),
+                    CornerRadius = new CornerRadius(6),
+                    Padding = new Thickness(12, 6, 12, 6),
+                    HorizontalAlignment = HorizontalAlignment.Left,
+                    Cursor = Cursors.Hand,
+                    Margin = new Thickness(0, 6, 0, 0)
+                };
+                var btnText = new TextBlock
+                {
+                    Text = "View historical convention",
+                    Foreground = new SolidColorBrush(Color.FromRgb(51, 65, 85)),
+                    FontSize = 11.5,
+                    FontWeight = FontWeights.SemiBold,
+                    FontFamily = new FontFamily("Segoe UI Semibold, Segoe UI")
+                };
+                switchBtn.Child = btnText;
+
+                bool isShowingAlt = false;
+                switchBtn.MouseLeftButtonDown += (s, e) =>
+                {
+                    e.Handled = true;
+                    isShowingAlt = !isShowingAlt;
+                    if (isShowingAlt)
+                    {
+                        modernPanel.Visibility = Visibility.Collapsed;
+                        altPanel.Visibility = Visibility.Visible;
+                        btnText.Text = "Back to standard solution";
+                    }
+                    else
+                    {
+                        modernPanel.Visibility = Visibility.Visible;
+                        altPanel.Visibility = Visibility.Collapsed;
+                        btnText.Text = "View historical convention";
+                    }
+                };
+
+                mainStack.Children.Add(altPanel);
+                mainStack.Children.Add(switchBtn);
+            }
+
             cardBorder.Child = mainStack;
 
             Canvas.SetLeft(cardBorder, cardX);
             Canvas.SetTop(cardBorder, cardY);
             _canvas.Children.Add(cardBorder);
 
-            var st = new ScaleTransform(0.88, 0.88, cardW / 2.0, 150);
-            cardBorder.RenderTransform = st;
-            var popAnim = new System.Windows.Media.Animation.DoubleAnimation(0.88, 1.0, new Duration(TimeSpan.FromMilliseconds(350)))
+            if (!immediate)
             {
-                EasingFunction = new BackEase { Amplitude = 0.35, EasingMode = EasingMode.EaseOut }
-            };
-            st.BeginAnimation(ScaleTransform.ScaleXProperty, popAnim);
-            st.BeginAnimation(ScaleTransform.ScaleYProperty, popAnim);
-            cardBorder.BeginAnimation(UIElement.OpacityProperty, new System.Windows.Media.Animation.DoubleAnimation(0.0, 1.0, new Duration(TimeSpan.FromMilliseconds(250))));
+                cardBorder.BeginAnimation(UIElement.OpacityProperty, new System.Windows.Media.Animation.DoubleAnimation(0.0, 1.0, new Duration(TimeSpan.FromMilliseconds(200))));
+            }
         }
 
         public void DismissWithAnimation()
@@ -2987,6 +3042,364 @@ namespace FlinchApp
             lock (_instanceLock)
             {
                 if (_activeInstance == this) _activeInstance = null;
+            }
+            base.OnClosed(e);
+        }
+    }
+
+    // =========================================================================
+    // Human-Crafted Sensitive Action Approval Dialog (Zero AI Slop)
+    // =========================================================================
+    internal sealed class ActionApprovalWindow : Window
+    {
+        private static ActionApprovalWindow _activeApproval = null;
+        private static readonly object _approvalLock = new object();
+
+        private readonly ActionPayload _action;
+        private readonly Action<ActionPayload> _onApproved;
+        private readonly Action<ActionPayload> _onDenied;
+        private bool _resolved = false;
+
+        public Border CardRoot { get; private set; }
+
+        public static bool HasPendingApproval
+        {
+            get
+            {
+                lock (_approvalLock)
+                {
+                    return _activeApproval != null;
+                }
+            }
+        }
+
+        public static ActionPayload PendingAction
+        {
+            get
+            {
+                lock (_approvalLock)
+                {
+                    return _activeApproval != null ? _activeApproval._action : null;
+                }
+            }
+        }
+
+        public static void ShowApproval(ActionPayload action, Action<ActionPayload> onApproved, Action<ActionPayload> onDenied)
+        {
+            if (action == null) return;
+            Action run = () =>
+            {
+                try
+                {
+                    CloseActiveSync();
+                    var win = new ActionApprovalWindow(action, onApproved, onDenied);
+                    lock (_approvalLock)
+                    {
+                        _activeApproval = win;
+                    }
+                    win.Show();
+                    win.Activate();
+                }
+                catch (Exception ex)
+                {
+                    FlinchEnv.Log("[ActionApprovalWindow] ShowApproval error: " + ex.Message);
+                }
+            };
+
+            if (Application.Current != null && Application.Current.Dispatcher != null && !Application.Current.Dispatcher.CheckAccess())
+                Application.Current.Dispatcher.BeginInvoke(run);
+            else
+                run();
+        }
+
+        public static bool ResolveActive(bool approve)
+        {
+            ActionApprovalWindow win = null;
+            lock (_approvalLock)
+            {
+                win = _activeApproval;
+            }
+            if (win == null) return false;
+            win.Resolve(approve);
+            return true;
+        }
+
+        private static void CloseActiveSync()
+        {
+            ActionApprovalWindow old = null;
+            lock (_approvalLock)
+            {
+                old = _activeApproval;
+                _activeApproval = null;
+            }
+            if (old != null)
+            {
+                try { old.Close(); } catch { }
+            }
+        }
+
+        public ActionApprovalWindow(ActionPayload action, Action<ActionPayload> onApproved, Action<ActionPayload> onDenied)
+        {
+            _action = action;
+            _onApproved = onApproved;
+            _onDenied = onDenied;
+
+            Title = "Permission Request";
+            WindowStyle = WindowStyle.None;
+            AllowsTransparency = true;
+            Background = Brushes.Transparent;
+            Topmost = true;
+            ShowInTaskbar = false;
+            ShowActivated = true;
+            Width = 420;
+            SizeToContent = SizeToContent.Height;
+
+            double screenW = SystemParameters.PrimaryScreenWidth > 100 ? SystemParameters.PrimaryScreenWidth : 1280;
+            Left = (screenW - Width) / 2.0;
+            Top = 58;
+
+            bool isDestructive = false;
+            string tLow = (action.type ?? "").ToLowerInvariant();
+            if (tLow == "delete_file" || tLow == "system_power" || tLow == "close_app" ||
+                (action.name != null && (action.name.IndexOf("Delete", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                         action.name.IndexOf("Shut", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                         action.name.IndexOf("Empty", StringComparison.OrdinalIgnoreCase) >= 0)))
+            {
+                isDestructive = true;
+            }
+
+            // Human-crafted clean white surface card (#FFFFFF, 1px #E2E8F0 border, natural shadow)
+            CardRoot = new Border
+            {
+                Width = 400,
+                Margin = new Thickness(10),
+                Background = new SolidColorBrush(Color.FromRgb(255, 255, 255)),
+                BorderBrush = new SolidColorBrush(Color.FromRgb(226, 232, 240)),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(12),
+                Padding = new Thickness(20, 18, 20, 18),
+                Effect = new DropShadowEffect
+                {
+                    Color = Colors.Black,
+                    BlurRadius = 20,
+                    ShadowDepth = 6,
+                    Opacity = 0.14
+                }
+            };
+
+            var stack = new StackPanel();
+
+            // 1. Subtle Section Label ("Permission required")
+            var topMeta = new DockPanel { LastChildFill = false, Margin = new Thickness(0, 0, 0, 6) };
+            var permLabel = new TextBlock
+            {
+                Text = "Permission required",
+                Foreground = new SolidColorBrush(Color.FromRgb(100, 116, 139)),
+                FontSize = 11.5,
+                FontWeight = FontWeights.SemiBold,
+                FontFamily = new FontFamily("Segoe UI Semibold, Segoe UI")
+            };
+            DockPanel.SetDock(permLabel, Dock.Left);
+            topMeta.Children.Add(permLabel);
+            stack.Children.Add(topMeta);
+
+            // 2. Primary Action Title (e.g. "Allow Flinch to close Google Chrome?")
+            string displayTitle = !string.IsNullOrWhiteSpace(action.name)
+                ? string.Format("Allow Flinch to {0}?", char.ToLowerInvariant(action.name[0]) + action.name.Substring(1))
+                : "Allow Flinch to perform this action?";
+            stack.Children.Add(new TextBlock
+            {
+                Text = displayTitle,
+                Foreground = new SolidColorBrush(Color.FromRgb(15, 23, 42)),
+                FontSize = 15.5,
+                FontWeight = FontWeights.SemiBold,
+                FontFamily = new FontFamily("Segoe UI Semibold, Segoe UI"),
+                TextWrapping = TextWrapping.Wrap,
+                Margin = new Thickness(0, 0, 0, 6)
+            });
+
+            // 3. Plain-language impact explanation
+            string desc = !string.IsNullOrWhiteSpace(action.description)
+                ? action.description
+                : "This action modifies your active desktop session and requires your confirmation before running.";
+            stack.Children.Add(new TextBlock
+            {
+                Text = desc,
+                Foreground = new SolidColorBrush(Color.FromRgb(71, 85, 105)),
+                FontSize = 12.5,
+                FontFamily = new FontFamily("Segoe UI"),
+                TextWrapping = TextWrapping.Wrap,
+                LineHeight = 18,
+                Margin = new Thickness(0, 0, 0, 12)
+            });
+
+            // 4. Clean Monospace Target / Command Inspection Box
+            string cmdPreview = !string.IsNullOrWhiteSpace(action.command)
+                ? action.command
+                : (!string.IsNullOrWhiteSpace(action.target) ? action.type + " -> " + action.target : action.type);
+            var cmdBorder = new Border
+            {
+                Background = new SolidColorBrush(Color.FromRgb(248, 250, 252)),
+                BorderBrush = new SolidColorBrush(Color.FromRgb(226, 232, 240)),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(6),
+                Padding = new Thickness(10, 7, 10, 7),
+                Margin = new Thickness(0, 0, 0, 16),
+                Child = new TextBlock
+                {
+                    Text = cmdPreview,
+                    Foreground = new SolidColorBrush(Color.FromRgb(51, 65, 85)),
+                    FontSize = 11.5,
+                    FontFamily = new FontFamily("Consolas, Segoe UI"),
+                    TextTrimming = TextTrimming.CharacterEllipsis
+                }
+            };
+            stack.Children.Add(cmdBorder);
+
+            // 5. Action Buttons Row: [ Cancel (Esc) ]   [ Allow (Enter) ]
+            var btnGrid = new Grid();
+            btnGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            btnGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(10) });
+            btnGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+
+            var cancelBtn = new Border
+            {
+                Background = new SolidColorBrush(Color.FromRgb(255, 255, 255)),
+                BorderBrush = new SolidColorBrush(Color.FromRgb(203, 213, 225)),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(7),
+                Padding = new Thickness(0, 8, 0, 8),
+                Cursor = Cursors.Hand
+            };
+            var cancelStack = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Center };
+            cancelStack.Children.Add(new TextBlock
+            {
+                Text = "Cancel",
+                Foreground = new SolidColorBrush(Color.FromRgb(51, 65, 85)),
+                FontSize = 12.5,
+                FontWeight = FontWeights.SemiBold,
+                FontFamily = new FontFamily("Segoe UI Semibold, Segoe UI"),
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(0, 0, 6, 0)
+            });
+            cancelStack.Children.Add(new Border
+            {
+                Background = new SolidColorBrush(Color.FromRgb(241, 245, 249)),
+                CornerRadius = new CornerRadius(3),
+                Padding = new Thickness(4, 1, 4, 1),
+                VerticalAlignment = VerticalAlignment.Center,
+                Child = new TextBlock
+                {
+                    Text = "Esc",
+                    Foreground = new SolidColorBrush(Color.FromRgb(100, 116, 139)),
+                    FontSize = 10,
+                    FontFamily = new FontFamily("Consolas, Segoe UI")
+                }
+            });
+            cancelBtn.Child = cancelStack;
+            cancelBtn.MouseEnter += (s, e) => cancelBtn.Background = new SolidColorBrush(Color.FromRgb(248, 250, 252));
+            cancelBtn.MouseLeave += (s, e) => cancelBtn.Background = new SolidColorBrush(Color.FromRgb(255, 255, 255));
+            cancelBtn.MouseLeftButtonDown += (s, e) =>
+            {
+                e.Handled = true;
+                Resolve(false);
+            };
+            Grid.SetColumn(cancelBtn, 0);
+
+            Color allowBg = isDestructive ? Color.FromRgb(220, 38, 38) : Color.FromRgb(15, 23, 42);
+            Color allowHover = isDestructive ? Color.FromRgb(185, 28, 28) : Color.FromRgb(30, 41, 59);
+
+            var allowBtn = new Border
+            {
+                Background = new SolidColorBrush(allowBg),
+                BorderBrush = new SolidColorBrush(allowBg),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(7),
+                Padding = new Thickness(0, 8, 0, 8),
+                Cursor = Cursors.Hand
+            };
+            var allowStack = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Center };
+            allowStack.Children.Add(new TextBlock
+            {
+                Text = "Allow",
+                Foreground = Brushes.White,
+                FontSize = 12.5,
+                FontWeight = FontWeights.SemiBold,
+                FontFamily = new FontFamily("Segoe UI Semibold, Segoe UI"),
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(0, 0, 6, 0)
+            });
+            allowStack.Children.Add(new Border
+            {
+                Background = new SolidColorBrush(Color.FromArgb(45, 255, 255, 255)),
+                CornerRadius = new CornerRadius(3),
+                Padding = new Thickness(4, 1, 4, 1),
+                VerticalAlignment = VerticalAlignment.Center,
+                Child = new TextBlock
+                {
+                    Text = "Enter",
+                    Foreground = Brushes.White,
+                    FontSize = 10,
+                    FontFamily = new FontFamily("Consolas, Segoe UI")
+                }
+            });
+            allowBtn.Child = allowStack;
+            allowBtn.MouseEnter += (s, e) => allowBtn.Background = new SolidColorBrush(allowHover);
+            allowBtn.MouseLeave += (s, e) => allowBtn.Background = new SolidColorBrush(allowBg);
+            allowBtn.MouseLeftButtonDown += (s, e) =>
+            {
+                e.Handled = true;
+                Resolve(true);
+            };
+            Grid.SetColumn(allowBtn, 2);
+
+            btnGrid.Children.Add(cancelBtn);
+            btnGrid.Children.Add(allowBtn);
+            stack.Children.Add(btnGrid);
+
+            CardRoot.Child = stack;
+            Content = CardRoot;
+
+            KeyDown += (s, e) =>
+            {
+                if (e.Key == Key.Escape)
+                {
+                    e.Handled = true;
+                    Resolve(false);
+                }
+                else if (e.Key == Key.Enter)
+                {
+                    e.Handled = true;
+                    Resolve(true);
+                }
+            };
+        }
+
+        public void Resolve(bool approved)
+        {
+            if (_resolved) return;
+            _resolved = true;
+            lock (_approvalLock)
+            {
+                if (_activeApproval == this) _activeApproval = null;
+            }
+            try { Close(); } catch { }
+
+            if (approved)
+            {
+                if (_onApproved != null) _onApproved(_action);
+            }
+            else
+            {
+                if (_onDenied != null) _onDenied(_action);
+            }
+        }
+
+        protected override void OnClosed(EventArgs e)
+        {
+            lock (_approvalLock)
+            {
+                if (_activeApproval == this) _activeApproval = null;
             }
             base.OnClosed(e);
         }
@@ -3407,7 +3820,12 @@ namespace FlinchApp
                                             countdown_sec = actDict.ContainsKey("countdown_sec") && actDict["countdown_sec"] != null ? Convert.ToInt32(actDict["countdown_sec"]) : 0,
                                             seconds = actDict.ContainsKey("seconds") && actDict["seconds"] != null ? Convert.ToInt32(actDict["seconds"]) : 0,
                                             text = actDict.ContainsKey("text") && actDict["text"] != null ? actDict["text"].ToString() : null,
-                                            label = actDict.ContainsKey("label") && actDict["label"] != null ? actDict["label"].ToString() : null
+                                            label = actDict.ContainsKey("label") && actDict["label"] != null ? actDict["label"].ToString() : null,
+                                            requires_approval = actDict.ContainsKey("requires_approval") && actDict["requires_approval"] != null && Convert.ToBoolean(actDict["requires_approval"]),
+                                            description = actDict.ContainsKey("description") && actDict["description"] != null ? actDict["description"].ToString() : null,
+                                            command = actDict.ContainsKey("command") && actDict["command"] != null ? actDict["command"].ToString() : null,
+                                            x = actDict.ContainsKey("x") && actDict["x"] != null ? Convert.ToDouble(actDict["x"]) : 0.5,
+                                            y = actDict.ContainsKey("y") && actDict["y"] != null ? Convert.ToDouble(actDict["y"]) : 0.5
                                         };
                                     }
 
@@ -5483,6 +5901,96 @@ namespace FlinchApp
                 {
                     Process.Start(new ProcessStartInfo("rundll32.exe", "user32.dll,LockWorkStation") { UseShellExecute = true });
                 }
+                else if (type == "system_power")
+                {
+                    string pTarget = target.ToLowerInvariant();
+                    if (pTarget == "shutdown")
+                    {
+                        Process.Start(new ProcessStartInfo("shutdown.exe", "/s /t 5") { UseShellExecute = true });
+                    }
+                    else if (pTarget == "restart" || pTarget == "reboot")
+                    {
+                        Process.Start(new ProcessStartInfo("shutdown.exe", "/r /t 5") { UseShellExecute = true });
+                    }
+                    else if (pTarget == "sleep")
+                    {
+                        Process.Start(new ProcessStartInfo("rundll32.exe", "powrprof.dll,SetSuspendState 0,1,0") { UseShellExecute = true });
+                    }
+                }
+                else if (type == "close_app")
+                {
+                    if (!string.IsNullOrWhiteSpace(target))
+                    {
+                        var procs = Process.GetProcessesByName(target.Replace(".exe", ""));
+                        foreach (var p in procs)
+                        {
+                            try
+                            {
+                                if (!p.CloseMainWindow())
+                                {
+                                    p.Kill();
+                                }
+                            }
+                            catch { }
+                        }
+                    }
+                }
+                else if (type == "delete_file")
+                {
+                    if (target.IndexOf("temp", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        string tempPath = System.IO.Path.GetTempPath();
+                        foreach (string f in Directory.GetFiles(tempPath))
+                        {
+                            try { File.Delete(f); } catch { }
+                        }
+                    }
+                    else if (!string.IsNullOrWhiteSpace(target))
+                    {
+                        string desktop = Environment.GetFolderPath(Environment.SpecialFolder.Desktop);
+                        string candidate = System.IO.Path.Combine(desktop, target);
+                        if (File.Exists(candidate))
+                        {
+                            File.Delete(candidate);
+                        }
+                    }
+                }
+                else if (type == "run_command")
+                {
+                    string cmd = !string.IsNullOrWhiteSpace(action.command) ? action.command : target;
+                    if (!string.IsNullOrWhiteSpace(cmd))
+                    {
+                        Process.Start(new ProcessStartInfo("powershell.exe", "-NoProfile -WindowStyle Hidden -Command \"" + cmd.Replace("\"", "\\\"") + "\"")
+                        {
+                            UseShellExecute = false,
+                            CreateNoWindow = true
+                        });
+                    }
+                }
+                else if (type == "click_element")
+                {
+                    var ps = System.Windows.Forms.Screen.PrimaryScreen.Bounds;
+                    int clickX = (int)(ps.Left + Math.Max(0.01, Math.Min(0.99, action.x)) * ps.Width);
+                    int clickY = (int)(ps.Top + Math.Max(0.01, Math.Min(0.99, action.y)) * ps.Height);
+                    NativeMethods.SetCursorPos(clickX, clickY);
+                    Thread.Sleep(40);
+                    NativeMethods.mouse_event(NativeMethods.MOUSEEVENTF_LEFTDOWN | NativeMethods.MOUSEEVENTF_LEFTUP, clickX, clickY, 0, IntPtr.Zero);
+                }
+                else if (type == "type_text")
+                {
+                    string txt = action.text ?? target;
+                    if (!string.IsNullOrEmpty(txt))
+                    {
+                        System.Windows.Forms.SendKeys.SendWait(txt);
+                    }
+                }
+                else if (type == "press_shortcut")
+                {
+                    if (!string.IsNullOrWhiteSpace(target))
+                    {
+                        System.Windows.Forms.SendKeys.SendWait(target);
+                    }
+                }
             }
             catch (Exception ex)
             {
@@ -6611,6 +7119,29 @@ private void FinishRecordingAndSend()
 
                         string lowerTrans = (transcript ?? "").ToLowerInvariant().Trim();
 
+                        // 0A. Check if a sensitive action approval dialog is waiting for voice confirmation
+                        if (ActionApprovalWindow.HasPendingApproval)
+                        {
+                            bool isVoiceApprove = lowerTrans == "yes" || lowerTrans == "approve" || lowerTrans == "allow" ||
+                                                  lowerTrans == "confirm" || lowerTrans == "do it" || lowerTrans == "proceed" ||
+                                                  lowerTrans == "go ahead" || lowerTrans == "sure" ||
+                                                  lowerTrans.StartsWith("yes ") || lowerTrans.StartsWith("approve ") || lowerTrans.StartsWith("allow ");
+                            bool isVoiceDeny = lowerTrans == "no" || lowerTrans == "cancel" || lowerTrans == "deny" ||
+                                               lowerTrans == "abort" || lowerTrans == "don't" || lowerTrans == "stop" ||
+                                               lowerTrans.StartsWith("no ") || lowerTrans.StartsWith("cancel ") || lowerTrans.StartsWith("deny ");
+
+                            if (isVoiceApprove)
+                            {
+                                ActionApprovalWindow.ResolveActive(true);
+                                return;
+                            }
+                            else if (isVoiceDeny)
+                            {
+                                ActionApprovalWindow.ResolveActive(false);
+                                return;
+                            }
+                        }
+
                         // 0. Check for Open/Close Flinch Hub command
                         if (lowerTrans == "open hub" || lowerTrans.Contains("open flinch hub") || lowerTrans.Contains("show hub") || lowerTrans.Contains("open integrations") || lowerTrans.Contains("show automations"))
                         {
@@ -6881,19 +7412,16 @@ private void FinishRecordingAndSend()
                             return;
                         }
 
-                        // 2. Check for Visual Explain math whiteboard intent
-                        bool isVisualExplain = IsVisualExplainIntent(lowerTrans, action);
-
-                        if (isVisualExplain)
-                        {
-                            TriggerVisualExplainWorkflow(transcript);
-                            return;
-                        }
-
+                        // 2. Display transparent screen overlay whenever scene objects are returned!
                         if (scene != null && scene.objects != null && scene.objects.Count > 0)
                         {
                             FlinchEnv.Log(string.Format("[Flinch] Displaying visual overlay with {0} objects for transcript: '{1}'", scene.objects.Count, transcript));
                             OverlayWindow.ShowScene(GeminiClient.LastActiveTargetBounds, scene);
+                        }
+                        else if (IsVisualExplainIntent(lowerTrans, action))
+                        {
+                            TriggerVisualExplainWorkflow(transcript);
+                            return;
                         }
                         else
                         {
@@ -6908,9 +7436,33 @@ private void FinishRecordingAndSend()
                                 int sec = action.seconds > 0 ? action.seconds : 5;
                                 StartTimerOrReminder(sec, actType, action.text, action.label);
                             }
-                            else if (action.countdown_sec > 0 || actType == "open_app" || actType == "open_url" || actType == "lock_pc")
+                            else if (action.requires_approval)
+                            {
+                                ActionApprovalWindow.ShowApproval(
+                                    action,
+                                    approvedAct =>
+                                    {
+                                        Dispatcher.BeginInvoke(new Action(() =>
+                                        {
+                                            ExecuteAction(approvedAct);
+                                            SpeakAnswer("Approved. Executing " + (approvedAct.name ?? "action") + " now.");
+                                        }));
+                                    },
+                                    deniedAct =>
+                                    {
+                                        Dispatcher.BeginInvoke(new Action(() =>
+                                        {
+                                            SpeakAnswer("Cancelled " + (deniedAct.name ?? "action") + ".");
+                                        }));
+                                    });
+                            }
+                            else if (action.countdown_sec > 0 || actType == "open_app" || actType == "open_url")
                             {
                                 StartActionCountdown(action);
+                            }
+                            else
+                            {
+                                ExecuteAction(action);
                             }
                         }
 
@@ -8895,63 +9447,180 @@ private void FinishRecordingAndSend()
                 try
                 {
                     var app = System.Windows.Application.Current ?? new System.Windows.Application();
-                    var ps = System.Windows.Forms.Screen.PrimaryScreen;
-                    var bounds = new NativeMethods.RECT
+                    string outDir = (args.Length > 1 && Directory.Exists(args[1])) ? args[1] : System.IO.Path.GetTempPath();
+                    int w = 1280;
+                    int h = 720;
+                    var bounds = new NativeMethods.RECT { Left = 0, Top = 0, Right = w, Bottom = h };
+
+                    // 1. Test Scene 1: Screen Drawing Overlay (Code Error Highlight, Arrow, Circle, & Reference Card)
+                    var scene1 = new ScenePayload
                     {
-                        Left = ps.Bounds.Left,
-                        Top = ps.Bounds.Top,
-                        Right = ps.Bounds.Right,
-                        Bottom = ps.Bounds.Bottom
-                    };
-                    var scene = new ScenePayload
-                    {
-                        durationMs = 8000,
+                        durationMs = 15000,
                         objects = new List<SceneObjectPayload>
                         {
                             new SceneObjectPayload
                             {
+                                type = "highlight",
+                                color = "#D97706",
+                                label = "NullReferenceException on line 42",
+                                rect = new SceneRect { x = 0.08, y = 0.28, w = 0.42, h = 0.055 }
+                            },
+                            new SceneObjectPayload
+                            {
                                 type = "arrow",
-                                color = "#3DDC84",
-                                label = "Recycle Bin Target",
-                                from = new ScenePoint { x = 0.15, y = 0.15 },
-                                to = new ScenePoint { x = 0.035, y = 0.05 }
+                                color = "#0284C7",
+                                label = "Inspect variable state",
+                                from = new ScenePoint { x = 0.28, y = 0.46 },
+                                to = new ScenePoint { x = 0.20, y = 0.345 }
                             },
                             new SceneObjectPayload
                             {
                                 type = "circle",
-                                color = "#38BDF8",
-                                label = "Target Icon",
-                                rect = new SceneRect { x = 0.015, y = 0.02, w = 0.05, h = 0.08 }
+                                color = "#0284C7",
+                                label = "Run Debugger",
+                                rect = new SceneRect { x = 0.08, y = 0.12, w = 0.09, h = 0.065 }
+                            },
+                            new SceneObjectPayload
+                            {
+                                type = "notepad",
+                                title = "Elon Musk",
+                                subtitle = "Entrepreneur & Engineer (Born June 28, 1971)",
+                                imageUrl = "https://thumb.wikimedia.org/wikipedia/commons/thumb/6/69/Elon_Musk_-_54820081119_%283x4_cropped%2C_Rule_of_thirds%29.jpg/330px-Elon_Musk_-_54820081119_%283x4_cropped%2C_Rule_of_thirds%29.jpg",
+                                text = "Role: Founder & CEO of SpaceX, CEO of Tesla, Founder of xAI\nBorn in Pretoria, South Africa; moved to North America to study physics and economics at the University of Pennsylvania.\nCo-founded X.com (PayPal), founded SpaceX in 2002, and joined Tesla in 2004 to lead electric vehicle and spacecraft manufacturing.\nResult: Reusable orbital rockets (Falcon 9 / Starship) & global EV adoption."
                             }
                         }
                     };
-                    FlinchEnv.Log("Showing test drawing overlay on screen...");
-                    var win = new OverlayWindow(bounds, scene);
-                    win.Show();
-                    System.Windows.Forms.Application.DoEvents();
-                    Thread.Sleep(1200);
-                    System.Windows.Forms.Application.DoEvents();
 
-                    FlinchEnv.Log("OverlayWindow rendered and active on screen.");
-                    try
+                    var overlayWin = new OverlayWindow(bounds, scene1, true);
+
+                    // Build a realistic desktop & code editor backdrop under the transparent overlay for the verification capture
+                    var composite1 = new Canvas { Width = w, Height = h, Background = new SolidColorBrush(Color.FromRgb(241, 245, 249)) };
+
+                    // Mock IDE window on the left side of the desktop
+                    var ideWin = new Border
                     {
-                        using (var bmp = new System.Drawing.Bitmap(ps.Bounds.Width, ps.Bounds.Height))
+                        Width = 640,
+                        Height = 480,
+                        Background = new SolidColorBrush(Color.FromRgb(255, 255, 255)),
+                        BorderBrush = new SolidColorBrush(Color.FromRgb(203, 213, 225)),
+                        BorderThickness = new Thickness(1),
+                        CornerRadius = new CornerRadius(10),
+                        Effect = new DropShadowEffect { Color = Colors.Black, BlurRadius = 18, Opacity = 0.08, ShadowDepth = 4 }
+                    };
+                    var ideStack = new StackPanel { Margin = new Thickness(24, 20, 24, 20) };
+                    ideStack.Children.Add(new TextBlock
+                    {
+                        Text = "Program.cs — Visual Studio",
+                        Foreground = new SolidColorBrush(Color.FromRgb(100, 116, 139)),
+                        FontSize = 12,
+                        FontWeight = FontWeights.SemiBold,
+                        FontFamily = new FontFamily("Segoe UI Semibold, Segoe UI"),
+                        Margin = new Thickness(0, 0, 0, 18)
+                    });
+                    var toolbarRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 22) };
+                    toolbarRow.Children.Add(new Border
+                    {
+                        Background = new SolidColorBrush(Color.FromRgb(241, 245, 249)),
+                        BorderBrush = new SolidColorBrush(Color.FromRgb(203, 213, 225)),
+                        BorderThickness = new Thickness(1),
+                        CornerRadius = new CornerRadius(6),
+                        Padding = new Thickness(12, 6, 12, 6),
+                        Child = new TextBlock { Text = "▶ Start Debugging", Foreground = new SolidColorBrush(Color.FromRgb(15, 23, 42)), FontSize = 12, FontFamily = new FontFamily("Segoe UI Semibold") }
+                    });
+                    ideStack.Children.Add(toolbarRow);
+
+                    string[] codeLines = new[]
+                    {
+                        "39   public void ProcessSession(UserContext ctx)",
+                        "40   {",
+                        "41       var config = LoadConfiguration();",
+                        "42       string token = ctx.Session.AccessToken.Trim();",
+                        "43       InitializeClient(token, config);",
+                        "44   }"
+                    };
+                    foreach (var cl in codeLines)
+                    {
+                        ideStack.Children.Add(new TextBlock
                         {
-                            using (var g = System.Drawing.Graphics.FromImage(bmp))
-                            {
-                                g.CopyFromScreen(ps.Bounds.Left, ps.Bounds.Top, 0, 0, ps.Bounds.Size);
-                            }
-                            string outPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "screen_drawn_verified.png");
-                            bmp.Save(outPath, System.Drawing.Imaging.ImageFormat.Png);
-                            FlinchEnv.Log("Test draw screenshot saved: " + outPath);
-                        }
+                            Text = cl,
+                            Foreground = new SolidColorBrush(Color.FromRgb(51, 65, 85)),
+                            FontSize = 13.5,
+                            FontFamily = new FontFamily("Consolas"),
+                            Margin = new Thickness(0, 4, 0, 4)
+                        });
                     }
-                    catch (Exception gdiEx)
+                    ideWin.Child = ideStack;
+                    Canvas.SetLeft(ideWin, 64);
+                    Canvas.SetTop(ideWin, 42);
+                    composite1.Children.Add(ideWin);
+
+                    // Move rendered overlay canvas into composite for crisp RenderTargetBitmap snapshot
+                    overlayWin.Content = null;
+                    composite1.Children.Add(overlayWin.RootCanvas);
+                    composite1.Measure(new Size(w, h));
+                    composite1.Arrange(new Rect(0, 0, w, h));
+                    composite1.UpdateLayout();
+
+                    var rtb1 = new System.Windows.Media.Imaging.RenderTargetBitmap(w, h, 96, 96, PixelFormats.Pbgra32);
+                    rtb1.Render(composite1);
+                    var enc1 = new System.Windows.Media.Imaging.PngBitmapEncoder();
+                    enc1.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(rtb1));
+                    string outOverlayPath = System.IO.Path.Combine(outDir, "overlay_screen_drawing_verified.png");
+                    using (var fs = new FileStream(outOverlayPath, FileMode.Create, FileAccess.Write))
                     {
-                        FlinchEnv.Log("Desktop screenshot note (headless DC): " + gdiEx.Message);
+                        enc1.Save(fs);
                     }
-                    Thread.Sleep(2500);
-                    win.Close();
+                    FlinchEnv.Log("Saved overlay verification screenshot: " + outOverlayPath);
+
+                    // 2. Test Scene 2: Sensitive Action Approval Gate (Human-Crafted UI)
+                    var composite2 = new Canvas { Width = w, Height = h, Background = new SolidColorBrush(Color.FromRgb(241, 245, 249)) };
+
+                    // Show two realistic approval cards side-by-side or centered to showcase both standard & destructive actions
+                    var actClose = new ActionPayload
+                    {
+                        type = "close_app",
+                        target = "chrome",
+                        name = "Close Google Chrome",
+                        requires_approval = true,
+                        description = "Terminates running Google Chrome windows. Any unsaved form data or open tabs may be closed.",
+                        command = "taskkill /IM chrome.exe"
+                    };
+                    var approvalWin1 = new ActionApprovalWindow(actClose, _ => { }, _ => { });
+                    approvalWin1.Content = null;
+                    Canvas.SetLeft(approvalWin1.CardRoot, 210);
+                    Canvas.SetTop(approvalWin1.CardRoot, 190);
+                    composite2.Children.Add(approvalWin1.CardRoot);
+
+                    var actCmd = new ActionPayload
+                    {
+                        type = "run_command",
+                        target = "ipconfig /flushdns",
+                        name = "Flush DNS Resolver Cache",
+                        requires_approval = true,
+                        description = "Executes ipconfig /flushdns to clear and reset the Windows DNS resolver cache.",
+                        command = "ipconfig /flushdns"
+                    };
+                    var approvalWin2 = new ActionApprovalWindow(actCmd, _ => { }, _ => { });
+                    approvalWin2.Content = null;
+                    Canvas.SetLeft(approvalWin2.CardRoot, 650);
+                    Canvas.SetTop(approvalWin2.CardRoot, 190);
+                    composite2.Children.Add(approvalWin2.CardRoot);
+
+                    composite2.Measure(new Size(w, h));
+                    composite2.Arrange(new Rect(0, 0, w, h));
+                    composite2.UpdateLayout();
+
+                    var rtb2 = new System.Windows.Media.Imaging.RenderTargetBitmap(w, h, 96, 96, PixelFormats.Pbgra32);
+                    rtb2.Render(composite2);
+                    var enc2 = new System.Windows.Media.Imaging.PngBitmapEncoder();
+                    enc2.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(rtb2));
+                    string outApprovalPath = System.IO.Path.Combine(outDir, "sensitive_action_approval_verified.png");
+                    using (var fs = new FileStream(outApprovalPath, FileMode.Create, FileAccess.Write))
+                    {
+                        enc2.Save(fs);
+                    }
+                    FlinchEnv.Log("Saved approval UI verification screenshot: " + outApprovalPath);
+                    Console.WriteLine("VERIFIED_SCREENSHOTS_SAVED");
                     return 0;
                 }
                 catch (Exception ex)

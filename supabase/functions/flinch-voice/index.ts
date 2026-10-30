@@ -809,17 +809,18 @@ RULES: Output ONLY the transformed text. No preamble, no quotes around it, no ma
       console.warn("Failed to read conversation history:", histErr);
     }
 
-    // 7.1 Check for basic PC action intents & Timers/Reminders
+    // 7.1 Check for PC control / task action intents & Timers/Reminders
     let actionObj: any = null;
     let sceneObj: any = null;
     let reply = "";
 
-    const detectedAction = parseFlinchAction(transcript);
+    const detectedAction = parseFlinchAction(transcript, uiaText);
     if (detectedAction) {
       actionObj = detectedAction.action;
       reply = detectedAction.reply;
-    } else if (isControlQuery(transcript) && !screenB64) {
-      reply = "I don't have permission for full OS mouse takeover yet, but you can ask me to point to or explain anything on your screen!";
+      if (detectedAction.scene) {
+        sceneObj = detectedAction.scene;
+      }
     }
 
     // 7.2 Clipboard query without clipboard content
@@ -1604,16 +1605,72 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
 }
 
 interface FlinchAction {
-  type: "open_app" | "open_url" | "lock_pc" | "timer" | "reminder";
+  type:
+    | "open_app"
+    | "open_url"
+    | "lock_pc"
+    | "timer"
+    | "reminder"
+    | "close_app"
+    | "delete_file"
+    | "run_command"
+    | "system_power"
+    | "click_element"
+    | "type_text"
+    | "press_shortcut";
   target?: string;
   name?: string;
   countdown_sec?: number;
   seconds?: number;
   text?: string;
   label?: string;
+  requires_approval?: boolean;
+  description?: string;
+  command?: string;
+  x?: number;
+  y?: number;
 }
 
-function parseFlinchAction(transcript: string): { action: FlinchAction; reply: string } | null {
+function findUiaTargetCoords(queryName: string, uiaText?: string): { x: number; y: number; w: number; h: number; matchedName: string } | null {
+  if (!uiaText || !queryName) return null;
+  const qLow = queryName.toLowerCase().trim();
+  if (qLow.length < 2) return null;
+
+  try {
+    const parsed = JSON.parse(uiaText);
+    if (Array.isArray(parsed)) {
+      for (const el of parsed) {
+        const elName = String(el?.name || "").toLowerCase();
+        if (elName && (elName.includes(qLow) || qLow.includes(elName))) {
+          const x = Math.max(0.01, Math.min(0.98, Number(el.x) || 0.5));
+          const y = Math.max(0.01, Math.min(0.98, Number(el.y) || 0.5));
+          const w = Math.max(0.02, Math.min(0.5, Number(el.w) || 0.08));
+          const h = Math.max(0.02, Math.min(0.5, Number(el.h) || 0.05));
+          return { x, y, w, h, matchedName: String(el.name || queryName) };
+        }
+      }
+    }
+  } catch {
+    const lines = uiaText.split("\n");
+    for (const l of lines) {
+      if (l.toLowerCase().includes(qLow)) {
+        const mCoord = l.match(/\[\s*(-?\d*\.?\d+)\s*,\s*(-?\d*\.?\d+)\s*,\s*(-?\d*\.?\d+)\s*,\s*(-?\d*\.?\d+)\s*\]/);
+        if (mCoord) {
+          return {
+            x: Math.max(0.01, Math.min(0.98, parseFloat(mCoord[1]))),
+            y: Math.max(0.01, Math.min(0.98, parseFloat(mCoord[2]))),
+            w: Math.max(0.02, Math.min(0.5, parseFloat(mCoord[3]))),
+            h: Math.max(0.02, Math.min(0.5, parseFloat(mCoord[4]))),
+            matchedName: queryName
+          };
+        }
+      }
+    }
+  }
+  return null;
+}
+
+function parseFlinchAction(transcript: string, uiaText?: string): { action: FlinchAction; reply: string; scene?: any } | null {
   const low = transcript.toLowerCase().trim();
 
   // 1. Timers
@@ -1622,7 +1679,7 @@ function parseFlinchAction(transcript: string): { action: FlinchAction; reply: s
     let unit = "second";
     const numMatch = low.match(/(\d+)\s*(seconds?|secs?|minutes?|mins?|hours?|hrs?)/i);
     if (numMatch) {
-      let rawVal = parseInt(numMatch[1], 10);
+      const rawVal = parseInt(numMatch[1], 10);
       const uStr = numMatch[2].toLowerCase();
       if (uStr.startsWith("m")) {
         num = rawVal * 60;
@@ -1647,12 +1704,12 @@ function parseFlinchAction(transcript: string): { action: FlinchAction; reply: s
 
   // 2. Reminders
   if (low.startsWith("remind me") || low.includes("reminder")) {
-    let seconds = 300; // default 5m
+    let seconds = 300;
     let reminderText = "check your tasks";
     const timeMatch = low.match(/in\s+(\d+)\s*(seconds?|secs?|minutes?|mins?|hours?|hrs?)/i);
     let timeLabel = "5 minutes";
     if (timeMatch) {
-      let val = parseInt(timeMatch[1], 10);
+      const val = parseInt(timeMatch[1], 10);
       const u = timeMatch[2].toLowerCase();
       if (u.startsWith("m")) {
         seconds = val * 60;
@@ -1675,55 +1732,297 @@ function parseFlinchAction(transcript: string): { action: FlinchAction; reply: s
     };
   }
 
-  // 3. Open Apps
+  // 3. SENSITIVE ACTIONS (Require Explicit User Approval)
+  // 3A. System Power (Shutdown, Restart, Sleep, Sign Out, Lock)
+  if (/\b(shut\s*down|power\s*off|turn\s*off\s+my\s+(?:pc|computer))\b/i.test(low)) {
+    return {
+      action: {
+        type: "system_power",
+        target: "shutdown",
+        name: "Shut Down PC",
+        requires_approval: true,
+        description: "Closes all active applications and powers off Windows.",
+        command: "shutdown.exe /s /t 5"
+      },
+      reply: "Please confirm on screen if you'd like me to shut down your PC."
+    };
+  }
+  if (/\b(restart|reboot)\s+(?:my\s+)?(?:pc|computer|system|windows)\b/i.test(low)) {
+    return {
+      action: {
+        type: "system_power",
+        target: "restart",
+        name: "Restart PC",
+        requires_approval: true,
+        description: "Closes active sessions and restarts your computer.",
+        command: "shutdown.exe /r /t 5"
+      },
+      reply: "Please confirm if you'd like me to restart your PC."
+    };
+  }
+  if (/\b(put\s+(?:my\s+)?(?:pc|computer)\s+to\s+sleep|sleep\s+mode|hibernate)\b/i.test(low)) {
+    return {
+      action: {
+        type: "system_power",
+        target: "sleep",
+        name: "Sleep Mode",
+        requires_approval: true,
+        description: "Suspends active sessions and puts your PC into low-power sleep.",
+        command: "rundll32.exe powrprof.dll,SetSuspendState 0,1,0"
+      },
+      reply: "Please approve on screen to put your PC to sleep."
+    };
+  }
+  if (low.includes("lock my pc") || low.includes("lock pc") || low.includes("lock computer") || low.includes("lock screen")) {
+    return {
+      action: {
+        type: "lock_pc",
+        target: "lock",
+        name: "Lock Workstation",
+        requires_approval: true,
+        description: "Locks your desktop session and returns to the Windows lock screen.",
+        command: "rundll32.exe user32.dll,LockWorkStation"
+      },
+      reply: "Please confirm if you want me to lock your workstation."
+    };
+  }
+
+  // 3B. Close / Kill Applications (Sensitive: unsaved work risk)
+  const closeMatch = low.match(/\b(?:close|quit|kill|terminate|exit|force\s+close)\s+(?:my\s+|the\s+)?(chrome|google\s+chrome|edge|microsoft\s+edge|browser|notepad|vs\s*code|vscode|spotify|discord|slack|word|excel|powerpoint|task\s+manager|explorer|terminal|powershell)\b/i);
+  if (closeMatch) {
+    const rawApp = closeMatch[1].toLowerCase();
+    let procTarget = rawApp;
+    let displayApp = closeMatch[1];
+    if (rawApp.includes("chrome")) { procTarget = "chrome"; displayApp = "Google Chrome"; }
+    else if (rawApp.includes("edge") || rawApp === "browser") { procTarget = "msedge"; displayApp = "Microsoft Edge"; }
+    else if (rawApp.includes("notepad")) { procTarget = "notepad"; displayApp = "Notepad"; }
+    else if (rawApp.includes("code")) { procTarget = "Code"; displayApp = "VS Code"; }
+    else if (rawApp.includes("spotify")) { procTarget = "Spotify"; displayApp = "Spotify"; }
+    else if (rawApp.includes("discord")) { procTarget = "Discord"; displayApp = "Discord"; }
+    else if (rawApp.includes("slack")) { procTarget = "slack"; displayApp = "Slack"; }
+    else if (rawApp.includes("word")) { procTarget = "WINWORD"; displayApp = "Microsoft Word"; }
+    else if (rawApp.includes("excel")) { procTarget = "EXCEL"; displayApp = "Microsoft Excel"; }
+    else if (rawApp.includes("powerpoint")) { procTarget = "POWERPNT"; displayApp = "PowerPoint"; }
+    else if (rawApp.includes("task")) { procTarget = "Taskmgr"; displayApp = "Task Manager"; }
+    else if (rawApp.includes("terminal") || rawApp.includes("powershell")) { procTarget = "WindowsTerminal"; displayApp = "Terminal"; }
+
+    return {
+      action: {
+        type: "close_app",
+        target: procTarget,
+        name: `Close ${displayApp}`,
+        requires_approval: true,
+        description: `Terminates running ${displayApp} windows. Unsaved changes in ${displayApp} may be lost.`,
+        command: `taskkill /IM ${procTarget}.exe`
+      },
+      reply: `Closing ${displayApp} requires your approval so you don't lose unsaved work.`
+    };
+  }
+
+  // 3C. Delete / Clear Files or Recycle Bin (Sensitive: data deletion risk)
+  if (/\b(empty\s+(?:the\s+)?recycle\s+bin|clear\s+(?:the\s+)?recycle\s+bin|empty\s+trash)\b/i.test(low)) {
+    return {
+      action: {
+        type: "run_command",
+        target: "Clear-RecycleBin",
+        name: "Empty Recycle Bin",
+        requires_approval: true,
+        description: "Permanently deletes all items currently stored in the Windows Recycle Bin.",
+        command: "Clear-RecycleBin -Force -ErrorAction SilentlyContinue"
+      },
+      reply: "Emptying the Recycle Bin permanently deletes files. Please approve this action."
+    };
+  }
+  const deleteFileMatch = low.match(/\b(?:delete|remove|erase|clean\s+up)\s+(?:my\s+|the\s+|all\s+)?(temp\s+files|temporary\s+files|downloads\s+folder|screenshots?|desktop\s+files|[a-z0-9_\-\.]+\.(?:txt|png|jpg|pdf|zip|docx|html))\b/i);
+  if (deleteFileMatch) {
+    const targetItem = deleteFileMatch[1].trim();
+    return {
+      action: {
+        type: "delete_file",
+        target: targetItem,
+        name: `Delete ${targetItem}`,
+        requires_approval: true,
+        description: `Removes ${targetItem} from your local disk. Please verify before proceeding.`,
+        command: `Remove-Item "${targetItem}"`
+      },
+      reply: `Deleting ${targetItem} is a sensitive file operation. Please approve on screen.`
+    };
+  }
+
+  // 3D. System / Network Shell Commands (Sensitive)
+  if (/\b(flush\s+dns|reset\s+network|clear\s+dns\s+cache)\b/i.test(low)) {
+    return {
+      action: {
+        type: "run_command",
+        target: "ipconfig /flushdns",
+        name: "Flush DNS Resolver Cache",
+        requires_approval: true,
+        description: "Executes ipconfig /flushdns to clear and reset the Windows DNS resolver cache.",
+        command: "ipconfig /flushdns"
+      },
+      reply: "I can flush your DNS cache. Please approve the system command on screen."
+    };
+  }
+
+  // 4. PC CONTROL: Mouse Clicks, Typing, & Keyboard Shortcuts
+  const clickMatch = low.match(/\b(?:click|press|tap)\s+(?:on\s+)?(?:the\s+)?([a-z0-9 _\-]+?)(?:\s+button|\s+icon|\s+link|\s+tab)?$/i);
+  if (clickMatch && !low.includes("how to") && !low.includes("where is")) {
+    const targetLabel = clickMatch[1].replace(/\b(on|my|screen|window|please|now)\b/gi, "").trim();
+    if (targetLabel.length >= 2) {
+      const isSensitiveClick = /\b(delete|remove|submit|send|pay|buy|purchase|checkout|format|erase|uninstall|confirm|sign\s*out|log\s*out)\b/i.test(targetLabel);
+      const uiaHit = findUiaTargetCoords(targetLabel, uiaText);
+      const cx = uiaHit ? Math.round((uiaHit.x + uiaHit.w / 2) * 1000) / 1000 : 0.5;
+      const cy = uiaHit ? Math.round((uiaHit.y + uiaHit.h / 2) * 1000) / 1000 : 0.5;
+
+      const clickScene = uiaHit ? {
+        durationMs: 6000,
+        objects: [
+          {
+            type: "circle",
+            rect: { x: uiaHit.x, y: uiaHit.y, w: uiaHit.w, h: uiaHit.h },
+            label: `Click: ${uiaHit.matchedName}`,
+            color: "#0284C7",
+            step: 1,
+            delayMs: 0
+          }
+        ]
+      } : undefined;
+
+      return {
+        action: {
+          type: "click_element",
+          target: uiaHit ? uiaHit.matchedName : targetLabel,
+          name: `Click "${uiaHit ? uiaHit.matchedName : targetLabel}"`,
+          x: cx,
+          y: cy,
+          requires_approval: isSensitiveClick,
+          description: isSensitiveClick
+            ? `Clicks the "${targetLabel}" control on your active window.`
+            : `Moves cursor and clicks "${targetLabel}".`,
+          command: `MouseClick(${Math.round(cx * 100)}%, ${Math.round(cy * 100)}%)`
+        },
+        reply: isSensitiveClick
+          ? `Clicking ${targetLabel} is a sensitive action. Please confirm on screen.`
+          : `Clicking ${uiaHit ? uiaHit.matchedName : targetLabel} now.`,
+        scene: clickScene
+      };
+    }
+  }
+
+  // 4B. Type Text on Keyboard
+  const typeMatch = transcript.match(/\b(?:type|enter|input|write\s+out)\s+["']?(.+?)["']?$/i);
+  if (typeMatch && !low.includes("essay") && !low.includes("report") && !low.includes("presentation") && !low.includes("article")) {
+    const textToType = typeMatch[1].trim();
+    if (textToType.length > 0 && textToType.length < 200) {
+      return {
+        action: {
+          type: "type_text",
+          text: textToType,
+          name: `Type "${textToType.slice(0, 28)}"`,
+          requires_approval: false,
+          countdown_sec: 0,
+          command: `SendKeys("${textToType.slice(0, 40)}")`
+        },
+        reply: `Typing "${textToType}" into your active window.`
+      };
+    }
+  }
+
+  // 4C. Keyboard Shortcuts / Hotkeys (Copy, Paste, Undo, Save, Select All, Minimize, Switch Window, Screenshot)
+  if (/\b(press\s+enter|hit\s+enter|submit\s+form)\b/i.test(low)) {
+    return {
+      action: { type: "press_shortcut", target: "{ENTER}", name: "Press Enter", requires_approval: true, description: "Sends the Enter key to the active window, which may submit a form or message.", command: "SendKeys({ENTER})" },
+      reply: "Please confirm before I press Enter in your active window."
+    };
+  }
+  if (/\b(save\s+this\s+file|press\s+ctrl\s*\+?\s*s|save\s+document)\b/i.test(low)) {
+    return {
+      action: { type: "press_shortcut", target: "^s", name: "Save File (Ctrl+S)", requires_approval: false, command: "SendKeys(Ctrl+S)" },
+      reply: "Saving your active file now."
+    };
+  }
+  if (/\b(undo\s+that|press\s+ctrl\s*\+?\s*z)\b/i.test(low)) {
+    return {
+      action: { type: "press_shortcut", target: "^z", name: "Undo (Ctrl+Z)", requires_approval: false, command: "SendKeys(Ctrl+Z)" },
+      reply: "Undoing the last action."
+    };
+  }
+  if (/\b(select\s+all|press\s+ctrl\s*\+?\s*a)\b/i.test(low)) {
+    return {
+      action: { type: "press_shortcut", target: "^a", name: "Select All (Ctrl+A)", requires_approval: false, command: "SendKeys(Ctrl+A)" },
+      reply: "Selecting all content."
+    };
+  }
+  if (/\b(paste\s+that|paste\s+clipboard|press\s+ctrl\s*\+?\s*v)\b/i.test(low)) {
+    return {
+      action: { type: "press_shortcut", target: "^v", name: "Paste (Ctrl+V)", requires_approval: false, command: "SendKeys(Ctrl+V)" },
+      reply: "Pasting from your clipboard."
+    };
+  }
+  if (/\b(new\s+tab|open\s+a\s+new\s+tab)\b/i.test(low)) {
+    return {
+      action: { type: "press_shortcut", target: "^t", name: "New Tab (Ctrl+T)", requires_approval: false, command: "SendKeys(Ctrl+T)" },
+      reply: "Opening a new browser tab."
+    };
+  }
+  if (/\b(close\s+this\s+tab|close\s+current\s+tab)\b/i.test(low)) {
+    return {
+      action: {
+        type: "press_shortcut",
+        target: "^w",
+        name: "Close Current Tab (Ctrl+W)",
+        requires_approval: true,
+        description: "Closes the active tab in your current application.",
+        command: "SendKeys(Ctrl+W)"
+      },
+      reply: "Please confirm if you'd like me to close your active tab."
+    };
+  }
+
+  // 5. Safe Open Apps
   if (low.includes("spotify")) {
-    return { action: { type: "open_app", target: "spotify", name: "Spotify", countdown_sec: 5 }, reply: "Opening Spotify in 5 seconds." };
+    return { action: { type: "open_app", target: "spotify", name: "Spotify", countdown_sec: 3 }, reply: "Opening Spotify." };
   }
   if (low.includes("chrome") || low.includes("browser") || low.includes("google chrome")) {
-    return { action: { type: "open_app", target: "chrome", name: "Google Chrome", countdown_sec: 5 }, reply: "Opening Google Chrome in 5 seconds." };
+    return { action: { type: "open_app", target: "chrome", name: "Google Chrome", countdown_sec: 3 }, reply: "Opening Google Chrome." };
   }
   if (low.includes("vs code") || low.includes("vscode") || low.includes("open code")) {
-    return { action: { type: "open_app", target: "code", name: "VS Code", countdown_sec: 5 }, reply: "Opening VS Code in 5 seconds." };
+    return { action: { type: "open_app", target: "code", name: "VS Code", countdown_sec: 3 }, reply: "Opening VS Code." };
   }
   if (low.includes("notepad")) {
-    return { action: { type: "open_app", target: "notepad", name: "Notepad", countdown_sec: 5 }, reply: "Opening Notepad in 5 seconds." };
+    return { action: { type: "open_app", target: "notepad", name: "Notepad", countdown_sec: 3 }, reply: "Opening Notepad." };
   }
   if (low.includes("calculator") || low.includes("calc")) {
-    return { action: { type: "open_app", target: "calc", name: "Calculator", countdown_sec: 5 }, reply: "Opening Calculator in 5 seconds." };
+    return { action: { type: "open_app", target: "calc", name: "Calculator", countdown_sec: 3 }, reply: "Opening Calculator." };
   }
   if (low.includes("terminal") || low.includes("powershell") || low.includes("command prompt")) {
-    return { action: { type: "open_app", target: "terminal", name: "Terminal", countdown_sec: 5 }, reply: "Opening Terminal in 5 seconds." };
+    return { action: { type: "open_app", target: "terminal", name: "Terminal", countdown_sec: 3 }, reply: "Opening Terminal." };
   }
   if (low.includes("file explorer") || low.includes("my files") || low.includes("open files")) {
-    return { action: { type: "open_app", target: "explorer", name: "File Explorer", countdown_sec: 5 }, reply: "Opening File Explorer in 5 seconds." };
+    return { action: { type: "open_app", target: "explorer", name: "File Explorer", countdown_sec: 3 }, reply: "Opening File Explorer." };
   }
   if (low.includes("task manager")) {
-    return { action: { type: "open_app", target: "taskmgr", name: "Task Manager", countdown_sec: 5 }, reply: "Opening Task Manager in 5 seconds." };
+    return { action: { type: "open_app", target: "taskmgr", name: "Task Manager", countdown_sec: 3 }, reply: "Opening Task Manager." };
   }
   if (low.includes("settings") || low.includes("pc settings")) {
-    return { action: { type: "open_app", target: "settings", name: "Windows Settings", countdown_sec: 5 }, reply: "Opening Settings in 5 seconds." };
+    return { action: { type: "open_app", target: "settings", name: "Windows Settings", countdown_sec: 3 }, reply: "Opening Settings." };
   }
 
-  // 4. Open URLs
+  // 6. Safe Open URLs
   if (low.includes("youtube")) {
-    return { action: { type: "open_url", target: "https://youtube.com", name: "YouTube", countdown_sec: 5 }, reply: "Opening YouTube in 5 seconds." };
+    return { action: { type: "open_url", target: "https://youtube.com", name: "YouTube", countdown_sec: 3 }, reply: "Opening YouTube." };
   }
   if (low.includes("github")) {
-    return { action: { type: "open_url", target: "https://github.com", name: "GitHub", countdown_sec: 5 }, reply: "Opening GitHub in 5 seconds." };
+    return { action: { type: "open_url", target: "https://github.com", name: "GitHub", countdown_sec: 3 }, reply: "Opening GitHub." };
   }
   if (low.includes("twitter") || low.includes("open x")) {
-    return { action: { type: "open_url", target: "https://x.com", name: "X", countdown_sec: 5 }, reply: "Opening X in 5 seconds." };
+    return { action: { type: "open_url", target: "https://x.com", name: "X", countdown_sec: 3 }, reply: "Opening X." };
   }
   if (low.includes("reddit")) {
-    return { action: { type: "open_url", target: "https://reddit.com", name: "Reddit", countdown_sec: 5 }, reply: "Opening Reddit in 5 seconds." };
+    return { action: { type: "open_url", target: "https://reddit.com", name: "Reddit", countdown_sec: 3 }, reply: "Opening Reddit." };
   }
   if (low.includes("gmail") || low.includes("my email")) {
-    return { action: { type: "open_url", target: "https://mail.google.com", name: "Gmail", countdown_sec: 5 }, reply: "Opening Gmail in 5 seconds." };
-  }
-
-  // 5. System controls
-  if (low.includes("lock my pc") || low.includes("lock pc") || low.includes("lock computer") || low.includes("lock screen")) {
-    return { action: { type: "lock_pc", name: "Locking PC", countdown_sec: 5 }, reply: "Locking your PC in 5 seconds." };
+    return { action: { type: "open_url", target: "https://mail.google.com", name: "Gmail", countdown_sec: 3 }, reply: "Opening Gmail." };
   }
 
   return null;
