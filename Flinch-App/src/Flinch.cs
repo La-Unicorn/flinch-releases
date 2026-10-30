@@ -5635,6 +5635,8 @@ namespace FlinchApp
         private bool _isUpdateAvailable = false;
         private string _pendingUpdateUrl = null;
         private volatile bool _isDownloadingUpdate = false;
+        private double _actualDownloadProgress = 0.0;
+        private double _displayedDownloadProgress = 0.0;
         private DispatcherTimer _updateCheckTimer;
 
         // Centered 4 Dots (flinch-notch-idle.svg: 2 Mint #3DDC84, 2 White #FFFFFF)
@@ -6825,15 +6827,18 @@ namespace FlinchApp
         {
             if (_isDownloadingUpdate) return;
             _isDownloadingUpdate = true;
+            _actualDownloadProgress = 0.02;
+            _displayedDownloadProgress = 0.02;
 
             string url = _pendingUpdateUrl;
             if (string.IsNullOrWhiteSpace(url))
             {
-                url = "https://github.com/" + FlinchEnv.GitHubRepo + "/releases/download/v0.1.0/FlinchSetup.exe";
+                url = "https://github.com/" + FlinchEnv.GitHubRepo + "/releases/download/v1.0.0/FlinchSetup.exe";
             }
 
             SetUpdateVisualState(UpdateVisualState.Downloading);
-            _updateDownloadBtn.ToolTip = "Downloading latest Flinch update from GitHub...";
+            UpdateDownloadProgressArc(0.02);
+            _updateDownloadBtn.ToolTip = "Downloading latest Flinch update (0%)...";
             UpdateMultitaskDisplay();
 
             Task.Run(() =>
@@ -6853,19 +6858,57 @@ namespace FlinchApp
                         using (var resp = client.GetAsync(url, HttpCompletionOption.ResponseHeadersRead).GetAwaiter().GetResult())
                         {
                             resp.EnsureSuccessStatusCode();
+                            long totalBytes = resp.Content.Headers.ContentLength.HasValue && resp.Content.Headers.ContentLength.Value > 0
+                                ? resp.Content.Headers.ContentLength.Value
+                                : 840000L; // ~820 KB fallback if chunked
+
+                            using (var netStream = resp.Content.ReadAsStreamAsync().GetAwaiter().GetResult())
                             using (var fs = new FileStream(destExe, FileMode.Create, FileAccess.Write, FileShare.None))
                             {
-                                resp.Content.CopyToAsync(fs).GetAwaiter().GetResult();
+                                byte[] buffer = new byte[16384];
+                                long bytesReadTotal = 0;
+                                int lastReportedPct = -1;
+                                int read;
+                                while ((read = netStream.Read(buffer, 0, buffer.Length)) > 0)
+                                {
+                                    fs.Write(buffer, 0, read);
+                                    bytesReadTotal += read;
+                                    double frac = Math.Max(0.02, Math.Min(0.99, (double)bytesReadTotal / totalBytes));
+                                    _actualDownloadProgress = frac;
+
+                                    int pct = (int)Math.Round(frac * 100.0);
+                                    if (pct != lastReportedPct)
+                                    {
+                                        lastReportedPct = pct;
+                                        int capturedPct = pct;
+                                        Dispatcher.BeginInvoke(new Action(() =>
+                                        {
+                                            if (_updateDownloadBtn != null && _updateVisualState == UpdateVisualState.Downloading)
+                                            {
+                                                _updateDownloadBtn.ToolTip = string.Format("Downloading latest Flinch update ({0}%)...", capturedPct);
+                                            }
+                                        }));
+                                    }
+                                }
                             }
                         }
+                    }
+
+                    _actualDownloadProgress = 1.0;
+
+                    // Wait briefly until the visual progress ring smoothly reaches 100% before switching to the Download Complete SVG!
+                    for (int waitTick = 0; waitTick < 25 && _displayedDownloadProgress < 0.96; waitTick++)
+                    {
+                        Thread.Sleep(20);
                     }
 
                     FlinchEnv.Log("Update downloaded successfully. Launching installer...");
 
                     Dispatcher.BeginInvoke(new Action(() =>
                     {
+                        UpdateDownloadProgressArc(0.999);
                         SetUpdateVisualState(UpdateVisualState.Complete);
-                        _updateDownloadBtn.ToolTip = "Update downloaded! Installing...";
+                        _updateDownloadBtn.ToolTip = "Update downloaded (100%)! Installing...";
 
                         Task.Delay(600).ContinueWith(_ =>
                         {
@@ -9681,9 +9724,18 @@ private void FinishRecordingAndSend()
                 }
                 else if (_updateVisualState == UpdateVisualState.Downloading)
                 {
-                    double pCycle = (t % 3.2) / 3.2; // 0..1 over 3.2s (matches 03-progress-ring.svg)
-                    double sweep = (pCycle < 0.85) ? (pCycle / 0.85) : 1.0;
-                    UpdateDownloadProgressArc(sweep);
+                    // Smoothly advance the displayed ring toward the actual byte-stream download fraction (0.0 -> 1.0)
+                    double targetProg = Math.Max(0.02, Math.Min(1.0, _actualDownloadProgress));
+                    double diff = targetProg - _displayedDownloadProgress;
+                    if (diff > 0)
+                    {
+                        _displayedDownloadProgress += Math.Max(0.015, Math.Min(diff, Math.Max(0.075, diff * 0.35)));
+                    }
+                    else
+                    {
+                        _displayedDownloadProgress = targetProg;
+                    }
+                    UpdateDownloadProgressArc(_displayedDownloadProgress);
                 }
             }
         }
