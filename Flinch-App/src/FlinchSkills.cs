@@ -39,6 +39,10 @@ namespace FlinchApp
 
         public static bool IsFocusModeActive { get; set; }
         public static DateTime FocusModeEndUtc { get; set; }
+        public static IntPtr LastForegroundWindowHwnd { get; set; }
+
+        [DllImport("user32.dll")]
+        private static extern bool SetForegroundWindow(IntPtr hWnd);
 
         private static readonly JavaScriptSerializer Json = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
         private static readonly HttpClient Http = new HttpClient { Timeout = TimeSpan.FromSeconds(40) };
@@ -414,7 +418,7 @@ namespace FlinchApp
         }
 
         // =====================================================================
-        // 6. CLIPBOARD & INSTANT HIGHLIGHT-AND-SPEAK ACTIONS
+        // 6. CLIPBOARD & INSTANT HIGHLIGHT-CUT-TRANSFORM-PASTE (TEXT & CODE)
         // =====================================================================
         private static string TryClipboard(string transcript, string low)
         {
@@ -422,10 +426,22 @@ namespace FlinchApp
                                 || low.Contains("the text i copied") || low.Contains("this text i copied")
                                 || low.Contains("selected text") || low.Contains("highlighted text") || low.Contains("what i highlighted");
 
-            bool isInlineSelectionCmd = Regex.IsMatch(low, @"^(?:please\s+|can you\s+)?(?:rewrite|rephrase|reword|proofread|shorten|condense)\s+(?:this|that|it)\b")
-                                        || Regex.IsMatch(low, @"\b(?:fix|correct)\s+(?:the\s+)?(?:grammar|spelling|typos)\s+(?:in|on)\s+(?:this|that)\b")
-                                        || Regex.IsMatch(low, @"\b(?:make\s+this|rewrite\s+this\s+to\s+be)\s+(?:more\s+)?(?:professional|formal|casual|friendly|polite|concise|shorter|clearer)\b")
-                                        || Regex.IsMatch(low, @"\b(?:refactor|optimize|clean up)\s+this\s+(?:code|function|method|selection)\b");
+            // Match any inline highlight-and-replace / coding / solving voice command:
+            // e.g. "Replace this with a more professional line", "Change this to...", "Rewrite this...",
+            // "Fix this code", "Solve this", "Add error handling to this", "Make this polite", "Convert this to Python"
+            bool isInlineSelectionCmd = Regex.IsMatch(low, @"^(?:please\s+|can\s+you\s+|could\s+you\s+|flinch\s+)?(?:replace|change|swap|turn|convert|transform|rewrite|rephrase|reword|proofread|shorten|condense|expand|elaborate|improve|polish|fix|correct|solve|complete|finish|refactor|optimize|clean\s+up|update|modify|edit|add\s+to)\s+(?:this|that|it|the\s+selected|the\s+highlighted)\b")
+                                        || Regex.IsMatch(low, @"\b(?:replace|change|rewrite|rephrase|reword|turn|convert)\s+(?:this|that|it|the\s+highlighted\s+\w+|the\s+selected\s+\w+)\s+(?:with|to|into|in|so|for)\b")
+                                        || Regex.IsMatch(low, @"\b(?:fix|correct)\s+(?:the\s+)?(?:grammar|spelling|typos|bugs?|errors?|syntax|code)\s*(?:in\s+this|on\s+this|here)?\b")
+                                        || Regex.IsMatch(low, @"\b(?:make\s+this|rewrite\s+this\s+to\s+be)\s+(?:more\s+|a\s+lot\s+|much\s+)?(?:professional|formal|casual|friendly|polite|concise|shorter|clearer|better|funny|witty|confident|academic|clean|readable)\b")
+                                        || Regex.IsMatch(low, @"\b(?:refactor|optimize|clean\s+up|fix|debug|complete|comment|document|type)\s+this\s+(?:code|function|method|class|line|snippet|block|script|query|selection)\b")
+                                        || Regex.IsMatch(low, @"\b(?:add|insert|write)\s+.+\s+(?:to|into|for)\s+this\s*(?:code|function|line|selection|text)?\b")
+                                        || Regex.IsMatch(low, @"^(?:please\s+|can\s+you\s+)?(?:cut\s+(?:this|and\s+replace)|solve\s+this\s+and\s+replace|solve\s+and\s+paste)\b");
+
+            // Exclude whiteboard/tutor visual explanation intents like "explain how to solve this step by step"
+            if (isInlineSelectionCmd && (low.Contains("whiteboard") || low.Contains("step by step") || low.Contains("explain how") || low.Contains("show me how") || low.Contains("circle")))
+            {
+                isInlineSelectionCmd = false;
+            }
 
             if (!mentionsClip && !isInlineSelectionCmd) return null;
 
@@ -436,21 +452,30 @@ namespace FlinchApp
             Match tr = Regex.Match(low, @"translate\s+(?:it\s+|this\s+|that\s+|what\s+i\s+copied\s+|my\s+clipboard\s+|selected\s+text\s+)?(?:in)?to\s+([a-z]+)");
             if (tr.Success)
             {
-                instruction = "Translate the text into " + Capitalize(tr.Groups[1].Value) + ".";
+                instruction = "Translate the text into " + Capitalize(tr.Groups[1].Value) + ". Output only the translated text.";
+                if (low.Contains("translate this")) pasteInline = true;
             }
-            else if (Regex.IsMatch(low, @"\b(summari[sz]e|summary|tl;?dr|sum up)\b"))
+            else if (!isInlineSelectionCmd && Regex.IsMatch(low, @"\b(summari[sz]e|summary|tl;?dr|sum up)\b"))
             {
                 instruction = "Summarize this in 2 to 3 short sentences.";
                 speakResult = true;
                 pasteInline = false;
             }
+            else if (!isInlineSelectionCmd && Regex.IsMatch(low, @"\b(explain|simplify|what does this mean)\b"))
+            {
+                instruction = "Explain this in simple words in 2 to 3 sentences.";
+                speakResult = true;
+                pasteInline = false;
+            }
+            else if (isInlineSelectionCmd)
+            {
+                // Pass the user's exact spoken instruction so ANY custom request works ("Replace this with a more professional line",
+                // "Change this to an async function", "Add try/catch error handling to this", "Solve this", etc.)
+                instruction = "User's spoken request: \"" + transcript.Trim() + "\". Transform, replace, rewrite, fix, solve, or update the highlighted text or code to fulfill this request. Output ONLY the final replacement text or code ready to paste in place, with no quotes, no markdown fences, and no explanation.";
+            }
             else if (Regex.IsMatch(low, @"\b(fix|proofread|correct)\b.*\b(grammar|spelling|typos|mistakes)\b") || low.Contains("proofread"))
             {
                 instruction = "Fix all spelling and grammar mistakes. Keep the same tone and meaning. Output only the corrected text.";
-            }
-            else if (Regex.IsMatch(low, @"\b(refactor|optimize|clean up)\s+this\s+(?:code|function|method|selection)\b"))
-            {
-                instruction = "Refactor and clean up this code while preserving its exact behavior. Output only the code without markdown fences.";
             }
             else if (Regex.IsMatch(low, @"\b(shorten|shorter|make it short|condense|concise)\b"))
             {
@@ -473,53 +498,93 @@ namespace FlinchApp
                 else if (low.Contains("confident")) tone = "confident";
                 instruction = "Rewrite this to be " + tone + ". Keep the meaning and output only the rewritten text.";
             }
-            else if (Regex.IsMatch(low, @"\b(explain|simplify|what does this mean)\b"))
-            {
-                instruction = "Explain this in simple words in 2 to 3 sentences.";
-                speakResult = true;
-                pasteInline = false;
-            }
 
             if (instruction == null) return null;
-
-            // If user invoked an inline highlight command, copy the active selection via Ctrl+C first
-            if (isInlineSelectionCmd)
-            {
-                try
-                {
-                    System.Windows.Forms.SendKeys.SendWait("^c");
-                    Thread.Sleep(120);
-                }
-                catch { }
-            }
-
-            string clip = GetClipboardText();
-            if (string.IsNullOrWhiteSpace(clip))
-            {
-                return "Highlight or copy some text first, then ask me again.";
-            }
 
             string instr = instruction;
             bool say = speakResult;
             bool doPaste = pasteInline;
+            IntPtr targetHwnd = LastForegroundWindowHwnd;
+
             Task.Run(delegate
             {
+                string clip = "";
+
+                if (doPaste)
+                {
+                    try
+                    {
+                        // 1. Restore focus to the user's active editor/window where text/code is highlighted
+                        if (targetHwnd != IntPtr.Zero)
+                        {
+                            SetForegroundWindow(targetHwnd);
+                            Thread.Sleep(55);
+                        }
+
+                        // 2. Cut (Ctrl+X) the highlighted selection so the old line/code is removed and captured!
+                        System.Windows.Forms.SendKeys.SendWait("^x");
+                        Thread.Sleep(130);
+                        clip = GetClipboardText();
+
+                        // Fallback: if Ctrl+X didn't populate clipboard (e.g. read-only buffer or slow app), try Ctrl+C
+                        if (string.IsNullOrWhiteSpace(clip))
+                        {
+                            System.Windows.Forms.SendKeys.SendWait("^c");
+                            Thread.Sleep(110);
+                            clip = GetClipboardText();
+                        }
+                    }
+                    catch { }
+                }
+
+                if (string.IsNullOrWhiteSpace(clip))
+                {
+                    clip = GetClipboardText();
+                }
+
+                if (string.IsNullOrWhiteSpace(clip))
+                {
+                    SpeakSafe("Highlight or copy some text first, then ask me again.");
+                    return;
+                }
+
                 string result = TransformText(clip, instr);
                 if (string.IsNullOrWhiteSpace(result))
                 {
-                    SpeakSafe("Sorry, I couldn't process that text right now.");
+                    // If we cut the text and AI failed, put the original text back so user never loses work!
+                    if (doPaste)
+                    {
+                        SetClipboardText(clip);
+                        try
+                        {
+                            if (targetHwnd != IntPtr.Zero) SetForegroundWindow(targetHwnd);
+                            Thread.Sleep(50);
+                            System.Windows.Forms.SendKeys.SendWait("^v");
+                        }
+                        catch { }
+                    }
+                    SpeakSafe("Sorry, I couldn't process that selection right now.");
                     return;
                 }
+
                 SetClipboardText(result);
                 if (doPaste)
                 {
                     try
                     {
-                        Thread.Sleep(80);
+                        if (targetHwnd != IntPtr.Zero)
+                        {
+                            SetForegroundWindow(targetHwnd);
+                            Thread.Sleep(55);
+                        }
+                        else
+                        {
+                            Thread.Sleep(60);
+                        }
                         System.Windows.Forms.SendKeys.SendWait("^v");
                     }
                     catch { }
-                    SpeakSafe("Updated your selection and copied it to your clipboard.");
+                    SpeakSafe("Replaced.");
                 }
                 else if (say)
                 {
@@ -532,7 +597,7 @@ namespace FlinchApp
                 }
             });
 
-            return "On it.";
+            return doPaste ? "" : "On it.";
         }
 
         private static string TransformText(string text, string instruction)
@@ -870,8 +935,83 @@ namespace FlinchApp
             public string CategoryName { get; set; }
         }
 
+        private sealed class MovedFileHistoryEntry
+        {
+            public string OriginalSourcePath { get; set; }
+            public string MovedDestPath { get; set; }
+            public string CreatedDestDirectory { get; set; }
+        }
+
+        private static readonly object _moveHistoryLock = new object();
+        private static List<MovedFileHistoryEntry> _lastMovedFilesBatch = new List<MovedFileHistoryEntry>();
+
         private static string TryOrganizeOrMoveFiles(string transcript, string low)
         {
+            // 0. Undo Last File Organization / File Move ("undo that", "put those files back", "restore my desktop", "undo file move")
+            bool isUndoMove = Regex.IsMatch(low, @"\b(undo|revert)\b.*\b(file|files|move|organi[sz]e|desktop|downloads?|folder|that)\b")
+                              || Regex.IsMatch(low, @"\b(put|move)\s+(?:those|the|my)\s+files\s+back\b")
+                              || (low == "undo" || low == "undo that" || low == "put them back");
+
+            if (isUndoMove)
+            {
+                List<MovedFileHistoryEntry> batchToUndo = null;
+                lock (_moveHistoryLock)
+                {
+                    if (_lastMovedFilesBatch != null && _lastMovedFilesBatch.Count > 0)
+                    {
+                        batchToUndo = new List<MovedFileHistoryEntry>(_lastMovedFilesBatch);
+                        _lastMovedFilesBatch.Clear();
+                    }
+                }
+
+                if (batchToUndo == null || batchToUndo.Count == 0)
+                {
+                    if (low == "undo" || low == "undo that") return null;
+                    return "I don't have a recent file move or desktop organization to undo.";
+                }
+
+                int restored = 0;
+                var dirsToCleanup = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                for (int i = batchToUndo.Count - 1; i >= 0; i--)
+                {
+                    var item = batchToUndo[i];
+                    try
+                    {
+                        if (!File.Exists(item.MovedDestPath)) continue;
+                        string origDir = Path.GetDirectoryName(item.OriginalSourcePath);
+                        if (!string.IsNullOrEmpty(origDir) && !Directory.Exists(origDir))
+                        {
+                            Directory.CreateDirectory(origDir);
+                        }
+                        if (!File.Exists(item.OriginalSourcePath))
+                        {
+                            File.Move(item.MovedDestPath, item.OriginalSourcePath);
+                            restored++;
+                        }
+                        if (!string.IsNullOrEmpty(item.CreatedDestDirectory))
+                        {
+                            dirsToCleanup.Add(item.CreatedDestDirectory);
+                        }
+                    }
+                    catch { }
+                }
+
+                foreach (var dir in dirsToCleanup)
+                {
+                    try
+                    {
+                        if (Directory.Exists(dir) && Directory.GetFiles(dir).Length == 0 && Directory.GetDirectories(dir).Length == 0)
+                        {
+                            Directory.Delete(dir, false);
+                        }
+                    }
+                    catch { }
+                }
+
+                return string.Format("Done. I put {0} file{1} right back where {2}.",
+                    restored, restored == 1 ? "" : "s", restored == 1 ? "it was" : "they were");
+            }
+
             // 1. Full Folder Organize ("organize my desktop", "clean up my desktop", "sort my downloads", "tidy up my desktop", "organize messy files")
             bool isOrganizeCmd = Regex.IsMatch(low, @"\b(organi[sz]e|clean\s*up|tidy\s*up|declutter|sort)\b.*\b(desktop|downloads?|documents?|files|folders?)\b")
                                  || Regex.IsMatch(low, @"\b(put|move|group|sort)\b.*\bmessy\s+files\b");
@@ -1302,14 +1442,18 @@ namespace FlinchApp
             int moved = 0;
             if (plans == null) return 0;
 
+            var recordedBatch = new List<MovedFileHistoryEntry>();
+
             foreach (var p in plans)
             {
                 try
                 {
                     if (!File.Exists(p.SourcePath)) continue;
+                    string createdDir = null;
                     if (!Directory.Exists(p.DestDirectory))
                     {
                         Directory.CreateDirectory(p.DestDirectory);
+                        createdDir = p.DestDirectory;
                     }
 
                     string fileName = Path.GetFileName(p.SourcePath);
@@ -1332,6 +1476,12 @@ namespace FlinchApp
                     }
 
                     File.Move(p.SourcePath, destPath);
+                    recordedBatch.Add(new MovedFileHistoryEntry
+                    {
+                        OriginalSourcePath = p.SourcePath,
+                        MovedDestPath = destPath,
+                        CreatedDestDirectory = createdDir ?? p.DestDirectory
+                    });
                     moved++;
                 }
                 catch (Exception ex)
@@ -1339,6 +1489,15 @@ namespace FlinchApp
                     FlinchEnv.Log("ExecutePlannedFileMoves item error: " + ex.Message);
                 }
             }
+
+            if (recordedBatch.Count > 0)
+            {
+                lock (_moveHistoryLock)
+                {
+                    _lastMovedFilesBatch = recordedBatch;
+                }
+            }
+
             return moved;
         }
 

@@ -2008,6 +2008,16 @@ namespace FlinchApp
         private static OverlayWindow _activeInstance = null;
         private static readonly object _instanceLock = new object();
 
+        public static bool IsOpen
+        {
+            get
+            {
+                lock (_instanceLock) { return _activeInstance != null && !_activeInstance._isDismissing; }
+            }
+        }
+
+        public static string ActiveWhiteboardContext { get; private set; }
+
         private readonly Canvas _canvas;
         private readonly ScenePayload _scene;
         private readonly int _speechDurationMs;
@@ -2106,6 +2116,7 @@ namespace FlinchApp
                 toClose = _activeInstance;
                 _activeInstance = null;
             }
+            ActiveWhiteboardContext = null;
             if (toClose != null)
             {
                 try { toClose.Close(); } catch { }
@@ -2352,6 +2363,10 @@ namespace FlinchApp
             else if (type == "spotlight" && obj.rect != null)
             {
                 RenderSpotlight(obj);
+            }
+            else if (type == "checkmark" || type == "check")
+            {
+                RenderCheckmark(obj, immediate);
             }
             else if (type == "notepad" || type == "notebook")
             {
@@ -2633,9 +2648,19 @@ namespace FlinchApp
             var loopPts = BuildHandDrawnCirclePoints(cx, cy, rx, ry, (cx + cy) * 0.01);
             AnimateHandDrawnPolyline(_canvas, loopPts, strokeCol, strokeW, 750, immediate);
 
-            if (!string.IsNullOrWhiteSpace(obj.label) || !string.IsNullOrWhiteSpace(obj.text))
+            string labelText = !string.IsNullOrWhiteSpace(obj.label) ? obj.label : obj.text;
+            if (obj.step.HasValue && obj.step.Value >= 1 && !string.IsNullOrWhiteSpace(labelText))
             {
-                string labelText = !string.IsNullOrWhiteSpace(obj.label) ? obj.label : obj.text;
+                string stepPrefix = obj.step.Value.ToString() + ".";
+                string stepParen = "(" + obj.step.Value.ToString() + ")";
+                if (!labelText.StartsWith(stepPrefix) && !labelText.StartsWith(stepParen) && !labelText.StartsWith("Step ", StringComparison.OrdinalIgnoreCase))
+                {
+                    labelText = string.Format("({0}) {1}", obj.step.Value, labelText);
+                }
+            }
+
+            if (!string.IsNullOrWhiteSpace(labelText))
+            {
                 var tag = CreateAnnotationLabel(labelText, strokeCol);
                 tag.Opacity = immediate ? 1.0 : 0.0;
                 Canvas.SetLeft(tag, Math.Max(12, Math.Min(Width - 220, cx - rx * 0.5)));
@@ -2647,6 +2672,78 @@ namespace FlinchApp
                     var tagFade = new System.Windows.Media.Animation.DoubleAnimation(0.0, 1.0, new Duration(TimeSpan.FromMilliseconds(240)))
                     {
                         BeginTime = TimeSpan.FromMilliseconds(580)
+                    };
+                    tag.BeginAnimation(UIElement.OpacityProperty, tagFade);
+                }
+            }
+        }
+
+        // Renders a hand-sketched green checkmark ✓ next to a correct student step ("Check my work" / Practice Mode)
+        private void RenderCheckmark(SceneObjectPayload obj, bool immediate = false)
+        {
+            double cx = 0, cy = 0;
+            if (obj.rect != null)
+            {
+                double rectX = Math.Max(0.0, Math.Min(1.0, obj.rect.x)) * Width;
+                double rectY = Math.Max(0.0, Math.Min(1.0, obj.rect.y)) * Height;
+                double rw = Math.Max(18, Math.Min(1.0, obj.rect.w) * Width);
+                double rh = Math.Max(16, Math.Min(1.0, obj.rect.h) * Height);
+                // Place the checkmark at the right edge of the student's step box
+                cx = Math.Min(Width - 48, rectX + rw + 14);
+                cy = rectY + rh * 0.52;
+            }
+            else if (obj.from != null)
+            {
+                cx = Math.Max(0.0, Math.Min(1.0, obj.from.x)) * Width;
+                cy = Math.Max(0.0, Math.Min(1.0, obj.from.y)) * Height;
+            }
+            else return;
+
+            Color checkCol = Color.FromRgb(0x16, 0xA3, 0x4A); // Teacher Emerald Green #16A34A
+            if (!string.IsNullOrWhiteSpace(obj.color) && !obj.color.Equals("#3DDC84", StringComparison.OrdinalIgnoreCase))
+            {
+                checkCol = ParseSceneColor(obj.color, Color.FromRgb(0x16, 0xA3, 0x4A));
+            }
+
+            // Build an organic hand-sketched checkmark stroke (short down-stroke -> sweeping upward tick)
+            var checkPts = new List<Point>();
+            Point pStart = new Point(cx - 12, cy - 2);
+            Point pVertex = new Point(cx - 3, cy + 9);
+            Point pEnd = new Point(cx + 18, cy - 15);
+
+            for (int i = 0; i <= 10; i++)
+            {
+                double u = (double)i / 10;
+                checkPts.Add(new Point(
+                    pStart.X + u * (pVertex.X - pStart.X),
+                    pStart.Y + u * (pVertex.Y - pStart.Y) + Math.Sin(u * Math.PI) * 1.1));
+            }
+            for (int i = 1; i <= 18; i++)
+            {
+                double u = (double)i / 18;
+                // Slight natural upward curve as a tutor flicks the pen upward
+                double arc = -Math.Sin(u * Math.PI) * 2.6;
+                checkPts.Add(new Point(
+                    pVertex.X + u * (pEnd.X - pVertex.X) + arc * 0.5,
+                    pVertex.Y + u * (pEnd.Y - pVertex.Y) + arc));
+            }
+
+            AnimateHandDrawnPolyline(_canvas, checkPts, checkCol, 4.2, 540, immediate);
+
+            string labelText = !string.IsNullOrWhiteSpace(obj.label) ? obj.label : obj.text;
+            if (!string.IsNullOrWhiteSpace(labelText))
+            {
+                var tag = CreateAnnotationLabel(labelText, checkCol);
+                tag.Opacity = immediate ? 1.0 : 0.0;
+                Canvas.SetLeft(tag, Math.Max(12, Math.Min(Width - 200, cx + 22)));
+                Canvas.SetTop(tag, Math.Max(12, cy - 18));
+                _canvas.Children.Add(tag);
+
+                if (!immediate)
+                {
+                    var tagFade = new System.Windows.Media.Animation.DoubleAnimation(0.0, 1.0, new Duration(TimeSpan.FromMilliseconds(220)))
+                    {
+                        BeginTime = TimeSpan.FromMilliseconds(420)
                     };
                     tag.BeginAnimation(UIElement.OpacityProperty, tagFade);
                 }
@@ -3608,18 +3705,128 @@ namespace FlinchApp
                 mainStack.Children.Add(switchBtn);
             }
 
-            // 4. Bottom Whiteboard Marker Tray (Red Marker, Blue Marker, Green Marker, Eraser)
+            // Record the active Whiteboard content so follow-up voice questions ("Why did you do step 2?", "Give me a practice problem") have full context!
+            string wbTitle = !string.IsNullOrWhiteSpace(obj.title) ? obj.title : (!string.IsNullOrWhiteSpace(obj.label) ? obj.label : "Flinch Whiteboard");
+            string wbBody = !string.IsNullOrWhiteSpace(obj.text) ? obj.text : "";
+            ActiveWhiteboardContext = wbTitle + "\r\n" + wbBody;
+
+            // 4. Bottom Footer Bar: [📋 Copy Steps] [🖼️ Save PNG] on left + Marker Tray on right
+            var footerGrid = new Grid { Margin = new Thickness(0, 12, 0, 0) };
+            var actionsBar = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                HorizontalAlignment = HorizontalAlignment.Left,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+
+            var copyBtnText = new TextBlock
+            {
+                Text = "📋 Copy Steps",
+                Foreground = new SolidColorBrush(Color.FromRgb(51, 65, 85)),
+                FontSize = 11.5,
+                FontWeight = FontWeights.SemiBold,
+                FontFamily = new FontFamily("Segoe UI Semibold, Segoe UI")
+            };
+            var copyBtn = new Border
+            {
+                Background = new SolidColorBrush(Color.FromRgb(248, 250, 252)),
+                BorderBrush = new SolidColorBrush(Color.FromRgb(203, 213, 225)),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(6),
+                Padding = new Thickness(10, 4, 10, 4),
+                Margin = new Thickness(0, 0, 8, 0),
+                Cursor = Cursors.Hand,
+                Child = copyBtnText
+            };
+            copyBtn.MouseEnter += (s, e) => copyBtn.Background = new SolidColorBrush(Color.FromRgb(241, 245, 249));
+            copyBtn.MouseLeave += (s, e) => copyBtn.Background = new SolidColorBrush(Color.FromRgb(248, 250, 252));
+            copyBtn.MouseLeftButtonDown += (s, e) =>
+            {
+                e.Handled = true;
+                try
+                {
+                    System.Windows.Clipboard.SetText(wbTitle + "\r\n\r\n" + wbBody);
+                    copyBtnText.Text = "✓ Copied!";
+                    copyBtnText.Foreground = new SolidColorBrush(Color.FromRgb(0x16, 0xA3, 0x4A));
+                    Task.Delay(1800).ContinueWith(_ =>
+                    {
+                        Dispatcher.BeginInvoke(new Action(() =>
+                        {
+                            copyBtnText.Text = "📋 Copy Steps";
+                            copyBtnText.Foreground = new SolidColorBrush(Color.FromRgb(51, 65, 85));
+                        }));
+                    });
+                }
+                catch { }
+            };
+
+            var saveBtnText = new TextBlock
+            {
+                Text = "🖼️ Save PNG",
+                Foreground = new SolidColorBrush(Color.FromRgb(51, 65, 85)),
+                FontSize = 11.5,
+                FontWeight = FontWeights.SemiBold,
+                FontFamily = new FontFamily("Segoe UI Semibold, Segoe UI")
+            };
+            var saveBtn = new Border
+            {
+                Background = new SolidColorBrush(Color.FromRgb(248, 250, 252)),
+                BorderBrush = new SolidColorBrush(Color.FromRgb(203, 213, 225)),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(6),
+                Padding = new Thickness(10, 4, 10, 4),
+                Cursor = Cursors.Hand,
+                Child = saveBtnText
+            };
+            saveBtn.MouseEnter += (s, e) => saveBtn.Background = new SolidColorBrush(Color.FromRgb(241, 245, 249));
+            saveBtn.MouseLeave += (s, e) => saveBtn.Background = new SolidColorBrush(Color.FromRgb(248, 250, 252));
+            saveBtn.MouseLeftButtonDown += (s, e) =>
+            {
+                e.Handled = true;
+                try
+                {
+                    int w = Math.Max(300, (int)Math.Ceiling(boardOuter.ActualWidth));
+                    int h = Math.Max(200, (int)Math.Ceiling(boardOuter.ActualHeight));
+                    var rtb = new System.Windows.Media.Imaging.RenderTargetBitmap(w, h, 96d, 96d, PixelFormats.Pbgra32);
+                    rtb.Render(boardOuter);
+                    var encoder = new System.Windows.Media.Imaging.PngBitmapEncoder();
+                    encoder.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(rtb));
+                    string desktop = Environment.GetFolderPath(Environment.SpecialFolder.Desktop);
+                    string outPath = System.IO.Path.Combine(desktop, string.Format("Flinch_Whiteboard_{0:yyyyMMdd_HHmmss}.png", DateTime.Now));
+                    using (var fs = new FileStream(outPath, FileMode.Create, FileAccess.Write))
+                    {
+                        encoder.Save(fs);
+                    }
+                    saveBtnText.Text = "✓ Saved to Desktop!";
+                    saveBtnText.Foreground = new SolidColorBrush(Color.FromRgb(0x16, 0xA3, 0x4A));
+                    Task.Delay(2000).ContinueWith(_ =>
+                    {
+                        Dispatcher.BeginInvoke(new Action(() =>
+                        {
+                            saveBtnText.Text = "🖼️ Save PNG";
+                            saveBtnText.Foreground = new SolidColorBrush(Color.FromRgb(51, 65, 85));
+                        }));
+                    });
+                }
+                catch { }
+            };
+
+            actionsBar.Children.Add(copyBtn);
+            actionsBar.Children.Add(saveBtn);
+            footerGrid.Children.Add(actionsBar);
+
             var trayBar = new StackPanel
             {
                 Orientation = Orientation.Horizontal,
                 HorizontalAlignment = HorizontalAlignment.Right,
-                Margin = new Thickness(0, 12, 0, 0)
+                VerticalAlignment = VerticalAlignment.Center
             };
-            trayBar.Children.Add(new Border { Width = 28, Height = 5, CornerRadius = new CornerRadius(2.5), Background = new SolidColorBrush(Color.FromRgb(0xE1, 0x1D, 0x48)), Margin = new Thickness(0, 0, 6, 0) });
-            trayBar.Children.Add(new Border { Width = 28, Height = 5, CornerRadius = new CornerRadius(2.5), Background = new SolidColorBrush(Color.FromRgb(0x02, 0x84, 0xC7)), Margin = new Thickness(0, 0, 6, 0) });
-            trayBar.Children.Add(new Border { Width = 28, Height = 5, CornerRadius = new CornerRadius(2.5), Background = new SolidColorBrush(Color.FromRgb(0x16, 0xA3, 0x4A)), Margin = new Thickness(0, 0, 8, 0) });
-            trayBar.Children.Add(new Border { Width = 22, Height = 7, CornerRadius = new CornerRadius(2), Background = new SolidColorBrush(Color.FromRgb(100, 116, 139)) });
-            mainStack.Children.Add(trayBar);
+            trayBar.Children.Add(new Border { Width = 26, Height = 5, CornerRadius = new CornerRadius(2.5), Background = new SolidColorBrush(Color.FromRgb(0xE1, 0x1D, 0x48)), Margin = new Thickness(0, 0, 5, 0) });
+            trayBar.Children.Add(new Border { Width = 26, Height = 5, CornerRadius = new CornerRadius(2.5), Background = new SolidColorBrush(Color.FromRgb(0x02, 0x84, 0xC7)), Margin = new Thickness(0, 0, 5, 0) });
+            trayBar.Children.Add(new Border { Width = 26, Height = 5, CornerRadius = new CornerRadius(2.5), Background = new SolidColorBrush(Color.FromRgb(0x16, 0xA3, 0x4A)), Margin = new Thickness(0, 0, 7, 0) });
+            trayBar.Children.Add(new Border { Width = 20, Height = 7, CornerRadius = new CornerRadius(2), Background = new SolidColorBrush(Color.FromRgb(100, 116, 139)) });
+            footerGrid.Children.Add(trayBar);
+            mainStack.Children.Add(footerGrid);
 
             rootGrid.Children.Add(mainStack);
             rootGrid.Children.Add(sketchOverlay);
@@ -4318,6 +4525,12 @@ namespace FlinchApp
                         }
                         catch { }
 
+                        if (OverlayWindow.IsOpen && !string.IsNullOrWhiteSpace(OverlayWindow.ActiveWhiteboardContext))
+                        {
+                            string wbCtx = "[Active Whiteboard Currently Open On Screen:\n" + OverlayWindow.ActiveWhiteboardContext + "]";
+                            clipText = string.IsNullOrWhiteSpace(clipText) ? wbCtx : (wbCtx + "\n\n" + clipText);
+                        }
+
                         if (!string.IsNullOrWhiteSpace(clipText))
                         {
                             if (clipText.Length > 4000) clipText = clipText.Substring(0, 4000);
@@ -4992,8 +5205,12 @@ namespace FlinchApp
             ResizeMode = ResizeMode.NoResize;
             UseLayoutRounding = true;
             SnapsToDevicePixels = true;
+            AllowDrop = true;
             Width = 540;
             Height = 260;
+
+            DragOver += OnNotchDragOver;
+            Drop += OnNotchDrop;
 
             PositionWindowTopCenter();
 
@@ -7621,7 +7838,21 @@ namespace FlinchApp
 
         public void StartVoiceRecording()
         {
-            OverlayWindow.CloseCurrent();
+            // Capture the user's active foreground window BEFORE touching any UI so inline Highlight->Cut->Transform->Paste can target it!
+            IntPtr myHwnd = new WindowInteropHelper(this).Handle;
+            IntPtr fgHwnd = NativeMethods.GetForegroundWindow();
+            if (fgHwnd != IntPtr.Zero && fgHwnd != myHwnd)
+            {
+                FlinchSkills.LastForegroundWindowHwnd = fgHwnd;
+            }
+            else if (fgHwnd == myHwnd)
+            {
+                fgHwnd = FlinchSkills.LastForegroundWindowHwnd;
+            }
+
+            // NOTE: Do NOT call OverlayWindow.CloseCurrent() here!
+            // Keeping the Whiteboard visible while the user presses Alt+V lets them ask follow-up questions
+            // ("Wait, why did you do step 2?", "Give me a practice problem") without losing the board.
             _autoCollapseTimer.Stop();
 
             if (!CheckInternetAvailable())
@@ -7681,10 +7912,6 @@ namespace FlinchApp
             FlinchEnv.Log("Started recording microphone immediately on Alt+V.");
 
             // Capture active foreground target concurrently in background while user speaks
-            IntPtr myHwnd = new WindowInteropHelper(this).Handle;
-            IntPtr fgHwnd = NativeMethods.GetForegroundWindow();
-            if (fgHwnd == myHwnd) fgHwnd = IntPtr.Zero;
-
             Task.Run(() =>
             {
                 CaptureAndStageActiveScreen(fgHwnd, myHwnd);
@@ -8027,7 +8254,14 @@ private void FinishRecordingAndSend()
                         if (skillSpeech != null)
                         {
                             FlinchSkills.RecordTurn(transcript, skillSpeech);
-                            if (skillSpeech.Length > 0) SpeakAnswer(skillSpeech);
+                            if (skillSpeech.Length > 0)
+                            {
+                                SpeakAnswer(skillSpeech);
+                            }
+                            else
+                            {
+                                SetIslandState(IslandState.Idle, "", "");
+                            }
                             return;
                         }
 
@@ -8953,6 +9187,79 @@ private void FinishRecordingAndSend()
                     UpdateDownloadProgressArc(sweep);
                 }
             }
+        }
+
+        private void OnNotchDragOver(object sender, DragEventArgs e)
+        {
+            if (e.Data != null && (e.Data.GetDataPresent(DataFormats.FileDrop) || e.Data.GetDataPresent(DataFormats.UnicodeText) || e.Data.GetDataPresent(DataFormats.Text)))
+            {
+                e.Effects = DragDropEffects.Copy;
+            }
+            else
+            {
+                e.Effects = DragDropEffects.None;
+            }
+            e.Handled = true;
+        }
+
+        private void OnNotchDrop(object sender, DragEventArgs e)
+        {
+            e.Handled = true;
+            try
+            {
+                if (e.Data != null && e.Data.GetDataPresent(DataFormats.FileDrop))
+                {
+                    var files = e.Data.GetData(DataFormats.FileDrop) as string[];
+                    if (files != null && files.Length > 0 && !string.IsNullOrWhiteSpace(files[0]) && File.Exists(files[0]))
+                    {
+                        string path = files[0];
+                        string ext = (System.IO.Path.GetExtension(path) ?? "").ToLowerInvariant();
+                        string fileName = System.IO.Path.GetFileName(path);
+
+                        if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".bmp" || ext == ".gif")
+                        {
+                            try
+                            {
+                                using (var bmp = new System.Drawing.Bitmap(path))
+                                {
+                                    var s = System.Windows.Forms.Screen.PrimaryScreen;
+                                    var pBounds = new NativeMethods.RECT { Left = s.Bounds.Left, Top = s.Bounds.Top, Right = s.Bounds.Right, Bottom = s.Bounds.Bottom };
+                                    var frame = new CapturedFrame(bmp, pBounds, fileName);
+                                    GeminiClient.SetStagedScreenFrame(frame);
+                                }
+                            }
+                            catch { }
+                            StartVoiceRecording();
+                            return;
+                        }
+                        else
+                        {
+                            try
+                            {
+                                string content = File.ReadAllText(path);
+                                if (content.Length > 5000) content = content.Substring(0, 5000);
+                                System.Windows.Clipboard.SetText("[Dropped File: " + fileName + " (" + path + ")]\r\n" + content);
+                            }
+                            catch
+                            {
+                                try { System.Windows.Clipboard.SetText("[Dropped File: " + fileName + " (" + path + ")]"); } catch { }
+                            }
+                            StartVoiceRecording();
+                            return;
+                        }
+                    }
+                }
+                else if (e.Data != null && (e.Data.GetDataPresent(DataFormats.UnicodeText) || e.Data.GetDataPresent(DataFormats.Text)))
+                {
+                    string droppedText = (e.Data.GetData(DataFormats.UnicodeText) ?? e.Data.GetData(DataFormats.Text) ?? "").ToString();
+                    if (!string.IsNullOrWhiteSpace(droppedText))
+                    {
+                        try { System.Windows.Clipboard.SetText(droppedText); } catch { }
+                        StartVoiceRecording();
+                    }
+                }
+            }
+            catch { }
         }
 
         private void OnWindowClosed(object sender, EventArgs e)

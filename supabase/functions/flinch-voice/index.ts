@@ -431,13 +431,18 @@ CRITICAL INSTRUCTIONS:
       }
 
       if (body.action === "transform_text") {
-        const srcText = String(body.text_input || "").slice(0, 8000).trim();
-        const instruction = String(body.instruction || "Summarize this text.").slice(0, 400).trim();
+        const srcText = String(body.text_input || "").slice(0, 12000).trim();
+        const instruction = String(body.instruction || "Summarize this text.").slice(0, 800).trim();
         if (!srcText) {
           return new Response(JSON.stringify({ error: "empty_text" }), { status: 400, headers: corsHeaders });
         }
-        const sysRule = `You transform text for the user exactly as instructed.
-RULES: Output ONLY the transformed text. No preamble, no quotes around it, no markdown, no explanations, no "Here is". Keep the original language unless asked to translate.`;
+        const sysRule = `You are an inline text & code editor that transforms, rewrites, solves, or completes the user's highlighted selection in-place.
+CRITICAL RULES:
+1. Output ONLY the exact replacement text or code that will be pasted directly where the selection was.
+2. NO preamble ("Here is...", "Sure:"), NO markdown code fences (\`\`\`), NO surrounding quotes unless the original selection had quotes, and NO explanations outside the text/code.
+3. If the selection is code (Python, JS, TS, C#, HTML, C++, SQL, etc.) and the user asks to fix, solve, complete, refactor, or add to it, return ONLY the valid, properly indented replacement code.
+4. If the selection is a math expression, question, or incomplete line and the user asks to solve or complete it, output the clean solved/completed result.
+5. Keep the original language unless asked to translate.`;
         let out = "";
         if (groqApiKey) {
           try {
@@ -1031,9 +1036,17 @@ Supported scene object types:
 - "circle": {"type": "circle", "box_2d": [350, 450, 430, 560], "step": 1, "label": "Step 1: (1+2) = 3", "color": "#E11D48"}
 - "highlight": {"type": "highlight", "box_2d": [350, 320, 430, 445], "step": 2, "label": "Step 2: 6 ÷ 2 = 3", "color": "#D97706"}
 - "arrow": {"type": "arrow", "from": {"x": 0.38, "y": 0.34}, "to": {"x": 0.50, "y": 0.34}, "step": 3, "label": "Step 3: 3 × 3 = 9", "color": "#2563EB"}
+- "checkmark": {"type": "checkmark", "box_2d": [320, 280, 370, 330], "step": 1, "label": "Correct!", "color": "#16A34A"}
 - "outline": {"type": "outline", "box_2d": [300, 400, 380, 600], "step": 1, "label": "Target"}
 - "callout": {"type": "callout", "box_2d": [400, 400, 500, 700], "text": "Explanation note"}
 - "notepad": {"type": "notepad", "title": "Step-by-Step Guide", "text": "1. First step...\\n2. Second step...\\n3. Third step...\\nResult: Final takeaway", "altAnswer": "", "altExplanation": ""}
+
+4. "CHECK MY WORK" / PRACTICE MODE:
+   - If the user says "check my work", "did I do this right", "is my solution right", or "grade my steps", inspect each step of their work on screen:
+   - Place a hand-drawn green "checkmark" object next to each correct step!
+   - Place a hand-drawn red "circle" around the exact part where a mistake was made (if any), and write a helpful hint on the "notepad" whiteboard without spoiling the whole problem!
+5. INTERACTIVE CLICK GUIDE ("How do I..." / "Walk me through..."):
+   - If the user asks how to click/navigate UI controls on screen (e.g. "how do I export this", "walk me through changing this setting"), generate numbered "circle" objects ("step": 1, "step": 2...) around each button they need to click in order!
 
 Return your output strictly as a JSON object:
 {
@@ -2216,7 +2229,7 @@ function formatBioPoints(extract: string, desc: string): string {
   return points.join("\n\n");
 }
 
-// Screen awareness query classifier (read screen, explain error, look at screen, point out, highlight)
+// Screen awareness query classifier (read screen, explain error, look at screen, point out, highlight, check my work, walk me through)
 function isScreenAwarenessQuery(q: string): boolean {
   const low = q.toLowerCase();
   const triggers = [
@@ -2227,6 +2240,9 @@ function isScreenAwarenessQuery(q: string): boolean {
     "point to", "highlight", "draw on", "circle the", "circle this", "arrow to", "where is the", "show me on", "which button",
     "how do i fix this", "solve this", "can you solve this",
     "solve the problem on", "check the screen", "on the screen", "on screen",
+    "check my work", "did i do this right", "is my solution right", "is this step right", "grade my",
+    "walk me through", "guide me through", "how do i click", "where do i click",
+    "why did you do step", "explain step", "practice problem", "similar problem",
     "6 ÷ 2", "6/2"
   ];
   return triggers.some((t) => low.includes(t));
@@ -2398,7 +2414,7 @@ function sanitizeScene(sceneRaw: any): any {
   const objects = Array.isArray(sceneRaw.objects) ? sceneRaw.objects : [];
   if (objects.length === 0) return null;
 
-  const validTypes = new Set(["arrow", "outline", "callout", "equation", "spotlight", "circle", "highlight", "draw", "pen", "path", "notepad", "notebook"]);
+  const validTypes = new Set(["arrow", "outline", "callout", "equation", "spotlight", "circle", "highlight", "checkmark", "check", "draw", "pen", "path", "notepad", "notebook"]);
   const cleanObjects: any[] = [];
 
   for (const obj of objects) {
