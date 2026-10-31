@@ -915,17 +915,267 @@ namespace FlinchApp
                 }
             }
 
-            // d) "find my <name> essay / file / document"
-            Match find = Regex.Match(low, @"\b(find|locate|search for|where is|where's)\b\s+(?:my\s+)?(.+?)(?:\s+file|\s+document|\s+essay|\s+notes)?$");
+            // d) Background Hard Drive / PC File Search with Dynamic Island Spinner
+            // Matches: "search hard drive for <query>", "search my hard drive for <query>", "search my pc for <query>", "find <query> on my hard drive", "find my <query> file"
+            Match hdSearch = Regex.Match(low, @"\b(?:search|scan|look\s+through)\s+(?:my\s+|the\s+|entire\s+|whole\s+)?(?:hard\s*drive|pc|computer|c\s*drive|disk|drive|files|folders|system)\s+(?:for\s+)?(?:a\s+|an\s+|my\s+|the\s+)?(?:file\s+(?:named|called)\s+|folder\s+(?:named|called)\s+)?(.+?)(?:\s+file|\s+folder|\s+document|\s+in\s+the\s+background)?$");
+            if (hdSearch.Success)
+            {
+                string query = hdSearch.Groups[1].Value.Trim().Trim('"', '\'', '.', '?', '!');
+                query = Regex.Replace(query, @"^(?:named|called|for)\s+", "", RegexOptions.IgnoreCase).Trim();
+                if (query.Length >= 2 && query != "file" && query != "a file" && query != "files")
+                {
+                    BackgroundTaskManager.StartFileSearchTask(query, true);
+                    return "Searching your hard drive for " + query + " in the background now.";
+                }
+            }
+
+            // e) Smart File & Folder Deletion with Confirmation ("delete <file/folder>", "delete my <name> file", "remove <name> from my desktop/downloads")
+            if (!low.Contains("recycle bin") && !low.Contains("empty trash") && !low.Contains("this line") && !low.Contains("selected text"))
+            {
+                Match delMatch = Regex.Match(low, @"^\s*(?:please\s+|can\s+you\s+|could\s+you\s+)?\b(delete|remove|erase)\b\s+(?:my\s+|the\s+)?(?:file\s+|folder\s+|document\s+|image\s+|photo\s+)?(?:named\s+|called\s+)?(.+?)$");
+                if (delMatch.Success)
+                {
+                    string delResp = StageDeleteFileOrFolder(delMatch.Groups[2].Value.Trim(), low);
+                    if (delResp != null) return delResp;
+                }
+            }
+
+            // f) "find my <name> essay / file / document" or "find <name> on my hard drive / pc"
+            Match find = Regex.Match(low, @"\b(find|locate|search\s+for|where\s+is|where's)\b\s+(?:my\s+|the\s+|a\s+)?(?:file\s+(?:named|called)\s+|folder\s+(?:named|called)\s+)?(.+?)(?:\s+file|\s+document|\s+essay|\s+notes|\s+folder)?$");
             if (find.Success)
             {
-                string query = find.Groups[2].Value.Trim();
-                if (query.Length < 3 || query == "file" || query == "document" || query == "it" || query == "folder") return null;
-                Task.Run(delegate { FindAndReveal(query); });
-                return "Searching for your " + query + " file now.";
+                string query = find.Groups[2].Value.Trim().Trim('"', '\'', '.', '?', '!');
+                bool isHardDrive = query.Contains("hard drive") || query.Contains("harddrive") || query.Contains("c drive") || query.Contains("my pc") || query.Contains("my computer") || low.Contains("hard drive") || low.Contains("in the background");
+                query = Regex.Replace(query, @"\b(on|in)\s+(?:my\s+|the\s+)?(hard\s*drive|pc|computer|c\s*drive|disk|desktop|downloads|documents)\b", "", RegexOptions.IgnoreCase).Trim();
+                query = Regex.Replace(query, @"\b(file|document|folder|in\s+the\s+background)\b$", "", RegexOptions.IgnoreCase).Trim();
+                if (query.Length < 2 || query == "file" || query == "document" || query == "it" || query == "folder" || query == "this") return null;
+
+                BackgroundTaskManager.StartFileSearchTask(query, isHardDrive);
+                return isHardDrive
+                    ? ("Searching your hard drive for " + query + " in the background now.")
+                    : ("Searching your files for " + query + " in the background now.");
             }
 
             return null;
+        }
+
+        public static string StageDeleteFileOrFolder(string rawTarget, string fullLowTranscript)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(rawTarget)) return null;
+                string target = rawTarget.Trim().Trim('"', '\'', '.', '?', '!');
+
+                string profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+                string desktop = Environment.GetFolderPath(Environment.SpecialFolder.Desktop);
+                string downloads = Path.Combine(profile, "Downloads");
+                string documents = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+                string pictures = Environment.GetFolderPath(Environment.SpecialFolder.MyPictures);
+                string flinchDir = Path.Combine(documents, "Flinch");
+
+                // Handle "latest download" / "latest screenshot"
+                if (target.Contains("latest download") || target.Contains("last download") || target.Contains("recent download"))
+                {
+                    string newest = NewestFile(false);
+                    if (newest == null) return "I couldn't find any recent download to delete.";
+                    return PromptApprovalForSingleDelete(newest, false);
+                }
+                if (target.Contains("latest screenshot") || target.Contains("last screenshot") || target.Contains("recent screenshot"))
+                {
+                    string newest = NewestFile(true);
+                    if (newest == null) return "I couldn't find any recent screenshot to delete.";
+                    return PromptApprovalForSingleDelete(newest, false);
+                }
+
+                // Determine if user specified a folder scope ("from my desktop", "in downloads", etc.)
+                var searchDirs = new List<string>();
+                if (Regex.IsMatch(target, @"\b(on|from|in)\s+(?:my\s+|the\s+)?desktop\b", RegexOptions.IgnoreCase))
+                {
+                    searchDirs.Add(desktop);
+                    target = Regex.Replace(target, @"\b(on|from|in)\s+(?:my\s+|the\s+)?desktop\b", "", RegexOptions.IgnoreCase).Trim();
+                }
+                else if (Regex.IsMatch(target, @"\b(on|from|in)\s+(?:my\s+|the\s+)?downloads?\b", RegexOptions.IgnoreCase))
+                {
+                    searchDirs.Add(downloads);
+                    target = Regex.Replace(target, @"\b(on|from|in)\s+(?:my\s+|the\s+)?downloads?\b", "", RegexOptions.IgnoreCase).Trim();
+                }
+                else if (Regex.IsMatch(target, @"\b(on|from|in)\s+(?:my\s+|the\s+)?documents?\b", RegexOptions.IgnoreCase))
+                {
+                    searchDirs.Add(documents);
+                    searchDirs.Add(flinchDir);
+                    target = Regex.Replace(target, @"\b(on|from|in)\s+(?:my\s+|the\s+)?documents?\b", "", RegexOptions.IgnoreCase).Trim();
+                }
+                else
+                {
+                    searchDirs.Add(desktop);
+                    searchDirs.Add(downloads);
+                    searchDirs.Add(documents);
+                    searchDirs.Add(flinchDir);
+                    searchDirs.Add(pictures);
+                }
+
+                target = Regex.Replace(target, @"^(?:the\s+|my\s+|a\s+)?(?:file|folder|document|image|photo)\s+(?:named\s+|called\s+)?", "", RegexOptions.IgnoreCase).Trim();
+                target = Regex.Replace(target, @"\s+(?:file|folder|document|please|now)$", "", RegexOptions.IgnoreCase).Trim();
+                if (target.Length < 2 || target == "it" || target == "this" || target == "that") return null;
+
+                string qLow = target.ToLowerInvariant();
+                string qNorm = Regex.Replace(qLow, @"[\s_\-]+", "");
+
+                string bestPath = null;
+                bool bestIsDir = false;
+                int bestScore = 0;
+                DateTime bestTime = DateTime.MinValue;
+
+                foreach (string dir in searchDirs)
+                {
+                    if (string.IsNullOrWhiteSpace(dir) || !Directory.Exists(dir)) continue;
+
+                    // Check direct path first
+                    string directCandidate = Path.Combine(dir, target);
+                    if (File.Exists(directCandidate))
+                    {
+                        bestPath = directCandidate;
+                        bestIsDir = false;
+                        bestScore = 100;
+                        break;
+                    }
+                    if (Directory.Exists(directCandidate))
+                    {
+                        bestPath = directCandidate;
+                        bestIsDir = true;
+                        bestScore = 100;
+                        break;
+                    }
+
+                    // Scan files in directory (top level + 1 level deep)
+                    try
+                    {
+                        foreach (string f in Directory.GetFiles(dir))
+                        {
+                            try
+                            {
+                                string fn = Path.GetFileName(f);
+                                string ext = (Path.GetExtension(f) ?? "").ToLowerInvariant();
+                                if (ext == ".lnk" || ext == ".ini") continue;
+                                string fnLow = fn.ToLowerInvariant();
+                                string noExt = (Path.GetFileNameWithoutExtension(f) ?? "").ToLowerInvariant();
+                                string fnNorm = Regex.Replace(noExt, @"[\s_\-]+", "");
+
+                                int sc = 0;
+                                if (fnLow == qLow || noExt == qLow || fnNorm == qNorm) sc = 95;
+                                else if (noExt.StartsWith(qLow) || fnNorm.StartsWith(qNorm)) sc = 85;
+                                else if (fnNorm.Contains(qNorm) || fnLow.Contains(qLow)) sc = 70;
+
+                                if (sc > 0)
+                                {
+                                    DateTime dt = File.GetLastWriteTime(f);
+                                    if (sc > bestScore || (sc == bestScore && dt > bestTime))
+                                    {
+                                        bestScore = sc;
+                                        bestTime = dt;
+                                        bestPath = f;
+                                        bestIsDir = false;
+                                    }
+                                }
+                            }
+                            catch { }
+                        }
+
+                        foreach (string sd in Directory.GetDirectories(dir))
+                        {
+                            try
+                            {
+                                string dn = Path.GetFileName(sd);
+                                string dnLow = dn.ToLowerInvariant();
+                                string dnNorm = Regex.Replace(dnLow, @"[\s_\-]+", "");
+                                int sc = 0;
+                                if (dnLow == qLow || dnNorm == qNorm) sc = 92;
+                                else if (dnLow.StartsWith(qLow) || dnNorm.StartsWith(qNorm)) sc = 80;
+                                else if (dnNorm.Contains(qNorm)) sc = 65;
+
+                                if (sc > 0)
+                                {
+                                    DateTime dt = Directory.GetLastWriteTime(sd);
+                                    if (sc > bestScore || (sc == bestScore && dt > bestTime))
+                                    {
+                                        bestScore = sc;
+                                        bestTime = dt;
+                                        bestPath = sd;
+                                        bestIsDir = true;
+                                    }
+                                }
+                            }
+                            catch { }
+                        }
+                    }
+                    catch { }
+                }
+
+                if (string.IsNullOrWhiteSpace(bestPath))
+                {
+                    return "I couldn't find a file or folder named " + target + " on your Desktop, Downloads, or Documents.";
+                }
+
+                return PromptApprovalForSingleDelete(bestPath, bestIsDir);
+            }
+            catch (Exception ex)
+            {
+                FlinchEnv.Log("StageDeleteFileOrFolder error: " + ex.Message);
+                return null;
+            }
+        }
+
+        private static string PromptApprovalForSingleDelete(string fullPath, bool isDirectory)
+        {
+            string itemName = Path.GetFileName(fullPath);
+            string parentDir = Path.GetDirectoryName(fullPath) ?? "";
+            string parentName = Path.GetFileName(parentDir);
+            if (string.IsNullOrWhiteSpace(parentName)) parentName = parentDir;
+
+            var approvalAction = new ActionPayload
+            {
+                type = "delete_file",
+                target = fullPath,
+                name = string.Format("Delete {0} \"{1}\"", isDirectory ? "folder" : "file", itemName),
+                requires_approval = true,
+                description = string.Format("Permanently deletes {0} \"{1}\" from your {2} folder. Please confirm before proceeding.", isDirectory ? "the folder" : "the file", itemName, parentName),
+                command = "Delete -> " + fullPath
+            };
+
+            if (System.Windows.Application.Current != null && System.Windows.Application.Current.Dispatcher != null)
+            {
+                System.Windows.Application.Current.Dispatcher.BeginInvoke(new Action(delegate
+                {
+                    ActionApprovalWindow.ShowApproval(
+                        approvalAction,
+                        delegate
+                        {
+                            try
+                            {
+                                if (isDirectory && Directory.Exists(fullPath))
+                                {
+                                    Directory.Delete(fullPath, true);
+                                    SpeakSafe("Deleted the folder " + itemName + ".");
+                                }
+                                else if (File.Exists(fullPath))
+                                {
+                                    File.Delete(fullPath);
+                                    SpeakSafe("Deleted " + itemName + ".");
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                SpeakSafe("Sorry, I couldn't delete " + itemName + ". " + ex.Message);
+                            }
+                        },
+                        delegate
+                        {
+                            SpeakSafe("Cancelled deleting " + itemName + ".");
+                        });
+                }));
+            }
+
+            return string.Format("I found {0} in your {1} folder. Please confirm on screen or say yes to delete it.", itemName, parentName);
         }
 
         private sealed class PlannedFileMove

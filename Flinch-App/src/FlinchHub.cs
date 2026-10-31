@@ -1819,6 +1819,8 @@ namespace FlinchApp
         public DateTime StartedUtc { get; set; }
         public bool IsCompleted { get; set; }
         public string OutputFilePath { get; set; }
+        public string SpokenCompletionMessage { get; set; }
+        public string AlertCompletionMessage { get; set; }
         public CancellationTokenSource Cts { get; set; }
     }
 
@@ -2011,6 +2013,290 @@ namespace FlinchApp
             }
 
             return string.Format("# {0} on {1}\r\n\r\nContent generated successfully by Flinch.", char.ToUpper(docType[0]) + docType.Substring(1), topic);
+        }
+
+        public static ActiveBackgroundTask StartFileSearchTask(string query, bool fullHardDrive)
+        {
+            string cleanQuery = (query ?? "").Trim().Trim('"', '\'', '.', ',', '?', '!');
+            cleanQuery = Regex.Replace(cleanQuery, @"(?i)\b(on\s+my\s+hard\s*drive|on\s+the\s+hard\s*drive|in\s+my\s+hard\s*drive|on\s+my\s+pc|on\s+my\s+computer|on\s+my\s+c\s*drive|in\s+the\s+background)\b", "").Trim();
+            if (string.IsNullOrWhiteSpace(cleanQuery)) cleanQuery = "file";
+
+            string profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            var task = new ActiveBackgroundTask
+            {
+                Id = Guid.NewGuid().ToString(),
+                Title = fullHardDrive ? string.Format("Searching Hard Drive: {0}", cleanQuery) : string.Format("Searching PC: {0}", cleanQuery),
+                Topic = cleanQuery,
+                TaskType = "file_search",
+                ProgressPercent = 12,
+                StatusDetail = "Scanning user folders...",
+                TargetDirectory = profile,
+                TargetFileName = cleanQuery,
+                StartedUtc = DateTime.UtcNow,
+                IsCompleted = false,
+                Cts = new CancellationTokenSource()
+            };
+
+            lock (_lock)
+            {
+                _tasks.Add(task);
+            }
+
+            NotifyUpdated();
+
+            Task.Run(() =>
+            {
+                try
+                {
+                    CancellationToken ct = task.Cts.Token;
+                    string qLow = cleanQuery.ToLowerInvariant();
+                    string qNorm = Regex.Replace(qLow, @"[\s_\-]+", "");
+                    string[] qWords = qLow.Split(new[] { ' ', '_', '-' }, StringSplitOptions.RemoveEmptyEntries);
+
+                    string bestMatch = null;
+                    int bestScore = 0;
+                    DateTime bestDate = DateTime.MinValue;
+
+                    // Stage 1: Priority user profile folders (Desktop, Downloads, Documents, Pictures, Videos, Music, Flinch)
+                    var priorityDirs = new List<string>
+                    {
+                        Environment.GetFolderPath(Environment.SpecialFolder.Desktop),
+                        System.IO.Path.Combine(profile, "Downloads"),
+                        Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
+                        System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "Flinch"),
+                        Environment.GetFolderPath(Environment.SpecialFolder.MyPictures),
+                        Environment.GetFolderPath(Environment.SpecialFolder.MyVideos),
+                        Environment.GetFolderPath(Environment.SpecialFolder.MyMusic)
+                    };
+
+                    int pIdx = 0;
+                    foreach (string dir in priorityDirs)
+                    {
+                        if (ct.IsCancellationRequested) return;
+                        pIdx++;
+                        task.ProgressPercent = 12 + (pIdx * 34 / Math.Max(1, priorityDirs.Count));
+                        task.StatusDetail = "Scanning " + System.IO.Path.GetFileName(dir) + "...";
+                        NotifyUpdated();
+
+                        if (!string.IsNullOrWhiteSpace(dir) && Directory.Exists(dir))
+                        {
+                            ScanDirectoryTreeSafe(dir, qLow, qNorm, qWords, 6, ct, ref bestMatch, ref bestScore, ref bestDate);
+                        }
+                    }
+
+                    // Keep spinner visible briefly so the user sees smooth progress feedback even on ultra-fast SSD hits
+                    Thread.Sleep(450);
+
+                    // Stage 2: Full Hard Drive / Fixed Drives scan if requested or if no strong match found in user folders
+                    if (!ct.IsCancellationRequested && (fullHardDrive || bestScore < 75))
+                    {
+                        var rootsToScan = new List<string>();
+                        try
+                        {
+                            foreach (var drv in DriveInfo.GetDrives())
+                            {
+                                if (drv != null && drv.IsReady && drv.DriveType == DriveType.Fixed)
+                                {
+                                    string[] topDirs = null;
+                                    try { topDirs = Directory.GetDirectories(drv.RootDirectory.FullName); } catch { }
+                                    if (topDirs != null)
+                                    {
+                                        foreach (string td in topDirs)
+                                        {
+                                            if (!IsSkippedSystemDirectory(td))
+                                            {
+                                                rootsToScan.Add(td);
+                                            }
+                                        }
+                                    }
+                                    // Also check loose files on root of drive (e.g. C:\)
+                                    ScanSingleDirectoryFiles(drv.RootDirectory.FullName, qLow, qNorm, qWords, ref bestMatch, ref bestScore, ref bestDate);
+                                }
+                            }
+                        }
+                        catch { }
+
+                        int totalRoots = Math.Max(1, rootsToScan.Count);
+                        for (int r = 0; r < rootsToScan.Count; r++)
+                        {
+                            if (ct.IsCancellationRequested) return;
+                            string rootDir = rootsToScan[r];
+                            task.ProgressPercent = Math.Min(94, 48 + ((r + 1) * 46 / totalRoots));
+                            task.StatusDetail = "Searching " + rootDir + "...";
+                            NotifyUpdated();
+
+                            ScanDirectoryTreeSafe(rootDir, qLow, qNorm, qWords, 6, ct, ref bestMatch, ref bestScore, ref bestDate);
+                            if (bestScore >= 100) break; // Exact match found
+                        }
+                    }
+
+                    if (ct.IsCancellationRequested) return;
+
+                    task.ProgressPercent = 100;
+                    task.IsCompleted = true;
+
+                    if (!string.IsNullOrWhiteSpace(bestMatch) && (File.Exists(bestMatch) || Directory.Exists(bestMatch)))
+                    {
+                        task.OutputFilePath = bestMatch;
+                        string foundName = System.IO.Path.GetFileName(bestMatch);
+                        string parentDir = System.IO.Path.GetDirectoryName(bestMatch) ?? "";
+                        string parentFolder = System.IO.Path.GetFileName(parentDir);
+                        if (string.IsNullOrWhiteSpace(parentFolder)) parentFolder = parentDir;
+
+                        task.StatusDetail = "Found: " + foundName;
+                        task.AlertCompletionMessage = "Found: " + foundName;
+                        task.SpokenCompletionMessage = string.Format("I finished searching your hard drive and found {0} in {1}. I've highlighted it in File Explorer.", foundName, parentFolder);
+
+                        try
+                        {
+                            Process.Start(new ProcessStartInfo("explorer.exe", "/select,\"" + bestMatch + "\"") { UseShellExecute = false });
+                        }
+                        catch { }
+                    }
+                    else
+                    {
+                        task.StatusDetail = "Not found: " + cleanQuery;
+                        task.AlertCompletionMessage = string.Format("No file matching '{0}' found", cleanQuery);
+                        task.SpokenCompletionMessage = string.Format("I finished searching your hard drive, but I couldn't find any file matching {0}.", cleanQuery);
+                    }
+
+                    NotifyUpdated();
+
+                    if (OnTaskCompleted != null)
+                    {
+                        OnTaskCompleted(task);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    task.ProgressPercent = 100;
+                    task.IsCompleted = true;
+                    task.StatusDetail = "Search error: " + ex.Message;
+                    NotifyUpdated();
+                }
+            });
+
+            return task;
+        }
+
+        private static bool IsSkippedSystemDirectory(string dirPath)
+        {
+            if (string.IsNullOrWhiteSpace(dirPath)) return true;
+            string name = (System.IO.Path.GetFileName(dirPath) ?? "").ToLowerInvariant();
+            if (name.StartsWith(".") || name.StartsWith("$")) return true;
+            if (name == "windows" || name == "program files" || name == "program files (x86)" ||
+                name == "programdata" || name == "system volume information" || name == "recovery" ||
+                name == "perflogs" || name == "appdata" || name == "node_modules" ||
+                name == "packages" || name == "winreagent" || name == "msocache")
+            {
+                return true;
+            }
+            return false;
+        }
+
+        private static void ScanSingleDirectoryFiles(string dir, string qLow, string qNorm, string[] qWords, ref string bestMatch, ref int bestScore, ref DateTime bestDate)
+        {
+            string[] files = null;
+            try { files = Directory.GetFiles(dir); } catch { return; }
+            if (files == null) return;
+
+            for (int i = 0; i < files.Length; i++)
+            {
+                string f = files[i];
+                try
+                {
+                    string fileName = System.IO.Path.GetFileName(f);
+                    if (string.IsNullOrEmpty(fileName) || fileName.StartsWith(".")) continue;
+                    string ext = (System.IO.Path.GetExtension(f) ?? "").ToLowerInvariant();
+                    if (ext == ".tmp" || ext == ".crdownload" || ext == ".dll" || ext == ".sys" || ext == ".pdb") continue;
+
+                    int score = ScoreCandidateName(fileName, qLow, qNorm, qWords);
+                    if (score > 0)
+                    {
+                        DateTime dt = File.GetLastWriteTime(f);
+                        if (score > bestScore || (score == bestScore && dt > bestDate))
+                        {
+                            bestScore = score;
+                            bestDate = dt;
+                            bestMatch = f;
+                        }
+                    }
+                }
+                catch { }
+            }
+        }
+
+        private static int ScoreCandidateName(string fileName, string qLow, string qNorm, string[] qWords)
+        {
+            string fLow = fileName.ToLowerInvariant();
+            string noExt = (System.IO.Path.GetFileNameWithoutExtension(fileName) ?? "").ToLowerInvariant();
+            string fNorm = Regex.Replace(noExt, @"[\s_\-]+", "");
+
+            if (fLow == qLow || noExt == qLow || fNorm == qNorm) return 100;
+            if (noExt.StartsWith(qLow) || fNorm.StartsWith(qNorm)) return 88;
+            if (qWords != null && qWords.Length > 1)
+            {
+                bool allWords = true;
+                for (int w = 0; w < qWords.Length; w++)
+                {
+                    if (qWords[w].Length >= 2 && !fLow.Contains(qWords[w]))
+                    {
+                        allWords = false;
+                        break;
+                    }
+                }
+                if (allWords) return 80;
+            }
+            if (fNorm.Length >= 2 && qNorm.Length >= 2 && fNorm.Contains(qNorm)) return 65;
+            return 0;
+        }
+
+        private static void ScanDirectoryTreeSafe(string rootDir, string qLow, string qNorm, string[] qWords, int maxDepth, CancellationToken ct, ref string bestMatch, ref int bestScore, ref DateTime bestDate)
+        {
+            var queue = new Queue<KeyValuePair<string, int>>();
+            queue.Enqueue(new KeyValuePair<string, int>(rootDir, 0));
+            int visitedDirs = 0;
+
+            while (queue.Count > 0 && !ct.IsCancellationRequested && visitedDirs < 2800)
+            {
+                var item = queue.Dequeue();
+                string curDir = item.Key;
+                int depth = item.Value;
+                visitedDirs++;
+
+                ScanSingleDirectoryFiles(curDir, qLow, qNorm, qWords, ref bestMatch, ref bestScore, ref bestDate);
+                if (bestScore >= 100) return;
+
+                if (depth >= maxDepth) continue;
+
+                string[] subDirs = null;
+                try { subDirs = Directory.GetDirectories(curDir); } catch { continue; }
+                if (subDirs == null) continue;
+
+                for (int i = 0; i < subDirs.Length; i++)
+                {
+                    string sd = subDirs[i];
+                    try
+                    {
+                        if (IsSkippedSystemDirectory(sd)) continue;
+                        var attr = File.GetAttributes(sd);
+                        if ((attr & FileAttributes.ReparsePoint) != 0 || (attr & FileAttributes.System) != 0) continue;
+
+                        // Also check if a folder name itself matches the search query
+                        string folderName = System.IO.Path.GetFileName(sd);
+                        int folderScore = ScoreCandidateName(folderName, qLow, qNorm, qWords);
+                        if (folderScore >= 85 && folderScore > bestScore)
+                        {
+                            bestScore = folderScore - 2; // Slight preference for exact files over folders
+                            bestDate = Directory.GetLastWriteTime(sd);
+                            bestMatch = sd;
+                        }
+
+                        queue.Enqueue(new KeyValuePair<string, int>(sd, depth + 1));
+                    }
+                    catch { }
+                }
+            }
         }
 
         public static ActiveBackgroundTask GetLatestActiveTask()

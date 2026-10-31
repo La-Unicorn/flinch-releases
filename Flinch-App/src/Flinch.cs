@@ -123,6 +123,8 @@ namespace FlinchApp
 
         public const uint MOUSEEVENTF_LEFTDOWN = 0x0002;
         public const uint MOUSEEVENTF_LEFTUP = 0x0004;
+        public const uint MOUSEEVENTF_RIGHTDOWN = 0x0008;
+        public const uint MOUSEEVENTF_RIGHTUP = 0x0010;
 
         public static void MakeToolWindow(IntPtr hwnd)
         {
@@ -3775,7 +3777,7 @@ namespace FlinchApp
                 var titleStack = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
                 titleStack.Children.Add(new TextBlock
                 {
-                    Text = string.IsNullOrWhiteSpace(obj.title) ? "Step-by-Step Whiteboard" : obj.title,
+                    Text = string.IsNullOrWhiteSpace(obj.title) ? "Flinch Whiteboard" : obj.title,
                     Foreground = new SolidColorBrush(Color.FromRgb(15, 23, 42)),
                     FontWeight = FontWeights.Bold,
                     FontSize = 16.5,
@@ -3810,11 +3812,21 @@ namespace FlinchApp
             AnimateHandDrawnPolyline(underlineCanvas, ulPts, Color.FromRgb(0xE1, 0x1D, 0x48), 2.6, 260, immediate);
             mainStack.Children.Add(underlineCanvas);
 
-            // 2. Step-by-Step Handwritten Guide Rows + Hand-Drawn Step Circles & Arrows (paced with speech!)
+            // 2. Determine Whiteboard Format:
+            //    - "steps" mode ONLY for Math, Science, Equations, Calculations, or explicit step-by-step problem solving!
+            //    - "paragraph" mode for general explanations, biographies, concepts, history, summaries, or Exa AI research notes!
             var modernPanel = new StackPanel();
             string solutionText = obj.text ?? "";
-            var rawLines = solutionText.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+            string styleLow = (obj.style ?? "").ToLowerInvariant().Trim();
+            string titleLow = (obj.title ?? "").ToLowerInvariant().Trim();
 
+            bool hasExplicitResultLine = Regex.IsMatch(solutionText, @"(^|\n)\s*(?:Result|Answer|Final\s+Answer|Solution)\s*:", RegexOptions.IgnoreCase);
+            bool hasMathOrCalc = Regex.IsMatch(solutionText, @"(\d+\s*[\+\-\*\/÷×\=\^]\s*\d+)|(\b(?:x|y)\s*=)|(\bStep\s+1\b)", RegexOptions.IgnoreCase) ||
+                                 titleLow.Contains("solve") || titleLow.Contains("equation") || titleLow.Contains("math") || titleLow.Contains("order of operations") || titleLow.Contains("calculation");
+            bool isExplicitParagraph = (styleLow == "paragraph" || styleLow == "notes" || styleLow == "prose" || !string.IsNullOrWhiteSpace(obj.imageUrl));
+            bool isStepByStepSolve = (styleLow == "steps") || (!isExplicitParagraph && (hasExplicitResultLine || hasMathOrCalc));
+
+            var rawLines = solutionText.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
             var validLines = new List<string>();
             for (int li = 0; li < rawLines.Length; li++)
             {
@@ -3832,211 +3844,288 @@ namespace FlinchApp
             };
 
             int totalValidSteps = Math.Max(1, validLines.Count);
-            int totalSpeechSpreadMs = (int)(_speechDurationMs * 0.80);
-            int msPerStepWindow = Math.Max(1100, totalSpeechSpreadMs / totalValidSteps);
 
-            for (int stepIndex = 0; stepIndex < validLines.Count; stepIndex++)
+            if (!isStepByStepSolve)
             {
-                string rawLine = validLines[stepIndex];
-
-                // Strip leading numbering like "1.", "①", "Step 1:" so we can draw our own hand-sketched circle number!
-                string cleanStepText = Regex.Replace(rawLine, @"^(?:[①②③④⑤⑥]|(?:\d+[\.\)\:])|(?:Step\s+\d+[\.\)\:]?))\s*", "", RegexOptions.IgnoreCase).Trim();
-                if (string.IsNullOrEmpty(cleanStepText)) cleanStepText = rawLine;
-
-                // ONLY the very last line of a multi-step breakdown is marked as the final conclusion!
-                bool isFinalConclusion = (stepIndex == validLines.Count - 1 && validLines.Count > 1);
-
-                Color markerCol = isFinalConclusion
-                    ? Color.FromRgb(0xE1, 0x1D, 0x48)
-                    : stepColors[stepIndex % stepColors.Length];
-
-                var stepRow = new DockPanel
+                // =============================================================
+                // PARAGRAPH / NOTES MODE (Natural Handwritten Paragraphs)
+                // No numbered circles, no downward step arrows, no Result box!
+                // =============================================================
+                for (int pIndex = 0; pIndex < validLines.Count; pIndex++)
                 {
-                    Margin = new Thickness(0, 0, 0, 6),
-                    Visibility = immediate ? Visibility.Visible : Visibility.Collapsed
-                };
+                    string rawPara = validLines[pIndex];
+                    // Strip any accidental leading "1." or "Step 1:" if the model added one in paragraph mode
+                    string cleanPara = Regex.Replace(rawPara, @"^(?:[①②③④⑤⑥]|(?:\d+[\.\)\:])|(?:Step\s+\d+[\.\)\:]?))\s*", "", RegexOptions.IgnoreCase).Trim();
+                    if (string.IsNullOrEmpty(cleanPara)) cleanPara = rawPara;
+                    // Never show "Result:" prefix in paragraph mode
+                    cleanPara = Regex.Replace(cleanPara, @"^(?:Result|Conclusion|Takeaway)\s*:\s*", "", RegexOptions.IgnoreCase).Trim();
 
-                // Left hand-drawn step circle badge (1, 2, 3... or ✓ for final conclusion)
-                var badgeCanvas = new Canvas
-                {
-                    Width = 34,
-                    Height = 32,
-                    Margin = new Thickness(0, 2, 10, 0),
-                    VerticalAlignment = VerticalAlignment.Top
-                };
-                var miniCirclePts = BuildHandDrawnCirclePoints(16, 15, 13, 11, stepIndex * 1.7);
-                var miniPoly = new Polyline
-                {
-                    Points = new PointCollection(miniCirclePts),
-                    Stroke = new SolidColorBrush(markerCol),
-                    StrokeThickness = 2.2,
-                    StrokeLineJoin = PenLineJoin.Round,
-                    StrokeStartLineCap = PenLineCap.Round,
-                    StrokeEndLineCap = PenLineCap.Round
-                };
-                badgeCanvas.Children.Add(miniPoly);
-
-                var numText = new TextBlock
-                {
-                    Text = isFinalConclusion ? "✓" : (stepIndex + 1).ToString(),
-                    Foreground = new SolidColorBrush(markerCol),
-                    FontSize = 13,
-                    FontWeight = FontWeights.Bold,
-                    FontFamily = new FontFamily("Segoe Print, Ink Free, Comic Sans MS, Segoe UI")
-                };
-                Canvas.SetLeft(numText, isFinalConclusion ? 10 : 11);
-                Canvas.SetTop(numText, 4);
-                badgeCanvas.Children.Add(numText);
-
-                DockPanel.SetDock(badgeCanvas, Dock.Left);
-                stepRow.Children.Add(badgeCanvas);
-
-                // Right handwritten step text (animated letter-by-letter with live pencil while speaking!)
-                var stepTextHost = new StackPanel { Orientation = Orientation.Vertical };
-                var stepTb = new TextBlock
-                {
-                    Text = immediate ? cleanStepText : "",
-                    Foreground = isFinalConclusion
-                        ? new SolidColorBrush(Color.FromRgb(0xBE, 0x12, 0x3C))
-                        : new SolidColorBrush(Color.FromRgb(30, 41, 59)),
-                    FontSize = isFinalConclusion ? 14.2 : 13.2,
-                    FontWeight = isFinalConclusion ? FontWeights.Bold : FontWeights.SemiBold,
-                    FontFamily = new FontFamily("Segoe Print, Ink Free, Comic Sans MS, Segoe UI"),
-                    TextWrapping = TextWrapping.Wrap,
-                    LineHeight = 20,
-                    Margin = new Thickness(0, 2, 0, 2)
-                };
-
-                Canvas finalUnderlineCanvas = null;
-                if (isFinalConclusion)
-                {
-                    // Clean warm highlight card + hand-drawn double marker underline BELOW the result (never crossing through text!)
-                    var finalCard = new Border
+                    var paraTb = new TextBlock
                     {
-                        Background = new SolidColorBrush(Color.FromRgb(255, 241, 242)),
-                        BorderBrush = new SolidColorBrush(Color.FromRgb(254, 205, 211)),
-                        BorderThickness = new Thickness(1.2),
-                        CornerRadius = new CornerRadius(8),
-                        Padding = new Thickness(12, 6, 12, 6),
-                        Margin = new Thickness(0, 2, 0, 2),
-                        Child = stepTb
-                    };
-                    stepTextHost.Children.Add(finalCard);
-                    finalUnderlineCanvas = new Canvas { Height = 10, Margin = new Thickness(4, 2, 0, 2), IsHitTestVisible = false };
-                    stepTextHost.Children.Add(finalUnderlineCanvas);
-
-                    if (immediate)
-                    {
-                        double uw = Math.Max(140, boardW - 110);
-                        var uPts = new List<Point>();
-                        for (int k = 0; k <= 20; k++)
-                        {
-                            double u = (double)k / 20;
-                            uPts.Add(new Point(u * uw, 3.0 + 1.5 * Math.Sin(u * Math.PI * 2.0)));
-                        }
-                        AnimateHandDrawnPolyline(finalUnderlineCanvas, uPts, Color.FromRgb(0xE1, 0x1D, 0x48), 2.4, 260, true);
-                    }
-                }
-                else
-                {
-                    stepTextHost.Children.Add(stepTb);
-                }
-
-                stepRow.Children.Add(stepTextHost);
-                modernPanel.Children.Add(stepRow);
-
-                // Hand-drawn downward arrow connecting to the next step
-                Canvas arrowConnCanvas = null;
-                if (stepIndex < validLines.Count - 1)
-                {
-                    arrowConnCanvas = new Canvas
-                    {
-                        Height = 16,
-                        Margin = new Thickness(12, 0, 0, 4),
-                        HorizontalAlignment = HorizontalAlignment.Left,
+                        Text = immediate ? cleanPara : "",
+                        Foreground = new SolidColorBrush(Color.FromRgb(30, 41, 59)),
+                        FontSize = 13.8,
+                        FontWeight = FontWeights.Medium,
+                        FontFamily = new FontFamily("Segoe Print, Ink Free, Comic Sans MS, Segoe UI"),
+                        TextWrapping = TextWrapping.Wrap,
+                        LineHeight = 22,
+                        Margin = new Thickness(2, 0, 2, pIndex < validLines.Count - 1 ? 10 : 4),
                         Visibility = immediate ? Visibility.Visible : Visibility.Collapsed
                     };
-                    var connPts = new List<Point>
+                    modernPanel.Children.Add(paraTb);
+
+                    if (!immediate)
                     {
-                        new Point(4, 1),
-                        new Point(3, 8),
-                        new Point(4, 14),
-                        new Point(0, 10),
-                        new Point(4, 14),
-                        new Point(8, 10)
+                        string targetStr = cleanPara;
+                        TextBlock capturedTb = paraTb;
+                        int startDelay = ResolveSpokenDelayMs(null, pIndex, totalValidSteps);
+                        int nextDelay = (pIndex + 1 < totalValidSteps)
+                            ? ResolveSpokenDelayMs(null, pIndex + 1, totalValidSteps)
+                            : _speechDurationMs;
+                        int paraWindow = Math.Max(1000, nextDelay - startDelay);
+                        int writeDurationMs = Math.Max(750, Math.Min(2600, (int)(paraWindow * 0.80)));
+
+                        Task.Delay(startDelay).ContinueWith(_ =>
+                        {
+                            Dispatcher.BeginInvoke(new Action(() =>
+                            {
+                                if (_isDismissing) return;
+                                capturedTb.Visibility = Visibility.Visible;
+
+                                int charIdx = 0;
+                                int tickMs = 26;
+                                int totalTicks = Math.Max(12, writeDurationMs / tickMs);
+                                double charsPerTick = Math.Max(0.8, (double)targetStr.Length / totalTicks);
+                                double accumChars = 0.0;
+
+                                var writeTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(tickMs) };
+                                writeTimer.Tick += (ws, we) =>
+                                {
+                                    if (_isDismissing) { writeTimer.Stop(); return; }
+                                    accumChars += charsPerTick;
+                                    charIdx = Math.Min(targetStr.Length, (int)Math.Round(accumChars));
+                                    capturedTb.Text = targetStr.Substring(0, charIdx);
+                                    if (charIdx >= targetStr.Length)
+                                    {
+                                        writeTimer.Stop();
+                                    }
+                                };
+                                writeTimer.Start();
+                            }));
+                        });
+                    }
+                }
+            }
+            else
+            {
+                // =============================================================
+                // STEP-BY-STEP SOLVE MODE (Math, Science, Equations & Problem Solving)
+                // Hand-drawn step circles + connecting arrows + Final Result card
+                // =============================================================
+                for (int stepIndex = 0; stepIndex < validLines.Count; stepIndex++)
+                {
+                    string rawLine = validLines[stepIndex];
+
+                    // Strip leading numbering like "1.", "①", "Step 1:" so we can draw our own hand-sketched circle number!
+                    string cleanStepText = Regex.Replace(rawLine, @"^(?:[①②③④⑤⑥]|(?:\d+[\.\)\:])|(?:Step\s+\d+[\.\)\:]?))\s*", "", RegexOptions.IgnoreCase).Trim();
+                    if (string.IsNullOrEmpty(cleanStepText)) cleanStepText = rawLine;
+
+                    // ONLY mark the last line as a final Result card when solving a math/science problem that has a real result!
+                    bool isLineResult = Regex.IsMatch(rawLine, @"^\s*(?:Result|Answer|Final\s+Answer|Solution|Therefore)\b", RegexOptions.IgnoreCase) || hasMathOrCalc;
+                    bool isFinalConclusion = (stepIndex == validLines.Count - 1 && validLines.Count > 1 && isLineResult);
+
+                    Color markerCol = isFinalConclusion
+                        ? Color.FromRgb(0xE1, 0x1D, 0x48)
+                        : stepColors[stepIndex % stepColors.Length];
+
+                    var stepRow = new DockPanel
+                    {
+                        Margin = new Thickness(0, 0, 0, 6),
+                        Visibility = immediate ? Visibility.Visible : Visibility.Collapsed
                     };
-                    var connPoly = new Polyline
+
+                    // Left hand-drawn step circle badge (1, 2, 3... or ✓ for final conclusion)
+                    var badgeCanvas = new Canvas
                     {
-                        Points = new PointCollection(connPts),
-                        Stroke = new SolidColorBrush(Color.FromRgb(148, 163, 184)),
-                        StrokeThickness = 1.8,
+                        Width = 34,
+                        Height = 32,
+                        Margin = new Thickness(0, 2, 10, 0),
+                        VerticalAlignment = VerticalAlignment.Top
+                    };
+                    var miniCirclePts = BuildHandDrawnCirclePoints(16, 15, 13, 11, stepIndex * 1.7);
+                    var miniPoly = new Polyline
+                    {
+                        Points = new PointCollection(miniCirclePts),
+                        Stroke = new SolidColorBrush(markerCol),
+                        StrokeThickness = 2.2,
                         StrokeLineJoin = PenLineJoin.Round,
                         StrokeStartLineCap = PenLineCap.Round,
                         StrokeEndLineCap = PenLineCap.Round
                     };
-                    arrowConnCanvas.Children.Add(connPoly);
-                    modernPanel.Children.Add(arrowConnCanvas);
-                }
+                    badgeCanvas.Children.Add(miniPoly);
 
-                // Live synchronized handwriting effect: each step appears and writes at the exact millisecond the bot speaks that step's sentence!
-                if (!immediate)
-                {
-                    string targetStr = cleanStepText;
-                    TextBlock capturedTb = stepTb;
-                    DockPanel capturedRow = stepRow;
-                    Canvas capturedArrow = arrowConnCanvas;
-                    Canvas capturedFinalUl = finalUnderlineCanvas;
-                    bool capturedIsFinal = isFinalConclusion;
-                    int startDelay = ResolveSpokenDelayMs(null, stepIndex, totalValidSteps);
-                    int nextDelay = (stepIndex + 1 < totalValidSteps)
-                        ? ResolveSpokenDelayMs(null, stepIndex + 1, totalValidSteps)
-                        : _speechDurationMs;
-                    int stepWindow = Math.Max(900, nextDelay - startDelay);
-                    int writeDurationMs = Math.Max(680, Math.Min(1850, (int)(stepWindow * 0.76)));
-
-                    Task.Delay(startDelay).ContinueWith(_ =>
+                    var numText = new TextBlock
                     {
-                        Dispatcher.BeginInvoke(new Action(() =>
+                        Text = isFinalConclusion ? "✓" : (stepIndex + 1).ToString(),
+                        Foreground = new SolidColorBrush(markerCol),
+                        FontSize = 13,
+                        FontWeight = FontWeights.Bold,
+                        FontFamily = new FontFamily("Segoe Print, Ink Free, Comic Sans MS, Segoe UI")
+                    };
+                    Canvas.SetLeft(numText, isFinalConclusion ? 10 : 11);
+                    Canvas.SetTop(numText, 4);
+                    badgeCanvas.Children.Add(numText);
+
+                    DockPanel.SetDock(badgeCanvas, Dock.Left);
+                    stepRow.Children.Add(badgeCanvas);
+
+                    // Right handwritten step text (animated letter-by-letter with live pencil while speaking!)
+                    var stepTextHost = new StackPanel { Orientation = Orientation.Vertical };
+                    var stepTb = new TextBlock
+                    {
+                        Text = immediate ? cleanStepText : "",
+                        Foreground = isFinalConclusion
+                            ? new SolidColorBrush(Color.FromRgb(0xBE, 0x12, 0x3C))
+                            : new SolidColorBrush(Color.FromRgb(30, 41, 59)),
+                        FontSize = isFinalConclusion ? 14.2 : 13.2,
+                        FontWeight = isFinalConclusion ? FontWeights.Bold : FontWeights.SemiBold,
+                        FontFamily = new FontFamily("Segoe Print, Ink Free, Comic Sans MS, Segoe UI"),
+                        TextWrapping = TextWrapping.Wrap,
+                        LineHeight = 20,
+                        Margin = new Thickness(0, 2, 0, 2)
+                    };
+
+                    Canvas finalUnderlineCanvas = null;
+                    if (isFinalConclusion)
+                    {
+                        // Clean warm highlight card + hand-drawn double marker underline BELOW the result (never crossing through text!)
+                        var finalCard = new Border
                         {
-                            if (_isDismissing) return;
-                            capturedRow.Visibility = Visibility.Visible;
+                            Background = new SolidColorBrush(Color.FromRgb(255, 241, 242)),
+                            BorderBrush = new SolidColorBrush(Color.FromRgb(254, 205, 211)),
+                            BorderThickness = new Thickness(1.2),
+                            CornerRadius = new CornerRadius(8),
+                            Padding = new Thickness(12, 6, 12, 6),
+                            Margin = new Thickness(0, 2, 0, 2),
+                            Child = stepTb
+                        };
+                        stepTextHost.Children.Add(finalCard);
+                        finalUnderlineCanvas = new Canvas { Height = 10, Margin = new Thickness(4, 2, 0, 2), IsHitTestVisible = false };
+                        stepTextHost.Children.Add(finalUnderlineCanvas);
 
-                            int charIdx = 0;
-                            int tickMs = 28;
-                            int totalTicks = Math.Max(12, writeDurationMs / tickMs);
-                            double charsPerTick = Math.Max(0.5, (double)targetStr.Length / totalTicks);
-                            double accumChars = 0.0;
-
-                            var writeTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(tickMs) };
-                            writeTimer.Tick += (ws, we) =>
+                        if (immediate)
+                        {
+                            double uw = Math.Max(140, boardW - 110);
+                            var uPts = new List<Point>();
+                            for (int k = 0; k <= 20; k++)
                             {
-                                if (_isDismissing) { writeTimer.Stop(); return; }
-                                accumChars += charsPerTick;
-                                charIdx = Math.Min(targetStr.Length, (int)Math.Round(accumChars));
-                                capturedTb.Text = targetStr.Substring(0, charIdx);
-                                if (charIdx >= targetStr.Length)
+                                double u = (double)k / 20;
+                                uPts.Add(new Point(u * uw, 3.0 + 1.5 * Math.Sin(u * Math.PI * 2.0)));
+                            }
+                            AnimateHandDrawnPolyline(finalUnderlineCanvas, uPts, Color.FromRgb(0xE1, 0x1D, 0x48), 2.4, 260, true);
+                        }
+                    }
+                    else
+                    {
+                        stepTextHost.Children.Add(stepTb);
+                    }
+
+                    stepRow.Children.Add(stepTextHost);
+                    modernPanel.Children.Add(stepRow);
+
+                    // Hand-drawn downward arrow connecting to the next step
+                    Canvas arrowConnCanvas = null;
+                    if (stepIndex < validLines.Count - 1)
+                    {
+                        arrowConnCanvas = new Canvas
+                        {
+                            Height = 16,
+                            Margin = new Thickness(12, 0, 0, 4),
+                            HorizontalAlignment = HorizontalAlignment.Left,
+                            Visibility = immediate ? Visibility.Visible : Visibility.Collapsed
+                        };
+                        var connPts = new List<Point>
+                        {
+                            new Point(4, 1),
+                            new Point(3, 8),
+                            new Point(4, 14),
+                            new Point(0, 10),
+                            new Point(4, 14),
+                            new Point(8, 10)
+                        };
+                        var connPoly = new Polyline
+                        {
+                            Points = new PointCollection(connPts),
+                            Stroke = new SolidColorBrush(Color.FromRgb(148, 163, 184)),
+                            StrokeThickness = 1.8,
+                            StrokeLineJoin = PenLineJoin.Round,
+                            StrokeStartLineCap = PenLineCap.Round,
+                            StrokeEndLineCap = PenLineCap.Round
+                        };
+                        arrowConnCanvas.Children.Add(connPoly);
+                        modernPanel.Children.Add(arrowConnCanvas);
+                    }
+
+                    // Live synchronized handwriting effect: each step appears and writes at the exact millisecond the bot speaks that step's sentence!
+                    if (!immediate)
+                    {
+                        string targetStr = cleanStepText;
+                        TextBlock capturedTb = stepTb;
+                        DockPanel capturedRow = stepRow;
+                        Canvas capturedArrow = arrowConnCanvas;
+                        Canvas capturedFinalUl = finalUnderlineCanvas;
+                        bool capturedIsFinal = isFinalConclusion;
+                        int startDelay = ResolveSpokenDelayMs(null, stepIndex, totalValidSteps);
+                        int nextDelay = (stepIndex + 1 < totalValidSteps)
+                            ? ResolveSpokenDelayMs(null, stepIndex + 1, totalValidSteps)
+                            : _speechDurationMs;
+                        int stepWindow = Math.Max(900, nextDelay - startDelay);
+                        int writeDurationMs = Math.Max(680, Math.Min(1850, (int)(stepWindow * 0.76)));
+
+                        Task.Delay(startDelay).ContinueWith(_ =>
+                        {
+                            Dispatcher.BeginInvoke(new Action(() =>
+                            {
+                                if (_isDismissing) return;
+                                capturedRow.Visibility = Visibility.Visible;
+
+                                int charIdx = 0;
+                                int tickMs = 28;
+                                int totalTicks = Math.Max(12, writeDurationMs / tickMs);
+                                double charsPerTick = Math.Max(0.5, (double)targetStr.Length / totalTicks);
+                                double accumChars = 0.0;
+
+                                var writeTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(tickMs) };
+                                writeTimer.Tick += (ws, we) =>
                                 {
-                                    writeTimer.Stop();
-                                    if (capturedArrow != null)
+                                    if (_isDismissing) { writeTimer.Stop(); return; }
+                                    accumChars += charsPerTick;
+                                    charIdx = Math.Min(targetStr.Length, (int)Math.Round(accumChars));
+                                    capturedTb.Text = targetStr.Substring(0, charIdx);
+                                    if (charIdx >= targetStr.Length)
                                     {
-                                        capturedArrow.Visibility = Visibility.Visible;
-                                    }
-                                    if (capturedIsFinal && capturedFinalUl != null)
-                                    {
-                                        double uw = Math.Max(140, Math.Min(boardW - 110, capturedTb.ActualWidth > 30 ? capturedTb.ActualWidth : 210));
-                                        var uPts = new List<Point>();
-                                        for (int k = 0; k <= 20; k++)
+                                        writeTimer.Stop();
+                                        if (capturedArrow != null)
                                         {
-                                            double u = (double)k / 20;
-                                            uPts.Add(new Point(u * uw, 3.0 + 1.5 * Math.Sin(u * Math.PI * 2.0)));
+                                            capturedArrow.Visibility = Visibility.Visible;
                                         }
-                                        AnimateHandDrawnPolyline(capturedFinalUl, uPts, Color.FromRgb(0xE1, 0x1D, 0x48), 2.5, 420, false);
+                                        if (capturedIsFinal && capturedFinalUl != null)
+                                        {
+                                            double uw = Math.Max(140, Math.Min(boardW - 110, capturedTb.ActualWidth > 30 ? capturedTb.ActualWidth : 210));
+                                            var uPts = new List<Point>();
+                                            for (int k = 0; k <= 20; k++)
+                                            {
+                                                double u = (double)k / 20;
+                                                uPts.Add(new Point(u * uw, 3.0 + 1.5 * Math.Sin(u * Math.PI * 2.0)));
+                                            }
+                                            AnimateHandDrawnPolyline(capturedFinalUl, uPts, Color.FromRgb(0xE1, 0x1D, 0x48), 2.5, 420, false);
+                                        }
                                     }
-                                }
-                            };
-                            writeTimer.Start();
-                        }));
-                    });
+                                };
+                                writeTimer.Start();
+                            }));
+                        });
+                    }
                 }
             }
 
@@ -4215,9 +4304,10 @@ namespace FlinchApp
                 VerticalAlignment = VerticalAlignment.Center
             };
 
+            string copyLabelText = isStepByStepSolve ? "📋 Copy Steps" : "📋 Copy Notes";
             var copyBtnText = new TextBlock
             {
-                Text = "📋 Copy Steps",
+                Text = copyLabelText,
                 Foreground = new SolidColorBrush(Color.FromRgb(51, 65, 85)),
                 FontSize = 11.5,
                 FontWeight = FontWeights.SemiBold,
@@ -4248,7 +4338,7 @@ namespace FlinchApp
                     {
                         Dispatcher.BeginInvoke(new Action(() =>
                         {
-                            copyBtnText.Text = "📋 Copy Steps";
+                            copyBtnText.Text = copyLabelText;
                             copyBtnText.Foreground = new SolidColorBrush(Color.FromRgb(51, 65, 85));
                         }));
                     });
@@ -7317,7 +7407,7 @@ namespace FlinchApp
                 }
                 else if (type == "delete_file")
                 {
-                    if (target.IndexOf("temp", StringComparison.OrdinalIgnoreCase) >= 0)
+                    if (target.IndexOf("temp", StringComparison.OrdinalIgnoreCase) >= 0 && !File.Exists(target))
                     {
                         string tempPath = System.IO.Path.GetTempPath();
                         foreach (string f in Directory.GetFiles(tempPath))
@@ -7327,11 +7417,51 @@ namespace FlinchApp
                     }
                     else if (!string.IsNullOrWhiteSpace(target))
                     {
-                        string desktop = Environment.GetFolderPath(Environment.SpecialFolder.Desktop);
-                        string candidate = System.IO.Path.Combine(desktop, target);
-                        if (File.Exists(candidate))
+                        if (File.Exists(target))
                         {
-                            File.Delete(candidate);
+                            File.Delete(target);
+                        }
+                        else if (Directory.Exists(target))
+                        {
+                            Directory.Delete(target, true);
+                        }
+                        else
+                        {
+                            string profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+                            string[] dirs = new[]
+                            {
+                                Environment.GetFolderPath(Environment.SpecialFolder.Desktop),
+                                System.IO.Path.Combine(profile, "Downloads"),
+                                Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
+                                System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "Flinch"),
+                                Environment.GetFolderPath(Environment.SpecialFolder.MyPictures)
+                            };
+                            string qLow = target.ToLowerInvariant().Trim();
+                            foreach (string d in dirs)
+                            {
+                                if (string.IsNullOrWhiteSpace(d) || !Directory.Exists(d)) continue;
+                                string direct = System.IO.Path.Combine(d, target);
+                                if (File.Exists(direct)) { File.Delete(direct); break; }
+                                if (Directory.Exists(direct)) { Directory.Delete(direct, true); break; }
+
+                                bool deleted = false;
+                                try
+                                {
+                                    foreach (string f in Directory.GetFiles(d))
+                                    {
+                                        string fn = (System.IO.Path.GetFileName(f) ?? "").ToLowerInvariant();
+                                        string noExt = (System.IO.Path.GetFileNameWithoutExtension(f) ?? "").ToLowerInvariant();
+                                        if (fn == qLow || noExt == qLow || (qLow.Length >= 3 && noExt.Contains(qLow)))
+                                        {
+                                            File.Delete(f);
+                                            deleted = true;
+                                            break;
+                                        }
+                                    }
+                                }
+                                catch { }
+                                if (deleted) break;
+                            }
                         }
                     }
                 }
@@ -7347,14 +7477,33 @@ namespace FlinchApp
                         });
                     }
                 }
-                else if (type == "click_element")
+                else if (type == "click_element" || type == "double_click" || type == "right_click")
                 {
+                    var activeRect = GeminiClient.LastActiveTargetBounds;
                     var ps = System.Windows.Forms.Screen.PrimaryScreen.Bounds;
-                    int clickX = (int)(ps.Left + Math.Max(0.01, Math.Min(0.99, action.x)) * ps.Width);
-                    int clickY = (int)(ps.Top + Math.Max(0.01, Math.Min(0.99, action.y)) * ps.Height);
+                    int baseLeft = activeRect.Width > 100 ? activeRect.Left : ps.Left;
+                    int baseTop = activeRect.Height > 100 ? activeRect.Top : ps.Top;
+                    int baseW = activeRect.Width > 100 ? activeRect.Width : ps.Width;
+                    int baseH = activeRect.Height > 100 ? activeRect.Height : ps.Height;
+
+                    int clickX = (int)(baseLeft + Math.Max(0.005, Math.Min(0.995, action.x)) * baseW);
+                    int clickY = (int)(baseTop + Math.Max(0.005, Math.Min(0.995, action.y)) * baseH);
                     NativeMethods.SetCursorPos(clickX, clickY);
-                    Thread.Sleep(40);
-                    NativeMethods.mouse_event(NativeMethods.MOUSEEVENTF_LEFTDOWN | NativeMethods.MOUSEEVENTF_LEFTUP, clickX, clickY, 0, IntPtr.Zero);
+                    Thread.Sleep(45);
+                    if (type == "right_click")
+                    {
+                        NativeMethods.mouse_event(NativeMethods.MOUSEEVENTF_RIGHTDOWN | NativeMethods.MOUSEEVENTF_RIGHTUP, clickX, clickY, 0, IntPtr.Zero);
+                    }
+                    else if (type == "double_click")
+                    {
+                        NativeMethods.mouse_event(NativeMethods.MOUSEEVENTF_LEFTDOWN | NativeMethods.MOUSEEVENTF_LEFTUP, clickX, clickY, 0, IntPtr.Zero);
+                        Thread.Sleep(60);
+                        NativeMethods.mouse_event(NativeMethods.MOUSEEVENTF_LEFTDOWN | NativeMethods.MOUSEEVENTF_LEFTUP, clickX, clickY, 0, IntPtr.Zero);
+                    }
+                    else
+                    {
+                        NativeMethods.mouse_event(NativeMethods.MOUSEEVENTF_LEFTDOWN | NativeMethods.MOUSEEVENTF_LEFTUP, clickX, clickY, 0, IntPtr.Zero);
+                    }
                 }
                 else if (type == "type_text")
                 {
@@ -7655,9 +7804,14 @@ namespace FlinchApp
                         return;
                     }
 
-                    string alertMsg = string.Format("Finished {0}! Saved to {1}", task.Title, dirName);
+                    string alertMsg = !string.IsNullOrWhiteSpace(task.AlertCompletionMessage)
+                        ? task.AlertCompletionMessage
+                        : string.Format("Finished {0}! Saved to {1}", task.Title, dirName);
+                    string spokenMsg = !string.IsNullOrWhiteSpace(task.SpokenCompletionMessage)
+                        ? task.SpokenCompletionMessage
+                        : string.Format("I've finished writing your {0} about {1} and saved it to your {2}.", task.TaskType, task.Topic, dirName);
                     SetIslandState(IslandState.Alert, "Task Completed", alertMsg);
-                    SpeakAnswer(string.Format("I've finished writing your {0} about {1} and saved it to your {2}.", task.TaskType, task.Topic, dirName));
+                    SpeakAnswer(spokenMsg);
                 }));
             };
         }
@@ -7956,8 +8110,13 @@ namespace FlinchApp
                 UpdateMultitaskDisplay();
                 RefreshTasksExpandedUI();
 
-                string dirName = pt.TargetDirectory.IndexOf("Desktop", StringComparison.OrdinalIgnoreCase) >= 0 ? "Desktop" : "Flinch folder";
-                string alertMsg = string.Format("Finished {0}! Saved to {1}", pt.Title, dirName);
+                string dirName = (pt.TargetDirectory ?? "").IndexOf("Desktop", StringComparison.OrdinalIgnoreCase) >= 0 ? "Desktop" : "Flinch folder";
+                string alertMsg = !string.IsNullOrWhiteSpace(pt.AlertCompletionMessage)
+                    ? pt.AlertCompletionMessage
+                    : string.Format("Finished {0}! Saved to {1}", pt.Title, dirName);
+                string spokenPending = !string.IsNullOrWhiteSpace(pt.SpokenCompletionMessage)
+                    ? ("By the way, " + char.ToLowerInvariant(pt.SpokenCompletionMessage[0]) + pt.SpokenCompletionMessage.Substring(1))
+                    : string.Format("By the way, I've finished writing your {0} about {1} and saved it to your {2}.", pt.TaskType, pt.Topic, dirName);
                 SetIslandState(IslandState.Alert, "Task Completed", alertMsg);
 
                 Task.Delay(350).ContinueWith(_ =>
@@ -7965,7 +8124,7 @@ namespace FlinchApp
                     Dispatcher.BeginInvoke(new Action(() =>
                     {
                         SpeakAnswerWithContinuation(
-                            string.Format("By the way, I've finished writing your {0} about {1} and saved it to your {2}.", pt.TaskType, pt.Topic, dirName),
+                            spokenPending,
                             () =>
                             {
                                 CheckAndAnnouncePendingTasks();
@@ -8272,12 +8431,16 @@ namespace FlinchApp
 
         private static bool IsVisualExplainIntent(string text, ActionPayload action)
         {
-            if (action != null && string.Equals(action.type, "visual_explain", StringComparison.OrdinalIgnoreCase))
+            if (action != null)
             {
-                return true;
+                return string.Equals(action.type, "visual_explain", StringComparison.OrdinalIgnoreCase);
             }
             if (string.IsNullOrWhiteSpace(text)) return false;
             string s = text.ToLowerInvariant().Trim();
+
+            // Never trigger visual explain on action commands (searching files, deleting, clicking, opening/closing apps)
+            if (Regex.IsMatch(s, @"^\s*(?:please\s+|can\s+you\s+)?(?:search|find|locate|delete|remove|erase|click|press|tap|open|close|quit|move|organize|set\s+a\s+timer|remind\s+me)\b"))
+                return false;
 
             if (s.Contains("visual explain") || s.Contains("whiteboard") || s.Contains("draw on screen") || s.Contains("draw the solution") || s.Contains("draw on my screen"))
                 return true;
@@ -8659,7 +8822,7 @@ private void FinishRecordingAndSend()
                         if (isStopWord)
                         {
                             bool mentionsTimer = lowerTrans.Contains("timer") || lowerTrans.Contains("countdown");
-                            bool mentionsTask = lowerTrans.Contains("task") || lowerTrans.Contains("writing") || lowerTrans.Contains("essay") || lowerTrans.Contains("background") || lowerTrans.Contains("report");
+                            bool mentionsTask = lowerTrans.Contains("task") || lowerTrans.Contains("writing") || lowerTrans.Contains("essay") || lowerTrans.Contains("background") || lowerTrans.Contains("report") || lowerTrans.Contains("search") || lowerTrans.Contains("scan");
 
                             if (mentionsTimer && !mentionsTask)
                             {

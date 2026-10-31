@@ -871,11 +871,14 @@ CRITICAL RULES:
     let wikiCardData: any = null;
 
     // Detect if user asks to explain a person or topic
-    const topicMatch = transcript.match(/\b(?:explain about|tell me about|who is|who was|biography of|info about|information about|what is|tell me who)\s+([a-zA-Z0-9\s.'"-]+)/i);
-    const candidateTopic = topicMatch ? topicMatch[1].replace(/\b(now|today|please|can you|could you)\b/gi, "").trim() : "";
+    const topicMatch = transcript.match(/\b(?:explain\s+about|explain\s+how|explain\s+what|explain|tell\s+me\s+about|who\s+is|who\s+was|biography\s+of|info\s+about|information\s+about|what\s+is|what\s+are|write\s+on\s+(?:the\s+)?whiteboard\s+about|teach\s+me\s+about|tell\s+me\s+who)\s+([a-zA-Z0-9\s.'"\-]+?)(?:\s+on\s+(?:the\s+)?whiteboard|\s+please|\s+now)?$/i);
+    const candidateTopic = topicMatch
+      ? topicMatch[1].replace(/\b(now|today|please|can you|could you|on the whiteboard|on whiteboard|to me|for me|this|it)\b/gi, "").trim()
+      : "";
+    const isActionCommand = /^\s*(?:please\s+|can\s+you\s+|could\s+you\s+)?(?:search|find|locate|delete|remove|erase|click|double\s*click|right\s*click|press|tap|open|close|quit|move|organize|set\s+a\s+timer|remind\s+me)\b/i.test(transcript);
 
     // 6A. Wikipedia REST API for verified bio & high-res portrait image from Wikimedia Commons
-    if (candidateTopic && candidateTopic.length > 2) {
+    if (!isActionCommand && candidateTopic && candidateTopic.length > 2 && !/\b(this|that|my\s+screen|problem|equation|error|bug|code)\b/i.test(candidateTopic)) {
       try {
         const wikiCts = new AbortController();
         const wikiTimer = setTimeout(() => wikiCts.abort(), 2500);
@@ -898,14 +901,17 @@ CRITICAL RULES:
       } catch (_wErr) {}
     }
 
-    // 6B. Exa Live Web Search (Aggressive triggers: people, recent events, time, weather, prices, news)
-    const isExaTrigger = isLiveQuery(transcript) ||
-      /\b(who is|who was|who founded|explain about|tell me about|what time|time in|weather in|how old|net worth|news|latest|update|current|today|status of)\b/i.test(transcript);
+    // 6B. Exa Live Web Search (Always triggered for explanations, whiteboard notes, people, concepts, recent events, time, weather, prices, news)
+    const isExaTrigger = !isActionCommand && (
+      isLiveQuery(transcript) ||
+      /\b(who is|who was|who founded|explain|tell me about|what is|what are|how does|how do|why does|why is|history of|summary of|summarize|whiteboard|teach me|what time|time in|weather in|how old|net worth|news|latest|update|current|today|status of)\b/i.test(transcript)
+    );
 
     if (exaApiKey && isExaTrigger) {
       try {
         const exaCts = new AbortController();
         const exaTimer = setTimeout(() => exaCts.abort(), 3500);
+        const exaQuery = candidateTopic && candidateTopic.length > 3 ? candidateTopic : transcript;
         const exaResp = await fetch("https://api.exa.ai/search", {
           method: "POST",
           signal: exaCts.signal,
@@ -914,10 +920,10 @@ CRITICAL RULES:
             "x-api-key": exaApiKey,
           },
           body: JSON.stringify({
-            query: transcript,
+            query: exaQuery,
             numResults: 5,
             type: "auto",
-            contents: { text: { maxCharacters: 600 } },
+            contents: { text: { maxCharacters: 750 } },
           }),
         });
         clearTimeout(exaTimer);
@@ -928,7 +934,7 @@ CRITICAL RULES:
             .filter((t: any) => typeof t === "string" && t.trim().length > 0)
             .join("\n");
           if (snippets) {
-            webContext = snippets.slice(0, 1500);
+            webContext = snippets.slice(0, 2200);
           }
         }
       } catch (e) {
@@ -1005,7 +1011,7 @@ CRITICAL RULES:
       reply = "Your clipboard appears to be empty right now. Copy some text first, then ask again.";
     }
 
-    // 7.3 Screen Vision & Visual Overlays (ONLY when user explicitly asks about screen or problem on screen)
+    // 7.3 Screen Vision & Visual Overlays (ONLY when user explicitly asks about screen, problem on screen, or visual click)
     const isScreenQuery = isScreenAwarenessQuery(transcript) || isExplicitStaged;
     if (!reply && isScreenQuery && screenB64 && (groqApiKey || geminiApiKey)) {
       const uiaSection = uiaText
@@ -1016,24 +1022,41 @@ CRITICAL RULES:
         ? `\n\nRecent conversation history:\n${historyMessages.map(m => `${m.role.toUpperCase()}: ${m.content}`).join("\n")}`
         : "";
 
+      const exaSection = webContext
+        ? `\n\nLIVE EXA AI WEB SEARCH CONTEXT (Use these verified facts when writing on the whiteboard or explaining):\n${webContext}`
+        : "";
+
+      const wikiSection = wikiCardData
+        ? `\n\nENCYCLOPEDIC SUMMARY FOR "${wikiCardData.title}":\n${wikiCardData.description ? wikiCardData.description + " — " : ""}${wikiCardData.extract}`
+        : "";
+
       const visionPrompt =
-        `You are Flinch—a sharp, mature, friendly, and engaging human tutor and peer.
-The user's spoken request: "${transcript}".${historySection}
+        `You are Flinch—a sharp, mature, friendly, and capable human peer, desktop assistant, and tutor.
+The user's spoken request: "${transcript}".${historySection}${exaSection}${wikiSection}
 Look carefully at the attached screenshot of the user's active window/display.${uiaSection}
 
 Instructions:
-1. PERSONA: Speak naturally like a smart, warm friend or tutor. NEVER mention that you are "here to help with your screen", NEVER say "I can see on your screen", and NEVER act robotic.
-2. STEP-BY-STEP TUTORING RULE (CRITICAL): When the user asks to solve, explain, debug, or fix ANY problem, equation, code error, or concept, NEVER just blurt out the straight final answer first! Walk them through the reasoning step by step (Step 1 -> Step 2 -> Step 3 -> Conclusion) so they genuinely understand how and why it works.
-3. PINPOINT VISUAL GROUNDING (box_2d [ymin, xmin, ymax, xmax] 0..1000) & SPEECH-TO-DRAWING ALIGNMENT:
-   - Whenever you explain or solve something on screen, generate sequential hand-drawn scene objects pointing to the EXACT sub-expressions or characters of the problem (e.g. tightly wrap ONLY "(1+2)" for Step 1, then tightly wrap ONLY "6 ÷ 2" for Step 2).
-   - For maximum spatial accuracy, provide "box_2d": [ymin, xmin, ymax, xmax] in integer coordinates from 0 to 1000 tightly bounding the exact characters/element on the screenshot!
-   - Number each step sequentially ("step": 1, "step": 2, "step": 3...) AND structure your spoken "answer" into matching sentences (Sentence 1 explains Step 1, Sentence 2 explains Step 2, Sentence 3 explains Step 3, final sentence gives the Conclusion) so our speech-alignment engine triggers each drawing at the exact millisecond your voice begins speaking that sentence!
-   - Include "spokenTrigger" on each scene object with a 2-4 word phrase from your spoken "answer" where that shape should start drawing!
-   - ALWAYS include a "notepad" whiteboard object containing a clear numbered step-by-step guide separated by newlines (e.g. "1. First step...\\n2. Second step...\\n3. Third step...\\nResult: ...") so your live pencil writes each step onto the whiteboard synchronized with your voice! If the problem involves a function, slope, parabola, or inequality, also include "graph": "x^2 - 4" (or "numberline: > 3") on the "notepad" object so the whiteboard sketches a live mini graph!
+1. DO NOT OVER-EXPLAIN OR DRAW UNNECESSARILY (CRITICAL):
+   - If the user asks you to DO an action on screen (e.g. "click on <button>", "double click <item>", "right click <target>", "press <button>"):
+     DO NOT explain or draw shapes! Locate the exact target on the screenshot, set "scene": null, and return an "action" object:
+     {"type": "click_element" (or "double_click" / "right_click"), "name": "Click <target>", "x": 0.45, "y": 0.62, "requires_approval": false} (set "requires_approval": true ONLY if clicking a destructive/financial button like Delete, Pay, Purchase, Submit, Send, Format).
+   - If the user asks a quick factual question about the screen (e.g. "what is the error code?", "who sent this message?", "what's the total price?"), answer directly in 1 short sentence with "scene": null!
+   - ONLY open the whiteboard ("notepad") or draw shapes on screen when the user explicitly asks to EXPLAIN, SOLVE, BREAK DOWN, TEACH, CHECK WORK, or POINT TO / HIGHLIGHT something!
+
+2. WHITEBOARD FORMAT — PARAGRAPHS vs. STEP-BY-STEP + RESULT (CRITICAL):
+   - NOT everything should be written in numbered steps!
+   - Use "style": "steps" (numbered steps "1. ...\\n2. ...\\nResult: ...") ONLY for **math problems, science calculations, physics/chemistry equations, formulas, or code debugging** that the user wants to solve! Only math/science/problem-solving should have a "Result: ..." line at the end.
+   - Use "style": "paragraph" (clean, natural prose paragraphs separated by "\\n\\n" — NO "1. 2. 3." numbering and NO "Result:" line!) for ALL general explanations, concepts, history, biographies, definitions, summaries, or Exa AI informational topics! Always ground informational whiteboards in the LIVE EXA AI WEB SEARCH CONTEXT above when provided.
+
+3. PINPOINT VISUAL GROUNDING (box_2d [ymin, xmin, ymax, xmax] 0..1000) & SPEECH-TO-DRAWING ALIGNMENT (when drawing is needed):
+   - When solving a problem on screen, generate hand-drawn scene objects pointing to the EXACT sub-expressions or characters of the problem (e.g. tightly wrap ONLY "(1+2)" for Step 1, then tightly wrap ONLY "6 ÷ 2" for Step 2).
+   - Provide "box_2d": [ymin, xmin, ymax, xmax] in integer coordinates from 0 to 1000 tightly bounding the exact characters/element on the screenshot.
+   - Align each step ("step": 1, "step": 2...) with matching sentences in your spoken "answer" and include "spokenTrigger" (a 2-4 word phrase from your spoken "answer") so each shape draws at the exact moment you speak about it.
+   - If a math problem involves a function, slope, parabola, or inequality, include "graph": "x^2 - 4" (or "numberline: > 3") on the "notepad" object.
 
 Set durationMs: 25000 when generating visual scene objects.
 
-Supported scene object types (choose the best tutor drawing for each step!):
+Supported scene object types (only when visual drawing or whiteboard is genuinely needed):
 - "circle" (hand-drawn spiral loop): {"type": "circle", "box_2d": [350, 450, 430, 560], "step": 1, "spokenTrigger": "inside the parentheses", "label": "Step 1: (1+2) = 3", "color": "#E11D48"}
 - "underline" / "squiggle" (hand-drawn double underline or wavy bug squiggle beneath text): {"type": "underline", "box_2d": [350, 320, 430, 445], "step": 2, "style": "double", "label": "Step 2: 6 ÷ 2 = 3", "color": "#0284C7"} (use "style": "wavy" for errors/bugs)
 - "curly_brace" / "bracket" (hand-drawn under-brace ⏟ grouping an expression, or side-brace } beside code lines): {"type": "curly_brace", "box_2d": [350, 450, 430, 560], "step": 1, "label": "Evaluates to 3", "color": "#0284C7"}
@@ -1045,18 +1068,17 @@ Supported scene object types (choose the best tutor drawing for each step!):
 - "outline" (hand-drawn rectangle): {"type": "outline", "box_2d": [300, 400, 380, 600], "step": 1, "label": "Target"}
 - "equation" (handwritten formula card): {"type": "equation", "box_2d": [420, 350, 490, 600], "step": 2, "latex": "x = (-b ± √(b² - 4ac)) / 2a"}
 - "callout" (sticky note): {"type": "callout", "box_2d": [400, 400, 500, 700], "text": "Explanation note"}
-- "notepad" (interactive tutor whiteboard): {"type": "notepad", "title": "Step-by-Step Guide", "text": "1. First step...\\n2. Second step...\\n3. Third step...\\nResult: Final takeaway", "graph": "", "altAnswer": "", "altExplanation": ""}
+- "notepad" (interactive whiteboard):
+  * For Math/Science/Problem-Solving ONLY: {"type": "notepad", "style": "steps", "title": "Problem Solution", "text": "1. First step...\\n2. Second step...\\nResult: 9", "graph": ""}
+  * For General Explanations / Concepts / Exa AI Info: {"type": "notepad", "style": "paragraph", "title": "Topic Overview", "text": "First natural paragraph explaining the core concept clearly using Exa AI facts.\\n\\nSecond natural paragraph with key context and details."}
 
 4. "CHECK MY WORK" / PRACTICE MODE:
-   - If the user says "check my work", "did I do this right", "is my solution right", or "grade my steps", inspect each step of their work on screen:
-   - Place a hand-drawn green "checkmark" object next to each correct step!
-   - Place a hand-drawn red "circle" around the exact part where a mistake was made (if any), and write a helpful hint on the "notepad" whiteboard without spoiling the whole problem!
-5. INTERACTIVE CLICK GUIDE ("How do I..." / "Walk me through..."):
-   - If the user asks how to click/navigate UI controls on screen (e.g. "how do I export this", "walk me through changing this setting"), generate numbered "circle" objects ("step": 1, "step": 2...) around each button they need to click in order!
+   - If the user says "check my work", "did I do this right", or "grade my steps", place a green "checkmark" next to each correct step and a red "circle" around any mistake.
 
 Return your output strictly as a JSON object:
 {
-  "answer": "Spoken step-by-step explanation here (no markdown or asterisks)",
+  "answer": "Spoken response here (no markdown or asterisks)",
+  "action": null,
   "scene": {
     "objects": [ ... ],
     "durationMs": 25000
@@ -1116,6 +1138,7 @@ If no visual overlay is needed, set "scene": null.`;
               const rawText = vJson.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || "";
               const parsedVision = parseVisionOutput(rawText);
               if (parsedVision.answer) reply = parsedVision.answer;
+              if (parsedVision.action && !actionObj) actionObj = parsedVision.action;
               if (parsedVision.scene) sceneObj = sanitizeScene(parsedVision.scene);
               if (reply) {
                 modelUsed = `${vModel}-vision`;
@@ -1174,6 +1197,7 @@ If no visual overlay is needed, set "scene": null.`;
               const rawText = gvJson.choices?.[0]?.message?.content?.trim() || "";
               const parsedGv = parseVisionOutput(rawText);
               if (parsedGv.answer) reply = parsedGv.answer;
+              if (parsedGv.action && !actionObj) actionObj = parsedGv.action;
               if (parsedGv.scene) sceneObj = sanitizeScene(parsedGv.scene);
               if (reply) {
                 modelUsed = `${gvModel}-vision`;
@@ -1193,13 +1217,13 @@ If no visual overlay is needed, set "scene": null.`;
       const currentUtc = new Date().toUTCString();
       const currentYear = 2026;
       const systemPrompt =
-        `You are Flinch—a sharp, mature, friendly, and grounded human peer and tutor.\n` +
+        `You are Flinch—a sharp, mature, friendly, and grounded human peer and desktop assistant.\n` +
         `Current Date & Time: ${currentUtc} (Current Year: ${currentYear}).\n` +
         `1. PERSONA & TONE: Speak naturally like an intelligent, capable friend or colleague. NEVER act dumb, childish, or robotic. NEVER mention that you are "here to help with your screen", NEVER say "I have screen awareness" or "as your desktop AI companion", and NEVER list your features unless explicitly asked what you can do.\n` +
-        `2. STEP-BY-STEP TUTORING: When the user asks how to solve, fix, or understand a problem, math question, or technical issue, do NOT just blurt out the straight final answer first. Walk them through it step by step (First... Next... Finally...) like an engaging human tutor so they understand the process before reaching the answer.\n` +
+        `2. DO NOT OVER-EXPLAIN (CRITICAL): When the user asks a quick question, gives a command, or asks a simple factual query, answer directly and concisely in 1 to 2 sentences! Do NOT launch into an unsolicited lecture or step-by-step guide unless the user explicitly asks you to explain, teach, or solve a problem.\n` +
         `3. GREETINGS: If the user greets you (e.g. 'Hey Flinch', 'Hello', 'Hi', 'What's up'), reply warmly and naturally like a peer (e.g. 'Hey, how's it going?' or 'Hey! What's on your mind?') without mentioning their screen or offering generic AI assistance.\n` +
         `4. TIMEZONES: For time queries across different cities or timezones (e.g. UTC, EST, PST, GMT, JST), calculate and state the exact current local time based strictly on the UTC time above.\n` +
-        `5. LIVE KNOWLEDGE: For real-time questions, you have live internet access via Exa web search. State fresh, accurate facts as of ${currentYear}. NEVER claim your knowledge is outdated or cut off in the past.\n` +
+        `5. LIVE KNOWLEDGE (EXA AI): For real-time or informational questions, you have live internet access via Exa web search. State fresh, accurate facts as of ${currentYear}. NEVER claim your knowledge is outdated or cut off in the past.\n` +
         `6. VOICE CONCISENESS: Keep spoken responses natural for the ear (1 to 3 crisp sentences). Never use markdown, bullet points, asterisks, or filler.\n` +
         `7. CONVERSATIONAL MEMORY: Use the recent conversation history accurately when the user follows up or refers to earlier turns.`;
 
@@ -1380,17 +1404,22 @@ If no visual overlay is needed, set "scene": null.`;
       sceneObj = generateFallbackVisualScene(transcript, uiaText, reply);
     }
 
-    // Visual explainer / Bio card guarantee: if topic explanation was fetched with Wikimedia
-    if (wikiCardData && (!sceneObj || !sceneObj.objects || sceneObj.objects.length === 0)) {
+    // Visual explainer / Bio / Exa AI Whiteboard guarantee:
+    // When the user explicitly asks to explain a topic/person or write on the whiteboard, ground the Whiteboard in Exa AI (webContext) and/or Wikipedia (wikiCardData) using clean PARAGRAPH mode (no numbered steps, no Result box)!
+    const wantsExplainWhiteboard = !isActionCommand && /\b(explain|tell\s+me\s+about|who\s+is|who\s+was|biography\s+of|whiteboard|teach\s+me\s+about)\b/i.test(transcript);
+    if ((wikiCardData || (wantsExplainWhiteboard && webContext)) && (!sceneObj || !sceneObj.objects || sceneObj.objects.length === 0)) {
+      const wbTitle = wikiCardData?.title || (candidateTopic ? candidateTopic.replace(/\b\w/g, (c: string) => c.toUpperCase()) : "Topic Overview");
+      const wbParagraphs = buildParagraphsFromExaAndWiki(webContext, wikiCardData, reply);
       sceneObj = {
         durationMs: 25000,
         objects: [
           {
             type: "notepad",
-            title: wikiCardData.title,
-            subtitle: wikiCardData.description,
-            imageUrl: wikiCardData.thumbnail,
-            text: formatBioPoints(wikiCardData.extract, wikiCardData.description),
+            style: "paragraph",
+            title: wbTitle,
+            subtitle: wikiCardData?.description || "",
+            imageUrl: wikiCardData?.thumbnail || null,
+            text: wbParagraphs,
             color: "#3DDC84",
             delayMs: 150
           }
@@ -1963,7 +1992,19 @@ function parseFlinchAction(transcript: string, uiaText?: string): { action: Flin
     };
   }
 
-  // 3C. Delete / Clear Files or Recycle Bin (Sensitive: data deletion risk)
+  // 3C. Background Hard Drive / PC File Search (Handled locally by BackgroundTaskManager with spinner)
+  const hdSearchMatch = low.match(/\b(?:search|scan|look\s+through)\s+(?:my\s+|the\s+|entire\s+|whole\s+)?(?:hard\s*drive|pc|computer|c\s*drive|disk|drive|files|folders|system)\s+(?:for\s+)?(?:a\s+|an\s+|my\s+|the\s+)?(?:file\s+(?:named|called)\s+|folder\s+(?:named|called)\s+)?(.+?)(?:\s+file|\s+folder|\s+document|\s+in\s+the\s+background)?$/i);
+  if (hdSearchMatch) {
+    const q = hdSearchMatch[1].replace(/\b(named|called|for|please|now)\b/gi, "").trim();
+    if (q.length >= 2) {
+      return {
+        action: { type: "open_app", target: "", name: `Search Hard Drive: ${q}`, countdown_sec: 0 },
+        reply: `Searching your hard drive for ${q} in the background now.`
+      };
+    }
+  }
+
+  // 3D. Delete / Clear Files or Recycle Bin (Sensitive: data deletion risk)
   if (/\b(empty\s+(?:the\s+)?recycle\s+bin|clear\s+(?:the\s+)?recycle\s+bin|empty\s+trash)\b/i.test(low)) {
     return {
       action: {
@@ -1977,23 +2018,25 @@ function parseFlinchAction(transcript: string, uiaText?: string): { action: Flin
       reply: "Emptying the Recycle Bin permanently deletes files. Please approve this action."
     };
   }
-  const deleteFileMatch = low.match(/\b(?:delete|remove|erase|clean\s+up)\s+(?:my\s+|the\s+|all\s+)?(temp\s+files|temporary\s+files|downloads\s+folder|screenshots?|desktop\s+files|[a-z0-9_\-\.]+\.(?:txt|png|jpg|pdf|zip|docx|html))\b/i);
-  if (deleteFileMatch) {
-    const targetItem = deleteFileMatch[1].trim();
-    return {
-      action: {
-        type: "delete_file",
-        target: targetItem,
-        name: `Delete ${targetItem}`,
-        requires_approval: true,
-        description: `Removes ${targetItem} from your local disk. Please verify before proceeding.`,
-        command: `Remove-Item "${targetItem}"`
-      },
-      reply: `Deleting ${targetItem} is a sensitive file operation. Please approve on screen.`
-    };
+  const deleteFileMatch = low.match(/^\s*(?:please\s+|can\s+you\s+|could\s+you\s+)?(?:delete|remove|erase|clean\s+up)\s+(?:my\s+|the\s+|all\s+)?(?:file\s+|folder\s+|document\s+)?(?:named\s+|called\s+)?([a-z0-9_\-\.\s]+?)(?:\s+from\s+(?:my\s+)?(?:desktop|downloads|documents|pc))?$/i);
+  if (deleteFileMatch && !low.includes("this line") && !low.includes("selected text") && !low.includes("highlighted")) {
+    const targetItem = deleteFileMatch[1].replace(/\b(please|now|on my desktop|from my desktop|in my downloads|from downloads)\b/gi, "").trim();
+    if (targetItem.length >= 2) {
+      return {
+        action: {
+          type: "delete_file",
+          target: targetItem,
+          name: `Delete ${targetItem}`,
+          requires_approval: true,
+          description: `Removes "${targetItem}" from your local disk. Please confirm before proceeding.`,
+          command: `Delete -> "${targetItem}"`
+        },
+        reply: `Deleting ${targetItem} requires your confirmation. Please approve on screen or say yes.`
+      };
+    }
   }
 
-  // 3D. System / Network Shell Commands (Sensitive)
+  // 3E. System / Network Shell Commands (Sensitive)
   if (/\b(flush\s+dns|reset\s+network|clear\s+dns\s+cache)\b/i.test(low)) {
     return {
       action: {
@@ -2008,48 +2051,38 @@ function parseFlinchAction(transcript: string, uiaText?: string): { action: Flin
     };
   }
 
-  // 4. PC CONTROL: Mouse Clicks, Typing, & Keyboard Shortcuts
-  const clickMatch = low.match(/\b(?:click|press|tap)\s+(?:on\s+)?(?:the\s+)?([a-z0-9 _\-]+?)(?:\s+button|\s+icon|\s+link|\s+tab)?$/i);
-  if (clickMatch && !low.includes("how to") && !low.includes("where is")) {
-    const targetLabel = clickMatch[1].replace(/\b(on|my|screen|window|please|now)\b/gi, "").trim();
+  // 4. PC CONTROL: Mouse Clicks (Single, Double, Right-Click), Typing, & Keyboard Shortcuts
+  const clickMatch = low.match(/\b(double\s*click|right\s*click|click|press|tap)\s+(?:on\s+)?(?:the\s+)?([a-z0-9 _\-]+?)(?:\s+button|\s+icon|\s+link|\s+tab)?$/i);
+  if (clickMatch && !low.includes("how to") && !low.includes("where is") && !low.includes("walk me through")) {
+    const clickVerb = clickMatch[1].toLowerCase().replace(/\s+/g, "_");
+    const actionType = clickVerb.includes("double") ? "double_click" : (clickVerb.includes("right") ? "right_click" : "click_element");
+    const targetLabel = clickMatch[2].replace(/\b(on|my|screen|window|please|now)\b/gi, "").trim();
     if (targetLabel.length >= 2) {
       const isSensitiveClick = /\b(delete|remove|submit|send|pay|buy|purchase|checkout|format|erase|uninstall|confirm|sign\s*out|log\s*out)\b/i.test(targetLabel);
       const uiaHit = findUiaTargetCoords(targetLabel, uiaText);
-      const cx = uiaHit ? Math.round((uiaHit.x + uiaHit.w / 2) * 1000) / 1000 : 0.5;
-      const cy = uiaHit ? Math.round((uiaHit.y + uiaHit.h / 2) * 1000) / 1000 : 0.5;
-
-      const clickScene = uiaHit ? {
-        durationMs: 6000,
-        objects: [
-          {
-            type: "circle",
-            rect: { x: uiaHit.x, y: uiaHit.y, w: uiaHit.w, h: uiaHit.h },
-            label: `Click: ${uiaHit.matchedName}`,
-            color: "#0284C7",
-            step: 1,
-            delayMs: 0
-          }
-        ]
-      } : undefined;
-
-      return {
-        action: {
-          type: "click_element",
-          target: uiaHit ? uiaHit.matchedName : targetLabel,
-          name: `Click "${uiaHit ? uiaHit.matchedName : targetLabel}"`,
-          x: cx,
-          y: cy,
-          requires_approval: isSensitiveClick,
-          description: isSensitiveClick
-            ? `Clicks the "${targetLabel}" control on your active window.`
-            : `Moves cursor and clicks "${targetLabel}".`,
-          command: `MouseClick(${Math.round(cx * 100)}%, ${Math.round(cy * 100)}%)`
-        },
-        reply: isSensitiveClick
-          ? `Clicking ${targetLabel} is a sensitive action. Please confirm on screen.`
-          : `Clicking ${uiaHit ? uiaHit.matchedName : targetLabel} now.`,
-        scene: clickScene
-      };
+      // If UIA found exact coordinates, return immediately without drawing unnecessary shapes!
+      // If UIA did NOT find it, return null here so Gemini Vision locates the exact button coordinates from the screenshot!
+      if (uiaHit) {
+        const cx = Math.round((uiaHit.x + uiaHit.w / 2) * 1000) / 1000;
+        const cy = Math.round((uiaHit.y + uiaHit.h / 2) * 1000) / 1000;
+        return {
+          action: {
+            type: actionType as any,
+            target: uiaHit.matchedName,
+            name: `${actionType === "double_click" ? "Double-Click" : (actionType === "right_click" ? "Right-Click" : "Click")} "${uiaHit.matchedName}"`,
+            x: cx,
+            y: cy,
+            requires_approval: isSensitiveClick,
+            description: isSensitiveClick
+              ? `Clicks the "${uiaHit.matchedName}" control on your active window.`
+              : `Moves cursor and clicks "${uiaHit.matchedName}".`,
+            command: `MouseClick(${Math.round(cx * 100)}%, ${Math.round(cy * 100)}%)`
+          },
+          reply: isSensitiveClick
+            ? `Clicking ${uiaHit.matchedName} is a sensitive action. Please confirm on screen.`
+            : `Clicking ${uiaHit.matchedName} now.`
+        };
+      }
     }
   }
 
@@ -2226,18 +2259,49 @@ function isLiveQuery(q: string): boolean {
 }
 
 function formatBioPoints(extract: string, desc: string): string {
-  const points: string[] = [];
-  if (desc) points.push(`Role: ${desc}`);
   const sents = (extract || "").split(/(?<=[.?!])\s+/).filter((s) => s.trim().length > 10);
-  for (let i = 0; i < Math.min(3, sents.length); i++) {
-    points.push(sents[i].trim());
-  }
-  return points.join("\n\n");
+  if (sents.length <= 2) return (extract || desc || "").trim();
+  const p1 = sents.slice(0, 2).join(" ").trim();
+  const p2 = sents.slice(2, 4).join(" ").trim();
+  return p2 ? `${p1}\n\n${p2}` : p1;
 }
 
-// Screen awareness query classifier (read screen, explain error, look at screen, point out, highlight, check my work, walk me through)
+function buildParagraphsFromExaAndWiki(webContext: string, wikiCardData: any, spokenReply: string): string {
+  const paragraphs: string[] = [];
+  if (wikiCardData?.extract) {
+    const wikiParas = formatBioPoints(wikiCardData.extract, wikiCardData.description || "");
+    if (wikiParas) paragraphs.push(wikiParas);
+  }
+  if (webContext) {
+    // Clean Exa AI snippets into natural readable prose paragraphs
+    const lines = webContext
+      .split("\n")
+      .map((l) => l.replace(/^\[[^\]]+\]:\s*/, "").replace(/\s+/g, " ").trim())
+      .filter((l) => l.length > 35 && !l.startsWith("http"));
+    for (let i = 0; i < Math.min(2, lines.length); i++) {
+      let snippet = lines[i];
+      if (snippet.length > 320) {
+        const lastPeriod = snippet.lastIndexOf(".", 320);
+        snippet = lastPeriod > 120 ? snippet.slice(0, lastPeriod + 1) : snippet.slice(0, 320) + "...";
+      }
+      if (!paragraphs.some((p) => p.slice(0, 40).toLowerCase() === snippet.slice(0, 40).toLowerCase())) {
+        paragraphs.push(snippet);
+      }
+      if (paragraphs.length >= 2) break;
+    }
+  }
+  if (paragraphs.length === 0 && spokenReply) {
+    paragraphs.push(spokenReply);
+  }
+  return paragraphs.slice(0, 2).join("\n\n");
+}
+
+// Screen awareness query classifier (read screen, explain error, look at screen, point out, highlight, check my work, walk me through, click on screen)
 function isScreenAwarenessQuery(q: string): boolean {
   const low = q.toLowerCase();
+  if (/^\s*(?:please\s+|can\s+you\s+)?(?:search|find|locate|delete|remove|erase|open|close|quit|move|organize|set\s+a\s+timer|remind\s+me)\b/i.test(low)) {
+    return false;
+  }
   const triggers = [
     "screen", "look at this", "look here", "what am i looking at", "what's this on", "what is this on",
     "explain this error", "read this", "read my screen", "read the text", "what does this error",
@@ -2248,6 +2312,7 @@ function isScreenAwarenessQuery(q: string): boolean {
     "solve the problem on", "check the screen", "on the screen", "on screen",
     "check my work", "did i do this right", "is my solution right", "is this step right", "grade my",
     "walk me through", "guide me through", "how do i click", "where do i click",
+    "click on", "click the", "double click", "right click", "press the",
     "why did you do step", "explain step", "practice problem", "similar problem",
     "6 ÷ 2", "6/2"
   ];
@@ -2353,16 +2418,31 @@ function generateFallbackVisualScene(transcript: string, uiaText: string | undef
 
 // Robustly extracts { answer, scene } from model output, even if it is wrapped in
 // code fences, has extra prose, or was truncated mid-JSON.
-function parseVisionOutput(raw: string): { answer: string; scene: any } {
+function parseVisionOutput(raw: string): { answer: string; action: any; scene: any } {
   let txt = (raw || "").trim()
     .replace(/^```(?:json)?\s*/i, "")
     .replace(/```\s*$/, "")
     .trim();
 
-  const finish = (p: any) => ({
-    answer: typeof p?.answer === "string" ? p.answer.trim() : "",
-    scene: p?.scene && typeof p.scene === "object" ? p.scene : null,
-  });
+  const finish = (p: any) => {
+    let act = p?.action && typeof p.action === "object" ? p.action : null;
+    if (act && Array.isArray(act.box_2d) && act.box_2d.length >= 4) {
+      const [ymin, xmin, ymax, xmax] = act.box_2d.map((v: any) => Number(v) || 0);
+      const scale = (ymin > 1 || xmin > 1 || ymax > 1 || xmax > 1) ? 1000 : 1;
+      act.x = Math.round(((xmin + xmax) / (2 * scale)) * 1000) / 1000;
+      act.y = Math.round(((ymin + ymax) / (2 * scale)) * 1000) / 1000;
+    } else if (act && typeof act.x === "number" && typeof act.y === "number") {
+      if (act.x > 1 || act.y > 1) {
+        act.x = Math.round((act.x / 1000) * 1000) / 1000;
+        act.y = Math.round((act.y / 1000) * 1000) / 1000;
+      }
+    }
+    return {
+      answer: typeof p?.answer === "string" ? p.answer.trim() : "",
+      action: act,
+      scene: p?.scene && typeof p.scene === "object" ? p.scene : null,
+    };
+  };
 
   try { return finish(JSON.parse(txt)); } catch { /* fall through */ }
 
@@ -2411,7 +2491,7 @@ function parseVisionOutput(raw: string): { answer: string; scene: any } {
     }
   }
 
-  return { answer: answer.trim(), scene };
+  return { answer: answer.trim(), action: null, scene };
 }
 
 // Validates, bounds-checks, and sanitizes AI-generated overlay scenes
