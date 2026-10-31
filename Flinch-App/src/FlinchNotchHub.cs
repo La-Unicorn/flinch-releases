@@ -1289,6 +1289,15 @@ namespace FlinchApp
             root.Children.Add(header);
 
             root.Children.Add(CreateHubToggleCard(
+                "Launch at Windows Startup",
+                "Automatically starts Flinch whenever you turn on or sign in to Windows.",
+                AutoStartManager.IsAutoStartEnabled(),
+                val =>
+                {
+                    AutoStartManager.SetAutoStart(val);
+                }));
+
+            root.Children.Add(CreateHubToggleCard(
                 "Email Guardian",
                 "Monitors Gmail in background every 15 min for urgent action items.",
                 BackgroundAutomationsEngine.Config.EmailGuardianEnabled,

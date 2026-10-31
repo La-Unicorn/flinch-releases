@@ -721,6 +721,81 @@ namespace FlinchApp
         public string Tier { get; set; }
     }
 
+    internal static class AutoStartManager
+    {
+        private const string RunKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
+        private const string AppName = "Flinch";
+
+        public static bool IsAutoStartEnabled()
+        {
+            try
+            {
+                using (var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(RunKeyPath, false))
+                {
+                    if (key == null) return false;
+                    var val = key.GetValue(AppName) as string;
+                    return !string.IsNullOrWhiteSpace(val);
+                }
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        public static void SetAutoStart(bool enable)
+        {
+            try
+            {
+                using (var key = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(RunKeyPath))
+                {
+                    if (key == null) return;
+                    if (enable)
+                    {
+                        string exePath = null;
+                        try
+                        {
+                            if (System.Reflection.Assembly.GetEntryAssembly() != null)
+                                exePath = System.Reflection.Assembly.GetEntryAssembly().Location;
+                        }
+                        catch { }
+
+                        if (string.IsNullOrWhiteSpace(exePath))
+                        {
+                            try { exePath = Process.GetCurrentProcess().MainModule.FileName; } catch { }
+                        }
+
+                        // Prefer standard installed Flinch.exe location if it exists
+                        string installedExe = System.IO.Path.Combine(
+                            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                            "Flinch",
+                            "Flinch.exe");
+
+                        if (File.Exists(installedExe))
+                        {
+                            exePath = installedExe;
+                        }
+
+                        if (!string.IsNullOrWhiteSpace(exePath))
+                        {
+                            key.SetValue(AppName, "\"" + exePath + "\"");
+                            FlinchEnv.Log("AutoStart enabled for: " + exePath);
+                        }
+                    }
+                    else
+                    {
+                        key.DeleteValue(AppName, false);
+                        FlinchEnv.Log("AutoStart disabled.");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                FlinchEnv.Log("SetAutoStart failed: " + ex.Message);
+            }
+        }
+    }
+
     internal static class SupabaseAuthClient
     {
         private static readonly string SessionFilePath = System.IO.Path.Combine(
@@ -751,6 +826,7 @@ namespace FlinchApp
                 byte[] plainBytes = Encoding.UTF8.GetBytes(jss.Serialize(session));
                 byte[] encrypted = ProtectedData.Protect(plainBytes, null, DataProtectionScope.CurrentUser);
                 File.WriteAllBytes(SessionFilePath, encrypted);
+                AutoStartManager.SetAutoStart(true);
             }
             catch (Exception ex)
             {
@@ -7375,6 +7451,18 @@ namespace FlinchApp
             }
         }
 
+        public void OnSignInSuccess()
+        {
+            Dispatcher.BeginInvoke(new Action(() =>
+            {
+                Topmost = true;
+                Activate();
+                PlayChimeSound();
+                ShowAlert("ready", "Flinch is ready! Alt+V or hover notch to start", "Welcome");
+                StartUpdateChecker();
+            }));
+        }
+
         public void ShowAlert(string type, string text, string label)
         {
             PlayChimeSound();
@@ -11497,9 +11585,26 @@ private void FinishRecordingAndSend()
                     {
                         var authWin = new FlinchAuthWindow(restoreError);
                         authWin.Owner = win;
+                        authWin.Closed += (s, e) =>
+                        {
+                            if (authWin.DialogResult == true || SupabaseAuthClient.CurrentSession != null)
+                            {
+                                FlinchEnv.Log("Sign-in succeeded — enabling auto-start and starting Flinch automatically.");
+                                AutoStartManager.SetAutoStart(true);
+                                win.OnSignInSuccess();
+                            }
+                            else
+                            {
+                                FlinchEnv.Log("Sign-in dismissed without active session.");
+                            }
+                        };
                         authWin.Show();
                     }
                     catch { }
+                }
+                else
+                {
+                    AutoStartManager.SetAutoStart(true);
                 }
 
                 app.Run();

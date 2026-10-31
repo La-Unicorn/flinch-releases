@@ -198,6 +198,16 @@ namespace FlinchInstaller
                 k.SetValue("NoModify", 1, RegistryValueKind.DWord);
                 k.SetValue("NoRepair", 1, RegistryValueKind.DWord);
             }
+
+            try
+            {
+                using (RegistryKey runKey = Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run"))
+                {
+                    if (runKey != null) runKey.SetValue("Flinch", "\"" + Paths.AppExe + "\"");
+                }
+            }
+            catch { }
+
             progress(100, "Ready!");
         }
 
@@ -218,6 +228,7 @@ namespace FlinchInstaller
 
             if (progress != null) progress(85, "Cleaning up session & registry…");
             try { Registry.CurrentUser.DeleteSubKeyTree(Paths.UninstallKey, false); } catch { }
+            try { using (RegistryKey runKey = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run", true)) { if (runKey != null) runKey.DeleteValue("Flinch", false); } } catch { }
             try { if (Directory.Exists(Paths.SessionDir)) Directory.Delete(Paths.SessionDir, true); } catch { }
 
             if (progress != null) progress(100, "Uninstalled successfully.");
