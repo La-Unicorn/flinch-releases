@@ -26,7 +26,7 @@ namespace FlinchApp
     //   8. Voice & emotion picker    ("switch voice to Autumn", "change voice to Daniel", "set voice to auto")
     // NOTE: compiled with the .NET Framework 4 C# compiler (C# 5): no ?., no $"", no out var.
     // =========================================================================
-    internal static class FlinchSkills
+    internal static partial class FlinchSkills
     {
         // Hooks set by the main window
         public static Action<string> Speak;                         // speak when the pill is idle
@@ -59,6 +59,7 @@ namespace FlinchApp
             string r;
             r = TryPomodoro(transcript, low);        if (r != null) return r;
             r = TryVoicePicker(transcript, low);     if (r != null) return r;
+            r = TryPlus(transcript, low);            if (r != null) return r;
             r = TryMemory(transcript, low);          if (r != null) return r;
             r = TryScreenTranslate(transcript, low); if (r != null) return r;
             r = TryReminder(transcript, low);        if (r != null) return r;
@@ -70,6 +71,7 @@ namespace FlinchApp
         public static void Start()
         {
             LoadContextReminders();
+            StartPlus();
             _watchTimer = new Timer(delegate { WatchContextReminders(); }, null, 4000, 3000);
             _nudgeTimer = new Timer(delegate { WatchNudges(); }, null, 15000, 10000);
         }
@@ -1138,7 +1140,7 @@ namespace FlinchApp
                 target = fullPath,
                 name = string.Format("Delete {0} \"{1}\"", isDirectory ? "folder" : "file", itemName),
                 requires_approval = true,
-                description = string.Format("Permanently deletes {0} \"{1}\" from your {2} folder. Please confirm before proceeding.", isDirectory ? "the folder" : "the file", itemName, parentName),
+                description = string.Format("Moves {0} \"{1}\" from your {2} folder to the Recycle Bin. You can undo it right after.", isDirectory ? "the folder" : "the file", itemName, parentName),
                 command = "Delete -> " + fullPath
             };
 
@@ -1152,15 +1154,12 @@ namespace FlinchApp
                         {
                             try
                             {
-                                if (isDirectory && Directory.Exists(fullPath))
+                                if ((isDirectory && Directory.Exists(fullPath)) || (!isDirectory && File.Exists(fullPath)))
                                 {
-                                    Directory.Delete(fullPath, true);
-                                    SpeakSafe("Deleted the folder " + itemName + ".");
-                                }
-                                else if (File.Exists(fullPath))
-                                {
-                                    File.Delete(fullPath);
-                                    SpeakSafe("Deleted " + itemName + ".");
+                                    if (SafeDelete(fullPath, isDirectory))
+                                        SpeakSafe("Moved " + itemName + " to the Recycle Bin. Say undo delete to bring it back.");
+                                    else
+                                        SpeakSafe("Sorry, I couldn't delete " + itemName + ".");
                                 }
                             }
                             catch (Exception ex)

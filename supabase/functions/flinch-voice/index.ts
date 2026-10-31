@@ -868,6 +868,7 @@ CRITICAL RULES:
 
     // 6. Fast Real-Time Web Search (Exa) & Wikimedia Encyclopedic Lookup
     let webContext = "";
+    let webSources = "";
     let wikiCardData: any = null;
 
     // Detect if user asks to explain a person or topic
@@ -936,6 +937,15 @@ CRITICAL RULES:
           if (snippets) {
             webContext = snippets.slice(0, 2200);
           }
+          const hosts: string[] = [];
+          for (const r of (exaJson.results || [])) {
+            try {
+              const h = new URL(String(r.url)).hostname.replace(/^www\./, "");
+              if (h && !hosts.includes(h)) hosts.push(h);
+            } catch (_u) {}
+            if (hosts.length >= 3) break;
+          }
+          webSources = hosts.join(", ");
         }
       } catch (e) {
         console.warn("Exa search error or timeout:", e);
@@ -1053,6 +1063,7 @@ Instructions:
    - Provide "box_2d": [ymin, xmin, ymax, xmax] in integer coordinates from 0 to 1000 tightly bounding the exact characters/element on the screenshot.
    - Align each step ("step": 1, "step": 2...) with matching sentences in your spoken "answer" and include "spokenTrigger" (a 2-4 word phrase from your spoken "answer") so each shape draws at the exact moment you speak about it.
    - If a math problem involves a function, slope, parabola, or inequality, include "graph": "x^2 - 4" (or "numberline: > 3") on the "notepad" object.
+   - For paragraph-mode topics that describe a PROCESS or SEQUENCE (water cycle, how a engine works) add "graph": "flow: Step A -> Step B -> Step C" (max 6 short nodes), and for HISTORY / chronology add "graph": "timeline: 1914 WWI begins | 1918 War ends | 1939 WWII begins" (max 6 items).
 
 Set durationMs: 25000 when generating visual scene objects.
 
@@ -1420,6 +1431,8 @@ If no visual overlay is needed, set "scene": null.`;
             subtitle: wikiCardData?.description || "",
             imageUrl: wikiCardData?.thumbnail || null,
             text: wbParagraphs,
+            sources: webSources || undefined,
+            graph: diagramSpecFor(wbParagraphs, candidateTopic),
             color: "#3DDC84",
             delayMs: 150
           }
@@ -2266,6 +2279,16 @@ function formatBioPoints(extract: string, desc: string): string {
   return p2 ? `${p1}\n\n${p2}` : p1;
 }
 
+// Simple heuristic diagram for paragraph whiteboards: only when the topic is clearly a process or a chronology
+function diagramSpecFor(text: string, topic: string): string | undefined {
+  const t = (text || "");
+  const years = t.match(/\b(1[0-9]{3}|20[0-2][0-9])\b[^.;]{3,60}/g);
+  if (years && years.length >= 3) {
+    return "timeline: " + years.slice(0, 5).map((s) => s.trim().replace(/\s+/g, " ").slice(0, 60)).join(" | ");
+  }
+  return undefined;
+}
+
 function buildParagraphsFromExaAndWiki(webContext: string, wikiCardData: any, spokenReply: string): string {
   const paragraphs: string[] = [];
   if (wikiCardData?.extract) {
@@ -2553,7 +2576,8 @@ function sanitizeScene(sceneRaw: any): any {
       if (obj.imageUrl) cleanObj.imageUrl = String(obj.imageUrl).slice(0, 500);
       if (obj.altAnswer) cleanObj.altAnswer = String(obj.altAnswer).slice(0, 50);
       if (obj.altExplanation) cleanObj.altExplanation = String(obj.altExplanation).slice(0, 600);
-      if (obj.graph) cleanObj.graph = String(obj.graph).slice(0, 150);
+      if (obj.graph) cleanObj.graph = String(obj.graph).slice(0, 300);
+      if (obj.sources) cleanObj.sources = String(obj.sources).slice(0, 200);
       if (boxRect) {
         cleanObj.rect = boxRect;
       } else if (obj.rect) {

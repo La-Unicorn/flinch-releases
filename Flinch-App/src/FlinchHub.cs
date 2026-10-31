@@ -2042,6 +2042,7 @@ namespace FlinchApp
                 _tasks.Add(task);
             }
 
+            FlinchSkills.BeginSearchSession();
             NotifyUpdated();
 
             Task.Run(() =>
@@ -2132,6 +2133,7 @@ namespace FlinchApp
 
                     if (ct.IsCancellationRequested) return;
 
+                    FlinchSkills.EndSearchSession(bestMatch);
                     task.ProgressPercent = 100;
                     task.IsCompleted = true;
 
@@ -2213,6 +2215,7 @@ namespace FlinchApp
                     int score = ScoreCandidateName(fileName, qLow, qNorm, qWords);
                     if (score > 0)
                     {
+                        FlinchSkills.NoteSearchMatch(f, score);
                         DateTime dt = File.GetLastWriteTime(f);
                         if (score > bestScore || (score == bestScore && dt > bestDate))
                         {

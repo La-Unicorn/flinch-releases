@@ -1994,6 +1994,7 @@ namespace FlinchApp
         public string style { get; set; }
         public string spokenTrigger { get; set; }
         public string graph { get; set; }
+        public string sources { get; set; }
     }
 
     internal sealed class ScenePayload
@@ -4131,8 +4132,97 @@ namespace FlinchApp
 
             mainStack.Children.Add(modernPanel);
 
-            // 2B. Optional Hand-Sketched Coordinate Graph or Number Line inside the Whiteboard!
-            if (!string.IsNullOrWhiteSpace(obj.graph))
+            // 2B. Optional Hand-Sketched Diagram (flow / timeline) or Coordinate Graph / Number Line inside the Whiteboard!
+            if (!string.IsNullOrWhiteSpace(obj.graph) && (obj.graph.Trim().StartsWith("flow:", StringComparison.OrdinalIgnoreCase) || obj.graph.Trim().StartsWith("timeline:", StringComparison.OrdinalIgnoreCase)))
+            {
+                string dSpec = obj.graph.Trim();
+                bool isFlow = dSpec.StartsWith("flow:", StringComparison.OrdinalIgnoreCase);
+                string body = dSpec.Substring(dSpec.IndexOf(':') + 1);
+                string[] parts = body.Split(new[] { isFlow ? "->" : "|" }, StringSplitOptions.RemoveEmptyEntries);
+                var diagramBorder = new Border
+                {
+                    Background = new SolidColorBrush(Color.FromRgb(248, 250, 252)),
+                    BorderBrush = new SolidColorBrush(Color.FromRgb(226, 232, 240)),
+                    BorderThickness = new Thickness(1),
+                    CornerRadius = new CornerRadius(8),
+                    Padding = new Thickness(10, 8, 10, 8),
+                    Margin = new Thickness(0, 8, 0, 4)
+                };
+                Color[] dCols = new[] { Color.FromRgb(0x02, 0x84, 0xC7), Color.FromRgb(0xD9, 0x77, 0x06), Color.FromRgb(0x16, 0xA3, 0x4A), Color.FromRgb(0x7C, 0x3A, 0xED), Color.FromRgb(0xE1, 0x1D, 0x48) };
+                if (isFlow)
+                {
+                    var wrap = new WrapPanel { Orientation = Orientation.Horizontal };
+                    for (int di = 0; di < parts.Length && di < 7; di++)
+                    {
+                        Color c = dCols[di % dCols.Length];
+                        wrap.Children.Add(new Border
+                        {
+                            BorderBrush = new SolidColorBrush(c),
+                            BorderThickness = new Thickness(1.8),
+                            CornerRadius = new CornerRadius(9),
+                            Padding = new Thickness(9, 4, 9, 4),
+                            Margin = new Thickness(0, 2, 0, 2),
+                            Child = new TextBlock
+                            {
+                                Text = parts[di].Trim(),
+                                FontSize = 12,
+                                Foreground = new SolidColorBrush(Color.FromRgb(30, 41, 59)),
+                                FontFamily = new FontFamily("Segoe Print, Ink Free, Comic Sans MS, Segoe UI")
+                            }
+                        });
+                        if (di < parts.Length - 1 && di < 6)
+                        {
+                            wrap.Children.Add(new TextBlock
+                            {
+                                Text = "\u2192",
+                                FontSize = 16,
+                                Foreground = new SolidColorBrush(Color.FromRgb(148, 163, 184)),
+                                Margin = new Thickness(6, 0, 6, 0),
+                                VerticalAlignment = VerticalAlignment.Center
+                            });
+                        }
+                    }
+                    diagramBorder.Child = wrap;
+                }
+                else
+                {
+                    var tl = new StackPanel();
+                    for (int di = 0; di < parts.Length && di < 7; di++)
+                    {
+                        Color c = dCols[di % dCols.Length];
+                        var row = new DockPanel { Margin = new Thickness(0, 2, 0, 2) };
+                        var dot = new Ellipse { Width = 11, Height = 11, Fill = new SolidColorBrush(c), Margin = new Thickness(2, 5, 10, 0), VerticalAlignment = VerticalAlignment.Top };
+                        DockPanel.SetDock(dot, Dock.Left);
+                        row.Children.Add(dot);
+                        row.Children.Add(new TextBlock
+                        {
+                            Text = parts[di].Trim(),
+                            FontSize = 12.5,
+                            TextWrapping = TextWrapping.Wrap,
+                            Foreground = new SolidColorBrush(Color.FromRgb(30, 41, 59)),
+                            FontFamily = new FontFamily("Segoe Print, Ink Free, Comic Sans MS, Segoe UI")
+                        });
+                        tl.Children.Add(row);
+                    }
+                    diagramBorder.Child = tl;
+                }
+                if (!immediate)
+                {
+                    diagramBorder.Opacity = 0.0;
+                    int diagDelay = Math.Max(500, (int)(_speechDurationMs * 0.35));
+                    Border capturedDiagram = diagramBorder;
+                    Task.Delay(diagDelay).ContinueWith(_ =>
+                    {
+                        Dispatcher.BeginInvoke(new Action(() =>
+                        {
+                            if (_isDismissing) return;
+                            capturedDiagram.BeginAnimation(UIElement.OpacityProperty, new System.Windows.Media.Animation.DoubleAnimation(0.0, 1.0, new Duration(TimeSpan.FromMilliseconds(450))));
+                        }));
+                    });
+                }
+                mainStack.Children.Add(diagramBorder);
+            }
+            else if (!string.IsNullOrWhiteSpace(obj.graph))
             {
                 string gSpec = obj.graph.Trim();
                 var graphBorder = new Border
@@ -4294,6 +4384,21 @@ namespace FlinchApp
             string wbTitle = !string.IsNullOrWhiteSpace(obj.title) ? obj.title : (!string.IsNullOrWhiteSpace(obj.label) ? obj.label : "Flinch Whiteboard");
             string wbBody = !string.IsNullOrWhiteSpace(obj.text) ? obj.text : "";
             ActiveWhiteboardContext = wbTitle + "\r\n" + wbBody;
+            FlinchSkills.SaveBoard(wbTitle, obj.subtitle, wbBody, isStepByStepSolve ? "steps" : "paragraph", obj.graph, obj.sources, obj.imageUrl);
+
+            // Sources footer (Exa AI / web-grounded notes)
+            if (!string.IsNullOrWhiteSpace(obj.sources))
+            {
+                mainStack.Children.Add(new TextBlock
+                {
+                    Text = "Sources: " + obj.sources,
+                    Foreground = new SolidColorBrush(Color.FromRgb(100, 116, 139)),
+                    FontSize = 10.5,
+                    FontFamily = new FontFamily("Segoe UI"),
+                    TextWrapping = TextWrapping.Wrap,
+                    Margin = new Thickness(2, 6, 2, 0)
+                });
+            }
 
             // 4. Bottom Footer Bar: [📋 Copy Steps] [🖼️ Save PNG] on left + Marker Tray on right
             var footerGrid = new Grid { Margin = new Thickness(0, 12, 0, 0) };
@@ -5285,6 +5390,7 @@ namespace FlinchApp
                                                         style = oDict.ContainsKey("style") && oDict["style"] != null ? oDict["style"].ToString() : null,
                                                         spokenTrigger = oDict.ContainsKey("spokenTrigger") && oDict["spokenTrigger"] != null ? oDict["spokenTrigger"].ToString() : null,
                                                         graph = oDict.ContainsKey("graph") && oDict["graph"] != null ? oDict["graph"].ToString() : null,
+                                                        sources = oDict.ContainsKey("sources") && oDict["sources"] != null ? oDict["sources"].ToString() : null,
                                                         step = oDict.ContainsKey("step") && oDict["step"] != null ? Convert.ToInt32(oDict["step"]) : (int?)null,
                                                         delayMs = oDict.ContainsKey("delayMs") && oDict["delayMs"] != null ? Convert.ToInt32(oDict["delayMs"]) : (int?)null,
                                                         radius = oDict.ContainsKey("radius") && oDict["radius"] != null ? Convert.ToDouble(oDict["radius"]) : (double?)null,
@@ -5602,6 +5708,7 @@ namespace FlinchApp
     internal sealed class DynamicIslandWindow : Window
     {
         private const int HOTKEY_ID_ALTV = 0xB401;
+        private const int HOTKEY_ID_STOP = 0xB402;
 
         // Brand palette from user-provided SVGs (mint, white, vibrant orange, voice gradient)
         private static readonly Color ColMint      = Color.FromRgb(0x3D, 0xDC, 0x84); // #3DDC84 flinch-notch-idle.svg
@@ -7419,11 +7526,11 @@ namespace FlinchApp
                     {
                         if (File.Exists(target))
                         {
-                            File.Delete(target);
+                            FlinchSkills.SafeDelete(target, false);
                         }
                         else if (Directory.Exists(target))
                         {
-                            Directory.Delete(target, true);
+                            FlinchSkills.SafeDelete(target, true);
                         }
                         else
                         {
@@ -7441,8 +7548,8 @@ namespace FlinchApp
                             {
                                 if (string.IsNullOrWhiteSpace(d) || !Directory.Exists(d)) continue;
                                 string direct = System.IO.Path.Combine(d, target);
-                                if (File.Exists(direct)) { File.Delete(direct); break; }
-                                if (Directory.Exists(direct)) { Directory.Delete(direct, true); break; }
+                                if (File.Exists(direct)) { FlinchSkills.SafeDelete(direct, false); break; }
+                                if (Directory.Exists(direct)) { FlinchSkills.SafeDelete(direct, true); break; }
 
                                 bool deleted = false;
                                 try
@@ -7453,7 +7560,7 @@ namespace FlinchApp
                                         string noExt = (System.IO.Path.GetFileNameWithoutExtension(f) ?? "").ToLowerInvariant();
                                         if (fn == qLow || noExt == qLow || (qLow.Length >= 3 && noExt.Contains(qLow)))
                                         {
-                                            File.Delete(f);
+                                            FlinchSkills.SafeDelete(f, false);
                                             deleted = true;
                                             break;
                                         }
@@ -7816,6 +7923,32 @@ namespace FlinchApp
             };
         }
 
+        private void StopEverythingNow()
+        {
+            try
+            {
+                StopAudioPlayback();
+                _isBusy = false;
+                if (_recorder.IsRecording) { try { _recorder.StopAndGetWavBytes(); } catch { } }
+                try { OverlayWindow.CloseCurrent(); } catch { }
+                try { if (WhiteboardOverlayManager.IsOpen) WhiteboardOverlayManager.Close(); } catch { }
+                try { ActionApprovalWindow.ResolveActive(false); } catch { }
+                try { CancelCountdown(); } catch { }
+                foreach (var t in BackgroundTaskManager.GetActiveTasks())
+                {
+                    BackgroundTaskManager.CancelTask(t.Id);
+                }
+                FlinchSkills.CancelSkillState();
+                SetIslandState(IslandState.Idle, "", "");
+                UpdateMultitaskDisplay();
+                RefreshTasksExpandedUI();
+            }
+            catch (Exception ex)
+            {
+                FlinchEnv.Log("StopEverythingNow error: " + ex.Message);
+            }
+        }
+
         private void ApplyConfiguredHotkey()
         {
             try
@@ -7823,6 +7956,8 @@ namespace FlinchApp
                 IntPtr hwnd = new WindowInteropHelper(this).Handle;
                 if (hwnd == IntPtr.Zero) return;
                 NativeMethods.UnregisterHotKey(hwnd, HOTKEY_ID_ALTV);
+                NativeMethods.UnregisterHotKey(hwnd, HOTKEY_ID_STOP);
+                NativeMethods.RegisterHotKey(hwnd, HOTKEY_ID_STOP, NativeMethods.MOD_CONTROL | NativeMethods.MOD_ALT, 0x58); // Ctrl+Alt+X = stop everything
 
                 uint mod = NativeMethods.MOD_ALT;
                 uint vk = NativeMethods.VK_V;
@@ -7872,6 +8007,12 @@ namespace FlinchApp
 
         private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
         {
+            if (msg == NativeMethods.WM_HOTKEY && wParam.ToInt32() == HOTKEY_ID_STOP)
+            {
+                handled = true;
+                StopEverythingNow();
+                return IntPtr.Zero;
+            }
             if (msg == NativeMethods.WM_HOTKEY && wParam.ToInt32() == HOTKEY_ID_ALTV)
             {
                 handled = true;
@@ -8788,6 +8929,13 @@ private void FinishRecordingAndSend()
                                 ActionApprovalWindow.ResolveActive(false);
                                 return;
                             }
+                        }
+
+                        // Stop-everything voice command: kills speech, whiteboard, approvals, quiz and every background task at once
+                        if (Regex.IsMatch(lowerTrans.TrimEnd('.', '!', '?', ' '), @"^(?:flinch\s+)?(?:stop|cancel|abort|kill)\s+(?:everything|all(?:\s+of\s+it)?|all\s+tasks)$|^flinch\s+stop$|^shut\s+up$|^that'?s\s+enough$"))
+                        {
+                            StopEverythingNow();
+                            return;
                         }
 
                         // 0. Check for Open/Close Flinch Hub command
