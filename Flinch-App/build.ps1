@@ -64,6 +64,7 @@ $srcFiles = @(
     (Join-Path $root 'src\FlinchHub.cs'),
     (Join-Path $root 'src\FlinchSkills.cs'),
     (Join-Path $root 'src\FlinchSkillsPlus.cs'),
+    (Join-Path $root 'src\FlinchNotchHub.cs'),
     $gen
 )
 & $csc /nologo /optimize+ /debug- /target:winexe /win32icon:$ico "/win32manifest:$manifest" "/resource:$ico,flinch.ico" "/resource:$catPng,cat_logo.png" /out:$appExe $wpf $sys $speech $srcFiles

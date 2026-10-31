@@ -5604,7 +5604,8 @@ namespace FlinchApp
         Countdown,
         Alert,
         Error,
-        TasksExpanded
+        TasksExpanded,
+        HubExpanded
     }
 
     internal static class UpdateChecker
@@ -5705,7 +5706,7 @@ namespace FlinchApp
         public DateTime StartedUtc { get; set; }
     }
 
-    internal sealed class DynamicIslandWindow : Window
+    internal sealed partial class DynamicIslandWindow : Window
     {
         private const int HOTKEY_ID_ALTV = 0xB401;
         private const int HOTKEY_ID_STOP = 0xB402;
@@ -5865,12 +5866,12 @@ namespace FlinchApp
 
         // State & 60 FPS Animation Clock
         private IslandState _state = IslandState.Idle;
-        private double _curW = 170;
-        private double _curH = 34;
-        private double _targetW = 170;
-        private double _targetH = 34;
-        private double _curBotR = 17;
-        private double _targetBotR = 17;
+        private double _curW = 146;
+        private double _curH = 26;
+        private double _targetW = 146;
+        private double _targetH = 26;
+        private double _curBotR = 13;
+        private double _targetBotR = 13;
         private readonly Stopwatch _animClock = Stopwatch.StartNew();
 
         // Audio, Recording & Hotkey
@@ -5904,8 +5905,8 @@ namespace FlinchApp
             UseLayoutRounding = true;
             SnapsToDevicePixels = true;
             AllowDrop = true;
-            Width = 540;
-            Height = 260;
+            Width = 960;
+            Height = 340;
 
             DragOver += OnNotchDragOver;
             Drop += OnNotchDrop;
@@ -6572,6 +6573,8 @@ namespace FlinchApp
             _centerGrid.Children.Add(_cardPanel);
             _centerGrid.Children.Add(_updateDownloadBtn);
 
+            _hubExpandedPanel = BuildHubExpandedPanel();
+            _notchContentHost.Children.Add(_hubExpandedPanel);
             _notchContentHost.Children.Add(_listeningHost);
             _notchContentHost.Children.Add(_centerGrid);
             _notchContentHost.Children.Add(_tasksExpandedPanel);
@@ -7327,9 +7330,9 @@ namespace FlinchApp
                     if (bgCount > 0 && timerCount == 0)
                     {
                         // Sleek unhovered spinner pill
-                        _targetW = _isUpdateAvailable ? 230 : 190;
-                        _targetH = 34;
-                        _targetBotR = 17;
+                        _targetW = _isUpdateAvailable ? 210 : 170;
+                        _targetH = 28;
+                        _targetBotR = 14;
                     }
                     else
                     {
@@ -7351,9 +7354,9 @@ namespace FlinchApp
 
                     if (_state == IslandState.Idle)
                     {
-                        _targetW = 200;
-                        _targetH = 34;
-                        _targetBotR = 17;
+                        _targetW = 176;
+                        _targetH = 26;
+                        _targetBotR = 13;
                     }
                 }
                 else
@@ -7364,9 +7367,9 @@ namespace FlinchApp
 
                     if (_state == IslandState.Idle)
                     {
-                        _targetW = 170;
-                        _targetH = 34;
-                        _targetBotR = 17;
+                        _targetW = 146;
+                        _targetH = 26;
+                        _targetBotR = 13;
                     }
                 }
             }
@@ -8329,13 +8332,13 @@ namespace FlinchApp
                 if (_notchHoverTimer == null)
                 {
                     _notchHoverTimer = new System.Windows.Threading.DispatcherTimer();
-                    _notchHoverTimer.Interval = TimeSpan.FromMilliseconds(220);
+                    _notchHoverTimer.Interval = TimeSpan.FromMilliseconds(160);
                     _notchHoverTimer.Tick += (s, ev) =>
                     {
                         _notchHoverTimer.Stop();
-                        if (_isNotchHovered && (_hubWindow == null || !_hubWindow.IsVisible) && _state == IslandState.Idle && !_isBusy)
+                        if (_isNotchHovered && _state == IslandState.Idle && !_isBusy)
                         {
-                            ShowFlinchHub(fromHover: true);
+                            SetIslandState(IslandState.HubExpanded, "", "");
                         }
                     };
                 }
@@ -8359,6 +8362,19 @@ namespace FlinchApp
                     Dispatcher.BeginInvoke(new Action(() =>
                     {
                         if (!_isPillHovered && _state == IslandState.TasksExpanded)
+                        {
+                            SetIslandState(IslandState.Idle, "", "");
+                        }
+                    }));
+                });
+            }
+            else if (_state == IslandState.HubExpanded)
+            {
+                Task.Delay(350).ContinueWith(_ =>
+                {
+                    Dispatcher.BeginInvoke(new Action(() =>
+                    {
+                        if (!_isNotchHovered && _state == IslandState.HubExpanded && !_isHubFlyoutOpen && !HasFocusedInputInHub())
                         {
                             SetIslandState(IslandState.Idle, "", "");
                         }
@@ -9574,8 +9590,31 @@ private void FinishRecordingAndSend()
                 _countdownPanel.Visibility = Visibility.Collapsed;
                 _alertPanel.Visibility = Visibility.Collapsed;
                 _cardPanel.Visibility = Visibility.Collapsed;
+                if (_hubExpandedPanel != null) _hubExpandedPanel.Visibility = Visibility.Collapsed;
+                if (_isHubFlyoutOpen) CloseHubFlyout();
 
                 UpdateMultitaskDisplay();
+            }
+            else if (newState == IslandState.HubExpanded)
+            {
+                _dotsCenterHost.Visibility = Visibility.Collapsed;
+                _multitaskLeftHost.Visibility = Visibility.Collapsed;
+                _listeningHost.Visibility = Visibility.Collapsed;
+                _tasksExpandedPanel.Visibility = Visibility.Collapsed;
+                _spinnerViewbox.Visibility = Visibility.Collapsed;
+                _countdownPanel.Visibility = Visibility.Collapsed;
+                _alertPanel.Visibility = Visibility.Collapsed;
+                _cardPanel.Visibility = Visibility.Collapsed;
+
+                if (_hubExpandedPanel != null)
+                {
+                    _hubExpandedPanel.Visibility = Visibility.Visible;
+                }
+                RefreshHubData();
+
+                _targetW = 900;
+                _targetH = _isHubFlyoutOpen ? 260 : 70;
+                _targetBotR = 22;
             }
             else if (newState == IslandState.Listening)
             {
@@ -9631,9 +9670,9 @@ private void FinishRecordingAndSend()
                 else
                 {
                     _multitaskLeftHost.Visibility = Visibility.Collapsed;
-                    _targetW = _isUpdateAvailable ? 200 : 170;
-                    _targetH = 34;
-                    _targetBotR = 17;
+                    _targetW = _isUpdateAvailable ? 176 : 146;
+                    _targetH = 26;
+                    _targetBotR = 13;
                 }
             }
             else if (newState == IslandState.Speaking || newState == IslandState.Done)
@@ -9660,9 +9699,9 @@ private void FinishRecordingAndSend()
                     _multitaskLeftHost.Visibility = Visibility.Collapsed;
                     _dotsCenterHost.HorizontalAlignment = HorizontalAlignment.Center;
                     _dotsCenterHost.Margin = _isUpdateAvailable ? new Thickness(0, 0, 24, 0) : new Thickness(0);
-                    _targetW = _isUpdateAvailable ? 200 : 170;
-                    _targetH = 34;
-                    _targetBotR = 17;
+                    _targetW = _isUpdateAvailable ? 176 : 146;
+                    _targetH = 26;
+                    _targetBotR = 13;
                 }
 
                 if (newState == IslandState.Done)
@@ -9928,6 +9967,43 @@ private void FinishRecordingAndSend()
             else
             {
                 _smoothBotVoice = 0;
+            }
+
+            // -----------------------------------------------------------------
+            // 0. Hub Expanded Animation (Notch Widening Control Center)
+            // -----------------------------------------------------------------
+            if (_state == IslandState.HubExpanded)
+            {
+                if (_hubExpandedPanel != null)
+                {
+                    if (_curW > 450)
+                    {
+                        double p = Math.Min(1.0, (_curW - 450.0) / 320.0);
+                        _hubExpandedPanel.Opacity = p;
+                        _hubExpandedPanel.Visibility = Visibility.Visible;
+                    }
+                    else
+                    {
+                        _hubExpandedPanel.Opacity = 0.0;
+                        _hubExpandedPanel.Visibility = Visibility.Collapsed;
+                    }
+                }
+
+                _hubWavePhase += 0.16;
+                for (int i = 0; i < _hubWaveBars.Count; i++)
+                {
+                    double wave = Math.Sin(_hubWavePhase + i * 0.95);
+                    double targetH = Math.Max(2.5, _hubWaveBaseH[i % _hubWaveBaseH.Length] + wave * 4.5);
+                    _hubWaveBars[i].Height = targetH;
+                }
+            }
+            else
+            {
+                if (_hubExpandedPanel != null && _hubExpandedPanel.Visibility != Visibility.Collapsed)
+                {
+                    _hubExpandedPanel.Opacity = 0.0;
+                    _hubExpandedPanel.Visibility = Visibility.Collapsed;
+                }
             }
 
             // -----------------------------------------------------------------
