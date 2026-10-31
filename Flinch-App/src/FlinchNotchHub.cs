@@ -1,7 +1,7 @@
 // ============================================================================
 // FLINCH NOTCH HUB: Pure MacBook Notch Widening Control Center
-// Dynamically expands the top notch when hovered, matching exact design
-// 100% C# 5 Compatible for .NET Framework 4.0 / 4.8
+// 100% Faithful Vector Implementation of "flinch-notch.svg" (1430 x 192)
+// C# 5 Compatible for .NET Framework 4.0 / 4.8
 // ============================================================================
 
 using System;
@@ -25,20 +25,19 @@ namespace FlinchApp
     {
         // Hub in Notch UI Elements
         private Grid _hubExpandedPanel;
+        private Canvas _hubSvgCanvas;
         private Border _hubFlyoutHost;
         private ContentControl _hubFlyoutContent;
         private bool _isHubFlyoutOpen = false;
         private string _activeHubFlyoutType = null;
 
-        // Animated soundbars in center pill
+        // Animated soundbars in center section
         private double _hubWavePhase = 0;
         private readonly List<Rectangle> _hubWaveBars = new List<Rectangle>();
-        private static readonly double[] _hubWaveBaseH = new double[] { 4.0, 9.0, 13.0, 7.0, 10.0, 5.0 };
+        private static readonly double[] _hubWaveBaseH = new double[] { 6.0, 14.0, 22.0, 12.0, 18.0, 8.0, 15.0 };
         private TextBlock _hubListenStatusLabel;
 
-        // Badges & Themes
-        private Ellipse _hubGmailStatusDot;
-        private Ellipse _hubAccentDot;
+        // Customization Theme States
         private int _hubAccentIndex = 0;
         private static readonly Color[] HubAccentColors = new Color[]
         {
@@ -49,8 +48,14 @@ namespace FlinchApp
             Color.FromRgb(0xF8, 0x71, 0x71)  // Coral
         };
 
-        // History UI rows
-        private StackPanel _hubHistoryRowsStack;
+        // Live Dynamic Rows
+        private TextBlock _hubHistoryQ1;
+        private TextBlock _hubHistoryT1;
+        private TextBlock _hubHistoryQ2;
+        private TextBlock _hubHistoryT2;
+        private TextBlock _hubHistoryQ3;
+        private TextBlock _hubHistoryT3;
+        private Ellipse _hubGmailStatusDot;
 
         // Gmail inputs in Hub Flyout
         private TextBox _hubEmailBox;
@@ -59,6 +64,9 @@ namespace FlinchApp
         private TextBlock _hubGmailStatusHeader;
         private StackPanel _hubInboxCardsPanel;
 
+        // Fonts
+        private static readonly FontFamily AppleFont = new FontFamily("-apple-system, 'SF Pro Display', 'SF Pro Text', Inter, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif");
+
         // =====================================================================
         // BUILD HUB EXPANDED PANEL (Directly inside notch content host)
         // =====================================================================
@@ -66,29 +74,32 @@ namespace FlinchApp
         {
             var root = new Grid
             {
-                Width = 900,
+                Width = 1430,
                 HorizontalAlignment = HorizontalAlignment.Center,
                 VerticalAlignment = VerticalAlignment.Top,
                 Visibility = Visibility.Collapsed,
                 Opacity = 0.0
             };
 
-            root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(68) }); // Top Bar (Sleek height)
-            root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });    // Flyout Host
+            root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(192) }); // Exact SVG height
+            root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });     // Dropdown Flyout
 
-            // Row 0: Top Bar with 5 Columns
-            var topBar = BuildHubTopBar();
-            Grid.SetRow(topBar, 0);
-            root.Children.Add(topBar);
+            // Row 0: Exact SVG Canvas (1430 x 192)
+            _hubSvgCanvas = BuildHubSvgCanvas();
+            Grid.SetRow(_hubSvgCanvas, 0);
+            root.Children.Add(_hubSvgCanvas);
 
-            // Row 1: Flyout Container (Dropdown for Gmail, History, Settings)
+            // Row 1: Dropdown Flyout Host
             _hubFlyoutHost = new Border
             {
-                Background = new SolidColorBrush(Color.FromRgb(0x10, 0x11, 0x15)),
-                BorderBrush = new SolidColorBrush(Color.FromArgb(0x22, 0xFF, 0xFF, 0xFF)),
+                Background = new SolidColorBrush(Color.FromRgb(0x14, 0x15, 0x18)),
+                BorderBrush = new SolidColorBrush(Color.FromArgb(0x28, 0xFF, 0xFF, 0xFF)),
                 BorderThickness = new Thickness(0, 1, 0, 0),
+                CornerRadius = new CornerRadius(0, 0, 24, 24),
                 Visibility = Visibility.Collapsed,
-                Padding = new Thickness(24, 12, 24, 16)
+                Padding = new Thickness(36, 14, 36, 18),
+                Margin = new Thickness(40, -4, 40, 0),
+                Effect = new DropShadowEffect { BlurRadius = 24, ShadowDepth = 6, Opacity = 0.4 }
             };
             _hubFlyoutContent = new ContentControl();
             _hubFlyoutHost.Child = _hubFlyoutContent;
@@ -98,708 +109,622 @@ namespace FlinchApp
             return root;
         }
 
-        private Grid BuildHubTopBar()
+        // =====================================================================
+        // 1430 x 192 SVG CANVAS (Pixel-identical to flinch-notch.svg)
+        // =====================================================================
+        private Canvas BuildHubSvgCanvas()
         {
-            var grid = new Grid
+            var canvas = new Canvas
             {
-                Height = 68,
-                VerticalAlignment = VerticalAlignment.Top
+                Width = 1430,
+                Height = 192,
+                ClipToBounds = false
             };
 
-            // 5 Columns: History (215), Integrations (150), Center Island (140), Customization (150), Settings (160)
-            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(215) });
-            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(150) });
-            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(140) });
-            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(150) });
-            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(160) });
-
-            // Dividers between sections
-            for (int c = 0; c < 4; c++)
+            // 1. Background Path with camera notch cutout (M28 0 L551 0 ...)
+            var panelPath = new System.Windows.Shapes.Path
             {
-                var div = new Rectangle
+                Data = Geometry.Parse("M28 0 L551 0 Q565 0 565 14 L565 18 Q565 40 587 40 L843 40 Q865 40 865 18 L865 14 Q865 0 879 0 L1402 0 Q1430 0 1430 28 L1430 152 Q1430 192 1390 192 L40 192 Q0 192 0 152 L0 28 Q0 0 28 0 Z"),
+                Fill = new LinearGradientBrush
                 {
-                    Width = 1,
-                    Height = 40,
-                    Fill = new SolidColorBrush(Color.FromArgb(0x1C, 0xFF, 0xFF, 0xFF)),
-                    HorizontalAlignment = HorizontalAlignment.Right,
-                    VerticalAlignment = VerticalAlignment.Center
-                };
-                Grid.SetColumn(div, c);
-                grid.Children.Add(div);
-            }
-
-            // Col 0: Chat History
-            var colHistory = BuildHubHistoryColumn();
-            Grid.SetColumn(colHistory, 0);
-            grid.Children.Add(colHistory);
-
-            // Col 1: Integrations
-            var colIntegrations = BuildHubIntegrationsColumn();
-            Grid.SetColumn(colIntegrations, 1);
-            grid.Children.Add(colIntegrations);
-
-            // Col 2: Center Camera Cutout & Listening Island
-            var colCenter = BuildHubCenterColumn();
-            Grid.SetColumn(colCenter, 2);
-            grid.Children.Add(colCenter);
-
-            // Col 3: Customization
-            var colCustomization = BuildHubCustomizationColumn();
-            Grid.SetColumn(colCustomization, 3);
-            grid.Children.Add(colCustomization);
-
-            // Col 4: Settings
-            var colSettings = BuildHubSettingsColumn();
-            Grid.SetColumn(colSettings, 4);
-            grid.Children.Add(colSettings);
-
-            return grid;
-        }
-
-        // ---------------------------------------------------------------------
-        // Column 0: Chat History
-        // ---------------------------------------------------------------------
-        private UIElement BuildHubHistoryColumn()
-        {
-            var panel = new StackPanel
-            {
-                Margin = new Thickness(14, 6, 8, 4),
-                VerticalAlignment = VerticalAlignment.Top
+                    StartPoint = new Point(0, 0),
+                    EndPoint = new Point(0, 1),
+                    GradientStops = new GradientStopCollection
+                    {
+                        new GradientStop(Color.FromRgb(0x1F, 0x1F, 0x21), 0.0),
+                        new GradientStop(Color.FromRgb(0x1A, 0x1A, 0x1B), 1.0)
+                    }
+                },
+                Stroke = new SolidColorBrush(Color.FromArgb(18, 255, 255, 255)), // stroke="#ffffff" stroke-opacity="0.07"
+                StrokeThickness = 1.5,
+                Effect = new DropShadowEffect
+                {
+                    Color = Colors.Black,
+                    Direction = 270,
+                    ShadowDepth = 8,
+                    BlurRadius = 20,
+                    Opacity = 0.35
+                }
             };
+            canvas.Children.Add(panelPath);
 
-            // Header button: 🕒 Chat History ⌵
-            var header = new DockPanel { Cursor = Cursors.Hand, Margin = new Thickness(0, 0, 0, 4) };
-            var hStack = new StackPanel { Orientation = Orientation.Horizontal };
-            hStack.Children.Add(new TextBlock
-            {
-                Text = "\U0001F552", // clock
-                FontSize = 10.5,
-                Foreground = new SolidColorBrush(Color.FromRgb(0x9C, 0xA3, 0xAF)),
-                Margin = new Thickness(0, 0, 5, 0),
-                VerticalAlignment = VerticalAlignment.Center
-            });
-            hStack.Children.Add(new TextBlock
+            // 2. Dividers (4 vertical lines)
+            canvas.Children.Add(CreateDivider(361, 22, 361, 170));
+            canvas.Children.Add(CreateDivider(595, 60, 595, 170));
+            canvas.Children.Add(CreateDivider(845, 60, 845, 170));
+            canvas.Children.Add(CreateDivider(1194, 22, 1194, 170));
+
+            // =================================================================
+            // COLUMN 0: CHAT HISTORY (x: 0 to 361)
+            // =================================================================
+            // Header
+            var historyHeader = new Canvas { Cursor = Cursors.Hand };
+            historyHeader.Children.Add(CreateSvgPath("M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm0 4v6l4 2", 50, 20, 27, 27, new SolidColorBrush(Color.FromRgb(0xF2, 0xF2, 0xF3)), 1.8));
+            var historyTitle = new TextBlock
             {
                 Text = "Chat History",
-                FontSize = 11.5,
-                FontWeight = FontWeights.SemiBold,
-                Foreground = Brushes.White,
-                VerticalAlignment = VerticalAlignment.Center
-            });
-            hStack.Children.Add(new TextBlock
-            {
-                Text = " \u2304", // chevron
-                FontSize = 9.5,
-                Foreground = new SolidColorBrush(Color.FromRgb(0x6B, 0x72, 0x80)),
-                Margin = new Thickness(3, 0, 0, 0),
-                VerticalAlignment = VerticalAlignment.Center
-            });
-            header.Children.Add(hStack);
-            header.MouseLeftButtonDown += (s, e) =>
-            {
-                e.Handled = true;
-                ToggleHubFlyout("history");
+                FontSize = 22.5,
+                FontWeight = FontWeights.Medium,
+                Foreground = new SolidColorBrush(Color.FromRgb(0xF5, 0xF5, 0xF7)),
+                FontFamily = AppleFont
             };
-            panel.Children.Add(header);
+            Canvas.SetLeft(historyTitle, 90);
+            Canvas.SetTop(historyTitle, 16);
+            historyHeader.Children.Add(historyTitle);
+            historyHeader.Children.Add(CreateSvgPath("m6 9 6 6 6-6", 224, 25, 22, 22, new SolidColorBrush(Color.FromRgb(0x8E, 0x8E, 0x93)), 1.8));
+            historyHeader.MouseLeftButtonDown += (s, e) => { e.Handled = true; ToggleHubFlyout("history"); };
+            canvas.Children.Add(historyHeader);
 
-            // 3 Recent query items stack
-            _hubHistoryRowsStack = new StackPanel { Orientation = Orientation.Vertical };
-            PopulateHubHistoryRows();
-            panel.Children.Add(_hubHistoryRowsStack);
+            // Row 1: "What is flinch?"
+            var row1 = CreateHistoryRowItem(
+                "M7.9 20A9 9 0 1 0 4 16.1L2 22Z M8 12h.01M12 12h.01M16 12h.01",
+                52, 69, "What is flinch?", "2m ago", 86, out _hubHistoryQ1, out _hubHistoryT1);
+            canvas.Children.Add(row1);
 
-            return panel;
-        }
+            // Row 2: "Create a portfolio site"
+            var row2 = CreateHistoryRowItem(
+                "M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z M14 2v6h6M8 13h8M8 17h5",
+                52, 106, "Create a portfolio site", "5m ago", 123, out _hubHistoryQ2, out _hubHistoryT2);
+            canvas.Children.Add(row2);
 
-        private void PopulateHubHistoryRows()
-        {
-            if (_hubHistoryRowsStack == null) return;
-            _hubHistoryRowsStack.Children.Clear();
+            // Row 3: "Explain this code"
+            var row3 = CreateHistoryRowItem(
+                "m16 18 6-6-6-6M8 6l-6 6 6 6M14 4l-4 16",
+                52, 143, "Explain this code", "12m ago", 160, out _hubHistoryQ3, out _hubHistoryT3);
+            canvas.Children.Add(row3);
 
-            var recentTurns = FlinchSkills.GetRecentTurns(3);
-            if (recentTurns == null || recentTurns.Count == 0)
+            // =================================================================
+            // COLUMN 1: INTEGRATIONS (x: 361 to 595)
+            // =================================================================
+            // Header
+            var intHeader = new Canvas { Cursor = Cursors.Hand };
+            intHeader.Children.Add(CreateSvgPath(
+                "M19.439 7.85c-.049.322.059.648.289.878l1.568 1.568c.47.47.706 1.087.706 1.704s-.235 1.233-.706 1.704l-1.611 1.611a.98.98 0 0 1-.837.276c-.47-.07-.802-.48-.968-.925a2.501 2.501 0 1 0-3.214 3.214c.446.166.855.497.925.968a.979.979 0 0 1-.276.837l-1.61 1.61a2.404 2.404 0 0 1-1.705.707 2.402 2.402 0 0 1-1.704-.706l-1.568-1.568a1.026 1.026 0 0 0-.877-.29c-.493.074-.84.504-1.02.968a2.5 2.5 0 1 1-3.237-3.237c.464-.18.894-.527.967-1.02a1.026 1.026 0 0 0-.289-.877l-1.568-1.568A2.402 2.402 0 0 1 1.998 12c0-.617.236-1.234.706-1.704L4.23 8.77c.24-.24.581-.353.917-.303.515.077.877.528 1.073 1.01a2.5 2.5 0 1 0 3.259-3.259c-.482-.196-.933-.558-1.01-1.073-.05-.336.062-.676.303-.917l1.525-1.525A2.402 2.402 0 0 1 12 1.998c.617 0 1.234.236 1.704.706l1.568 1.568c.23.23.556.338.877.29.493-.074.84-.504 1.02-.968a2.5 2.5 0 1 1 3.236 3.236c-.464.18-.894.527-.967 1.02Z",
+                383, 20, 27, 27, new SolidColorBrush(Color.FromRgb(0xF2, 0xF2, 0xF3)), 1.8));
+            var intTitle = new TextBlock
             {
-                recentTurns = new List<FlinchSkills.HistoryTurn>
-                {
-                    new FlinchSkills.HistoryTurn { u = "What is flinch?", t = DateTime.UtcNow.AddMinutes(-2).ToString("o"), a = "Flinch is your autonomous desktop companion." },
-                    new FlinchSkills.HistoryTurn { u = "Create a portfolio site", t = DateTime.UtcNow.AddMinutes(-5).ToString("o"), a = "I can generate clean modern web layouts." },
-                    new FlinchSkills.HistoryTurn { u = "Explain this code", t = DateTime.UtcNow.AddMinutes(-12).ToString("o"), a = "I break down complex architectures step by step." }
-                };
-            }
+                Text = "Integrations",
+                FontSize = 22.5,
+                FontWeight = FontWeights.Medium,
+                Foreground = new SolidColorBrush(Color.FromRgb(0xF5, 0xF5, 0xF7)),
+                FontFamily = AppleFont
+            };
+            Canvas.SetLeft(intTitle, 419);
+            Canvas.SetTop(intTitle, 16);
+            intHeader.Children.Add(intTitle);
+            intHeader.Children.Add(CreateSvgPath("m6 9 6 6 6-6", 541, 25, 22, 22, new SolidColorBrush(Color.FromRgb(0x8E, 0x8E, 0x93)), 1.8));
+            intHeader.MouseLeftButtonDown += (s, e) => { e.Handled = true; ToggleHubFlyout("gmail"); };
+            canvas.Children.Add(intHeader);
 
-            foreach (var item in recentTurns)
+            // Notion Tile (x: 394, y: 74, w: 40, h: 40, rx: 9)
+            var notionBorder = new Border
             {
-                var row = CreateHubHistoryRow(item);
-                _hubHistoryRowsStack.Children.Add(row);
-            }
-        }
+                Width = 40,
+                Height = 40,
+                CornerRadius = new CornerRadius(9),
+                Background = Brushes.White,
+                Cursor = Cursors.Hand,
+                ToolTip = "Notion Workspace"
+            };
+            var notionPath = new System.Windows.Shapes.Path
+            {
+                Data = Geometry.Parse("M4.459 4.208c.746.606 1.026.56 2.428.466l13.215-.793c.28 0 .047-.28-.046-.326L17.86 1.968c-.42-.326-.981-.7-2.055-.607L3.01 2.295c-.466.046-.56.28-.374.466zm.793 3.08v13.904c0 .747.373 1.027 1.214.98l14.523-.84c.841-.046.935-.56.935-1.167V6.354c0-.606-.233-.933-.748-.887l-15.177.887c-.56.047-.747.327-.747.933zm14.337.745c.093.42 0 .84-.42.888l-.7.14v10.264c-.608.327-1.168.514-1.635.514-.748 0-.935-.234-1.495-.933l-4.577-7.186v6.952L12.21 19s0 .84-1.168.84l-3.222.186c-.093-.186 0-.653.327-.746l.84-.233V9.854L7.822 9.76c-.094-.42.14-1.026.793-1.073l3.456-.233 4.764 7.279v-6.44l-1.215-.139c-.093-.514.28-.887.747-.933zM1.936 1.035l13.31-.98c1.634-.14 2.055-.047 3.082.7l4.249 2.986c.7.513.934.653.934 1.213v16.378c0 1.026-.373 1.634-1.68 1.726l-15.458.934c-.98.047-1.448-.093-1.962-.747l-3.129-4.06c-.56-.747-.793-1.306-.793-1.96V2.667c0-.839.374-1.54 1.447-1.632z"),
+                Fill = Brushes.Black,
+                Stretch = Stretch.Uniform,
+                Width = 24,
+                Height = 24,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            notionBorder.Child = notionPath;
+            notionBorder.MouseLeftButtonDown += (s, e) => { e.Handled = true; Process.Start("https://notion.so"); };
+            Canvas.SetLeft(notionBorder, 394);
+            Canvas.SetTop(notionBorder, 74);
+            canvas.Children.Add(notionBorder);
 
-        private Border CreateHubHistoryRow(FlinchSkills.HistoryTurn turn)
-        {
-            var row = new Border
+            // Spotify Tile (x: 458, y: 72, w: 52, h: 44, rx: 12)
+            var spotifyBorder = new Border
             {
-                Height = 15,
-                Margin = new Thickness(0, 0.5, 0, 0.5),
-                CornerRadius = new CornerRadius(3),
-                Background = Brushes.Transparent,
+                Width = 52,
+                Height = 44,
+                CornerRadius = new CornerRadius(12),
+                Background = new SolidColorBrush(Color.FromRgb(0x1C, 0x2A, 0x21)),
+                Cursor = Cursors.Hand,
+                ToolTip = "Spotify Music"
+            };
+            var spotifyCanvas = new Canvas { Width = 34, Height = 34, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+            var spotifyCircle = new Ellipse { Width = 34, Height = 34, Fill = new SolidColorBrush(Color.FromRgb(0x1E, 0xD7, 0x60)) };
+            spotifyCanvas.Children.Add(spotifyCircle);
+            spotifyCanvas.Children.Add(CreateSvgPath("M6 12 Q17 7 28 14", 0, 0, 34, 34, new SolidColorBrush(Color.FromRgb(0x0B, 0x1A, 0x10)), 3.2));
+            spotifyCanvas.Children.Add(CreateSvgPath("M8 18 Q17 14 26 19", 0, 0, 34, 34, new SolidColorBrush(Color.FromRgb(0x0B, 0x1A, 0x10)), 2.7));
+            spotifyCanvas.Children.Add(CreateSvgPath("M10 23 Q17 21 24 24", 0, 0, 34, 34, new SolidColorBrush(Color.FromRgb(0x0B, 0x1A, 0x10)), 2.2));
+            spotifyBorder.Child = spotifyCanvas;
+            spotifyBorder.MouseLeftButtonDown += (s, e) => { e.Handled = true; Process.Start("https://open.spotify.com"); };
+            Canvas.SetLeft(spotifyBorder, 458);
+            Canvas.SetTop(spotifyBorder, 72);
+            canvas.Children.Add(spotifyBorder);
+
+            // Google Drive / Gmail Tile (x: 521.5, y: 74)
+            var gdriveBorder = new Border
+            {
+                Width = 44,
+                Height = 40,
+                CornerRadius = new CornerRadius(9),
+                Background = new SolidColorBrush(Color.FromRgb(0x1C, 0x20, 0x2A)),
+                Cursor = Cursors.Hand,
+                ToolTip = "Google Drive & Gmail Integration"
+            };
+            var gdriveCanvas = new Canvas { Width = 30, Height = 26, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+            gdriveCanvas.Children.Add(CreateSvgPathFilled("m2.2 22.3 1.3 2.2c.3.5.7.8 1.1 1.1l4.6-8h-9.2c0 .5.1 1 .4 1.5z", new SolidColorBrush(Color.FromRgb(0x00, 0x66, 0xDA))));
+            gdriveCanvas.Children.Add(CreateSvgPathFilled("m14.5 8.3-4.6-8c-.5.3-.8.6-1.1 1.1l-8.5 14.7c-.3.5-.4 1-.4 1.5h9.2z", new SolidColorBrush(Color.FromRgb(0x00, 0xAC, 0x47))));
+            gdriveCanvas.Children.Add(CreateSvgPathFilled("m24.5 25.6c.5-.3.8-.6 1.1-1.1l.5-.9 2.6-4.4c.3-.5.4-1 .4-1.5h-9.2l2 3.8z", new SolidColorBrush(Color.FromRgb(0xEA, 0x43, 0x35))));
+            gdriveCanvas.Children.Add(CreateSvgPathFilled("m14.5 8.3 4.6-8c-.5-.3-1-.4-1.5-.4h-6.2c-.5 0-1 .1-1.5.4z", new SolidColorBrush(Color.FromRgb(0x00, 0x83, 0x2D))));
+            gdriveCanvas.Children.Add(CreateSvgPathFilled("m20 17.7h-10.8l-4.6 8c.5.3 1 .4 1.5.4h17c.5 0 1-.1 1.5-.4z", new SolidColorBrush(Color.FromRgb(0x26, 0x84, 0xFC))));
+            gdriveCanvas.Children.Add(CreateSvgPathFilled("m24.5 8.8-4.2-7.3c-.3-.5-.7-.8-1.1-1.1l-4.6 8 5.4 9.3h9.2c0-.5-.1-1-.4-1.5z", new SolidColorBrush(Color.FromRgb(0xFF, 0xBA, 0x00))));
+            
+            // Live Status Indicator Dot on Gmail
+            _hubGmailStatusDot = new Ellipse
+            {
+                Width = 7,
+                Height = 7,
+                Fill = BackgroundAutomationsEngine.EmailConfig.IsConnected ? BrushMint : new SolidColorBrush(Color.FromRgb(0x6B, 0x72, 0x80))
+            };
+            Canvas.SetLeft(_hubGmailStatusDot, 22);
+            Canvas.SetTop(_hubGmailStatusDot, 0);
+            gdriveCanvas.Children.Add(_hubGmailStatusDot);
+
+            gdriveBorder.Child = gdriveCanvas;
+            gdriveBorder.MouseLeftButtonDown += (s, e) => { e.Handled = true; ToggleHubFlyout("gmail"); };
+            Canvas.SetLeft(gdriveBorder, 521.5);
+            Canvas.SetTop(gdriveBorder, 74);
+            canvas.Children.Add(gdriveBorder);
+
+            // Add Button (x: 388.75, y: 131.75, w: 180.5, h: 35.5, rx: 12)
+            var addBtn = new Border
+            {
+                Width = 180.5,
+                Height = 35.5,
+                CornerRadius = new CornerRadius(12),
+                Background = new SolidColorBrush(Color.FromRgb(0x1F, 0x1F, 0x21)),
+                BorderBrush = new SolidColorBrush(Color.FromArgb(30, 255, 255, 255)),
+                BorderThickness = new Thickness(1.5),
                 Cursor = Cursors.Hand
             };
-
-            var dock = new DockPanel { LastChildFill = true };
-
-            string relTime = FormatHubRelativeTime(turn.t);
-            var timeTb = new TextBlock
+            var addStack = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+            addStack.Children.Add(CreateSvgPath("M5 12h14M12 5v14", 0, 0, 18, 18, new SolidColorBrush(Color.FromRgb(0xF2, 0xF2, 0xF3)), 2.0));
+            var addText = new TextBlock
             {
-                Text = relTime,
-                FontSize = 8.5,
-                Foreground = new SolidColorBrush(Color.FromRgb(0x6B, 0x72, 0x80)),
-                VerticalAlignment = VerticalAlignment.Center,
-                Margin = new Thickness(4, 0, 1, 0)
-            };
-            DockPanel.SetDock(timeTb, Dock.Right);
-            dock.Children.Add(timeTb);
-
-            string iconStr = "\U0001F4AC";
-            string low = (turn.u ?? "").ToLowerInvariant();
-            if (low.Contains("code") || low.Contains("function") || low.Contains("debug") || low.Contains("explain")) iconStr = "</>";
-            else if (low.Contains("create") || low.Contains("site") || low.Contains("file") || low.Contains("draft")) iconStr = "\U0001F4C4";
-
-            var iconTb = new TextBlock
-            {
-                Text = iconStr,
-                FontSize = (iconStr == "</>") ? 7.5 : 8.5,
-                Foreground = new SolidColorBrush(Color.FromRgb(0x9C, 0xA3, 0xAF)),
-                FontWeight = (iconStr == "</>") ? FontWeights.Bold : FontWeights.Normal,
-                VerticalAlignment = VerticalAlignment.Center,
-                Margin = new Thickness(0, 0, 4, 0)
-            };
-            DockPanel.SetDock(iconTb, Dock.Left);
-            dock.Children.Add(iconTb);
-
-            var queryTb = new TextBlock
-            {
-                Text = turn.u ?? "",
-                FontSize = 9.5,
-                Foreground = new SolidColorBrush(Color.FromRgb(0xD1, 0xD5, 0xDB)),
-                TextTrimming = TextTrimming.CharacterEllipsis,
+                Text = "Add",
+                FontSize = 17,
+                Foreground = new SolidColorBrush(Color.FromRgb(0xF2, 0xF2, 0xF3)),
+                FontFamily = AppleFont,
+                Margin = new Thickness(7, 0, 0, 0),
                 VerticalAlignment = VerticalAlignment.Center
             };
-            dock.Children.Add(queryTb);
+            addStack.Children.Add(addText);
+            addBtn.Child = addStack;
+            addBtn.MouseLeftButtonDown += (s, e) => { e.Handled = true; ToggleHubFlyout("gmail"); };
+            Canvas.SetLeft(addBtn, 388.75);
+            Canvas.SetTop(addBtn, 131.75);
+            canvas.Children.Add(addBtn);
 
-            row.Child = dock;
+            // =================================================================
+            // COLUMN 2: CENTER AREA (Under Camera Notch Cutout: x: 595 to 845)
+            // =================================================================
+            var centerCard = new Border
+            {
+                Width = 230,
+                Height = 115,
+                CornerRadius = new CornerRadius(18),
+                Background = new SolidColorBrush(Color.FromRgb(0x15, 0x16, 0x1A)),
+                BorderBrush = new SolidColorBrush(Color.FromArgb(24, 255, 255, 255)),
+                BorderThickness = new Thickness(1),
+                Cursor = Cursors.Hand
+            };
+            var centerStack = new StackPanel
+            {
+                Orientation = Orientation.Vertical,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center
+            };
 
-            row.MouseEnter += (s, e) => row.Background = new SolidColorBrush(Color.FromArgb(0x28, 0xFF, 0xFF, 0xFF));
-            row.MouseLeave += (s, e) => row.Background = Brushes.Transparent;
+            // Camera Cutout Pill with Mic Glyph
+            var micCircle = new Border
+            {
+                Width = 36,
+                Height = 36,
+                CornerRadius = new CornerRadius(18),
+                Background = new SolidColorBrush(Color.FromRgb(0x22, 0x24, 0x2C)),
+                HorizontalAlignment = HorizontalAlignment.Center,
+                Margin = new Thickness(0, 0, 0, 6)
+            };
+            micCircle.Child = CreateSvgPath(
+                "M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3zm6 7a1 1 0 0 0-2 0 4 4 0 0 1-8 0 1 1 0 0 0-2 0 6 6 0 0 0 5 5.92V18H9a1 1 0 0 0 0 2h6a1 1 0 0 0 0-2h-2v-3.08A6 6 0 0 0 18 9z",
+                0, 0, 20, 20, Brushes.White, 0, Brushes.White);
+            centerStack.Children.Add(micCircle);
+
+            // Live Soundbars
+            var waveStack = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                Height = 24,
+                Margin = new Thickness(0, 2, 0, 4)
+            };
+            _hubWaveBars.Clear();
+            Color[] barCols = new Color[]
+            {
+                Color.FromRgb(0x3D, 0xDC, 0x84),
+                Color.FromRgb(0xFF, 0xFF, 0xFF),
+                Color.FromRgb(0x3D, 0xDC, 0x84),
+                Color.FromRgb(0xFF, 0x8A, 0x3D),
+                Color.FromRgb(0x3D, 0xDC, 0x84),
+                Color.FromRgb(0xFF, 0xFF, 0xFF),
+                Color.FromRgb(0x3D, 0xDC, 0x84)
+            };
+            for (int i = 0; i < 7; i++)
+            {
+                var rect = new Rectangle
+                {
+                    Width = 3.5,
+                    Height = _hubWaveBaseH[i],
+                    RadiusX = 1.8,
+                    RadiusY = 1.8,
+                    Fill = new SolidColorBrush(barCols[i]),
+                    Margin = new Thickness(2.2, 0, 2.2, 0),
+                    VerticalAlignment = VerticalAlignment.Center
+                };
+                _hubWaveBars.Add(rect);
+                waveStack.Children.Add(rect);
+            }
+            centerStack.Children.Add(waveStack);
+
+            // Listening / Ready Status Label
+            _hubListenStatusLabel = new TextBlock
+            {
+                Text = "Listening...",
+                FontSize = 13.5,
+                FontWeight = FontWeights.Medium,
+                Foreground = new SolidColorBrush(Color.FromRgb(0x9A, 0x9B, 0xA5)),
+                FontFamily = AppleFont,
+                HorizontalAlignment = HorizontalAlignment.Center
+            };
+            centerStack.Children.Add(_hubListenStatusLabel);
+
+            centerCard.Child = centerStack;
+            centerCard.MouseLeftButtonDown += (s, e) =>
+            {
+                e.Handled = true;
+                ToggleVoiceRecording();
+            };
+            Canvas.SetLeft(centerCard, 605);
+            Canvas.SetTop(centerCard, 58);
+            canvas.Children.Add(centerCard);
+
+            // =================================================================
+            // COLUMN 3: CUSTOMIZATION (x: 845 to 1194)
+            // =================================================================
+            // Header
+            var custHeader = new Canvas { Cursor = Cursors.Hand };
+            custHeader.Children.Add(CreateSvgPath(
+                "M21 3 11.5 12.5 M9.5 11.5c-2.2-.3-4 1-4.3 3.2-.2 1.6-1.1 2.8-2.7 3.3 3.8 2.3 8.6 1.4 9.4-2.4.3-1.3-.4-2.9-1.5-3.6",
+                894, 20, 27, 27, new SolidColorBrush(Color.FromRgb(0xF2, 0xF2, 0xF3)), 1.8));
+            var custTitle = new TextBlock
+            {
+                Text = "Customization",
+                FontSize = 22.5,
+                FontWeight = FontWeights.Medium,
+                Foreground = new SolidColorBrush(Color.FromRgb(0xF5, 0xF5, 0xF7)),
+                FontFamily = AppleFont
+            };
+            Canvas.SetLeft(custTitle, 933);
+            Canvas.SetTop(custTitle, 16);
+            custHeader.Children.Add(custTitle);
+            custHeader.Children.Add(CreateSvgPath("m6 9 6 6 6-6", 1084, 25, 22, 22, new SolidColorBrush(Color.FromRgb(0x8E, 0x8E, 0x93)), 1.8));
+            custHeader.MouseLeftButtonDown += (s, e) => { e.Handled = true; CycleHubAccentColor(); };
+            canvas.Children.Add(custHeader);
+
+            // Sun Tile: rect x="883" y="79" w="56" h="56" rx="17" fill="#3a3a3c"
+            var sunBorder = new Border
+            {
+                Width = 56,
+                Height = 56,
+                CornerRadius = new CornerRadius(17),
+                Background = new SolidColorBrush(Color.FromRgb(0x3A, 0x3A, 0x3C)),
+                Cursor = Cursors.Hand,
+                ToolTip = "Light Appearance"
+            };
+            sunBorder.Child = CreateSvgPath(
+                "M12 2a4 4 0 1 0 4 4 4 4 0 0 0-4-4zm0-2v2m0 16v2m-7.07-13.07 1.41 1.41m9.32 9.32 1.41 1.41M1 10h2m16 0h2M3.34 16.66l1.41-1.41m9.32-9.32 1.41-1.41",
+                0, 0, 28, 28, new SolidColorBrush(Color.FromRgb(0xF2, 0xF2, 0xF3)), 1.8);
+            sunBorder.MouseLeftButtonDown += (s, e) => { e.Handled = true; ShowAlert("theme", "Daylight visual theme activated.", "Theme"); };
+            Canvas.SetLeft(sunBorder, 883);
+            Canvas.SetTop(sunBorder, 79);
+            canvas.Children.Add(sunBorder);
+
+            // Moon Tile: rect x="955" y="79" w="56" h="56" rx="17" fill="#2a2a2c"
+            var moonBorder = new Border
+            {
+                Width = 56,
+                Height = 56,
+                CornerRadius = new CornerRadius(17),
+                Background = new SolidColorBrush(Color.FromRgb(0x2A, 0x2A, 0x2C)),
+                Cursor = Cursors.Hand,
+                ToolTip = "Dark Appearance"
+            };
+            moonBorder.Child = CreateSvgPath(
+                "M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z",
+                0, 0, 28, 28, new SolidColorBrush(Color.FromRgb(0xF2, 0xF2, 0xF3)), 1.8);
+            moonBorder.MouseLeftButtonDown += (s, e) => { e.Handled = true; ShowAlert("theme", "Midnight dark theme activated.", "Theme"); };
+            Canvas.SetLeft(moonBorder, 955);
+            Canvas.SetTop(moonBorder, 79);
+            canvas.Children.Add(moonBorder);
+
+            // Gradient Orb: circle cx="1055" cy="107" r="29" fill="#1a1a1b" stroke="#ffffff" stroke-opacity="0.35"
+            var orbOuter = new Canvas
+            {
+                Width = 58,
+                Height = 58,
+                Cursor = Cursors.Hand,
+                ToolTip = "Cycle Voice & Glow Palette"
+            };
+            var orbBorderCircle = new Ellipse
+            {
+                Width = 58,
+                Height = 58,
+                Fill = new SolidColorBrush(Color.FromRgb(0x1A, 0x1A, 0x1B)),
+                Stroke = new SolidColorBrush(Color.FromArgb(90, 255, 255, 255)),
+                StrokeThickness = 1.5
+            };
+            orbOuter.Children.Add(orbBorderCircle);
+
+            var orbInner = new Ellipse
+            {
+                Width = 38,
+                Height = 38,
+                Fill = new LinearGradientBrush
+                {
+                    StartPoint = new Point(0, 0),
+                    EndPoint = new Point(1, 1),
+                    GradientStops = new GradientStopCollection
+                    {
+                        new GradientStop(Color.FromRgb(0xFF, 0x4F, 0x9A), 0.0),
+                        new GradientStop(Color.FromRgb(0x9B, 0x5C, 0xFF), 0.5),
+                        new GradientStop(Color.FromRgb(0x3B, 0x7B, 0xFF), 1.0)
+                    }
+                }
+            };
+            Canvas.SetLeft(orbInner, 10);
+            Canvas.SetTop(orbInner, 10);
+            orbOuter.Children.Add(orbInner);
+            orbOuter.MouseLeftButtonDown += (s, e) => { e.Handled = true; CycleHubAccentColor(); };
+            Canvas.SetLeft(orbOuter, 1026);
+            Canvas.SetTop(orbOuter, 78);
+            canvas.Children.Add(orbOuter);
+
+            // Typography Tile: rect x="1100" y="79" w="56" h="56" rx="17" fill="#2a2a2c"
+            var typeBorder = new Border
+            {
+                Width = 56,
+                Height = 56,
+                CornerRadius = new CornerRadius(17),
+                Background = new SolidColorBrush(Color.FromRgb(0x2A, 0x2A, 0x2C)),
+                Cursor = Cursors.Hand,
+                ToolTip = "Adjust Interface Scale"
+            };
+            var typeText = new TextBlock
+            {
+                Text = "Aa",
+                FontSize = 25,
+                Foreground = new SolidColorBrush(Color.FromRgb(0xF2, 0xF2, 0xF3)),
+                FontFamily = AppleFont,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            typeBorder.Child = typeText;
+            typeBorder.MouseLeftButtonDown += (s, e) => { e.Handled = true; ShowAlert("scale", "Font scale set to standard.", "Display"); };
+            Canvas.SetLeft(typeBorder, 1100);
+            Canvas.SetTop(typeBorder, 79);
+            canvas.Children.Add(typeBorder);
+
+            // =================================================================
+            // COLUMN 4: SETTINGS (x: 1194 to 1430)
+            // =================================================================
+            // Header
+            var settHeader = new Canvas { Cursor = Cursors.Hand };
+            settHeader.Children.Add(CreateSvgPath(
+                "M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z M12 9a3 3 0 1 1-3 3 3 3 0 0 1 3-3z",
+                1231, 20, 27, 27, new SolidColorBrush(Color.FromRgb(0xF2, 0xF2, 0xF3)), 1.8));
+            var settTitle = new TextBlock
+            {
+                Text = "Settings",
+                FontSize = 22.5,
+                FontWeight = FontWeights.Medium,
+                Foreground = new SolidColorBrush(Color.FromRgb(0xF5, 0xF5, 0xF7)),
+                FontFamily = AppleFont
+            };
+            Canvas.SetLeft(settTitle, 1269);
+            Canvas.SetTop(settTitle, 16);
+            settHeader.Children.Add(settTitle);
+            settHeader.Children.Add(CreateSvgPath("m6 9 6 6 6-6", 1359, 25, 22, 22, new SolidColorBrush(Color.FromRgb(0x8E, 0x8E, 0x93)), 1.8));
+            settHeader.MouseLeftButtonDown += (s, e) => { e.Handled = true; ToggleHubFlyout("settings"); };
+            canvas.Children.Add(settHeader);
+
+            // Row 1: General (x: 1232, y: 69)
+            canvas.Children.Add(CreateSettingsRowItem(
+                "M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z M12 9a3 3 0 1 1-3 3 3 3 0 0 1 3-3z",
+                1232, 69, "General", 86, () => ToggleHubFlyout("settings")));
+
+            // Row 2: Hotkeys (x: 1232, y: 106)
+            canvas.Children.Add(CreateSettingsRowItem(
+                "M2 6a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6zm4 2h.01M10 8h.01M14 8h.01M18 8h.01M8 12h.01M12 12h.01M16 12h.01M7 16h10",
+                1232, 106, "Hotkeys", 123, () => ToggleHubFlyout("hotkeys")));
+
+            // Row 3: About Flinch (x: 1232, y: 143)
+            canvas.Children.Add(CreateSettingsRowItem(
+                "M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm0 14v-4m0-4h.01",
+                1232, 143, "About Flinch", 160, () => ShowAlert("about", "Flinch v" + BuildConfig.BuildVersion + " · Autonomous Voice Companion", "About")));
+
+            return canvas;
+        }
+
+        // =====================================================================
+        // SVG HELPERS
+        // =====================================================================
+        private static Line CreateDivider(double x1, double y1, double x2, double y2)
+        {
+            return new Line
+            {
+                X1 = x1,
+                Y1 = y1,
+                X2 = x2,
+                Y2 = y2,
+                Stroke = new SolidColorBrush(Color.FromArgb(23, 255, 255, 255)), // stroke-opacity="0.09"
+                StrokeThickness = 1.5,
+                StrokeStartLineCap = PenLineCap.Round,
+                StrokeEndLineCap = PenLineCap.Round
+            };
+        }
+
+        private static Viewbox CreateSvgPath(string pathData, double x, double y, double w, double h, Brush stroke, double strokeThickness = 1.8, Brush fill = null)
+        {
+            var vb = new Viewbox
+            {
+                Width = w,
+                Height = h
+            };
+            var path = new System.Windows.Shapes.Path
+            {
+                Data = Geometry.Parse(pathData),
+                Stroke = stroke,
+                StrokeThickness = strokeThickness,
+                Fill = fill ?? Brushes.Transparent,
+                StrokeStartLineCap = PenLineCap.Round,
+                StrokeEndLineCap = PenLineCap.Round,
+                StrokeLineJoin = PenLineJoin.Round
+            };
+            vb.Child = path;
+            Canvas.SetLeft(vb, x);
+            Canvas.SetTop(vb, y);
+            return vb;
+        }
+
+        private static Viewbox CreateSvgPathFilled(string pathData, Brush fill)
+        {
+            var vb = new Viewbox { Width = 30, Height = 26 };
+            var path = new System.Windows.Shapes.Path
+            {
+                Data = Geometry.Parse(pathData),
+                Fill = fill,
+                Stretch = Stretch.Uniform
+            };
+            vb.Child = path;
+            return vb;
+        }
+
+        private Canvas CreateHistoryRowItem(string iconData, double iconX, double iconY, string query, string time, double textY, out TextBlock queryOut, out TextBlock timeOut)
+        {
+            var row = new Canvas { Cursor = Cursors.Hand };
+
+            // Icon
+            row.Children.Add(CreateSvgPath(iconData, iconX, iconY, 22, 22, new SolidColorBrush(Color.FromRgb(0xE5, 0xE5, 0xE7)), 1.8));
+
+            // Query Text
+            var qText = new TextBlock
+            {
+                Text = query,
+                FontSize = 17,
+                Foreground = new SolidColorBrush(Color.FromRgb(0xE8, 0xE8, 0xEA)),
+                FontFamily = AppleFont
+            };
+            Canvas.SetLeft(qText, 90);
+            Canvas.SetTop(qText, textY - 21);
+            row.Children.Add(qText);
+            queryOut = qText;
+
+            // Time text
+            var tText = new TextBlock
+            {
+                Text = time,
+                FontSize = 15,
+                Foreground = new SolidColorBrush(Color.FromRgb(0x8E, 0x8E, 0x93)),
+                FontFamily = AppleFont,
+                TextAlignment = TextAlignment.Right,
+                Width = 70
+            };
+            Canvas.SetLeft(tText, 265);
+            Canvas.SetTop(tText, textY - 20);
+            row.Children.Add(tText);
+            timeOut = tText;
+
             row.MouseLeftButtonDown += (s, e) =>
             {
                 e.Handled = true;
-                if (!string.IsNullOrWhiteSpace(turn.a))
-                {
-                    SpeakAnswer(turn.a);
-                }
+                string q = qText.Text;
+                ShowAlert("history", q, "Recent Query");
             };
 
             return row;
         }
 
-        private static string FormatHubRelativeTime(string iso)
+        private Canvas CreateSettingsRowItem(string iconData, double iconX, double iconY, string label, double textY, Action onClick)
         {
-            if (string.IsNullOrWhiteSpace(iso)) return "now";
-            DateTime dt;
-            if (!DateTime.TryParse(iso, out dt)) return "now";
-            var diff = DateTime.UtcNow - dt.ToUniversalTime();
-            if (diff.TotalMinutes < 1) return "just now";
-            if (diff.TotalMinutes < 60) return string.Format("{0}m ago", (int)diff.TotalMinutes);
-            if (diff.TotalHours < 24) return string.Format("{0}h ago", (int)diff.TotalHours);
-            return string.Format("{0}d ago", (int)diff.TotalDays);
-        }
+            var row = new Canvas { Cursor = Cursors.Hand };
 
-        // ---------------------------------------------------------------------
-        // Column 1: Integrations
-        // ---------------------------------------------------------------------
-        private UIElement BuildHubIntegrationsColumn()
-        {
-            var panel = new StackPanel
-            {
-                Margin = new Thickness(8, 6, 8, 4),
-                VerticalAlignment = VerticalAlignment.Top
-            };
+            // Icon
+            row.Children.Add(CreateSvgPath(iconData, iconX, iconY, 22, 22, new SolidColorBrush(Color.FromRgb(0xE5, 0xE5, 0xE7)), 1.8));
 
-            // Header button: 🌸 Integrations ⌵
-            var header = new DockPanel { Cursor = Cursors.Hand, Margin = new Thickness(0, 0, 0, 5) };
-            var hStack = new StackPanel { Orientation = Orientation.Horizontal };
-            hStack.Children.Add(new TextBlock
+            // Label Text
+            var lbl = new TextBlock
             {
-                Text = "\U0001F338", // flower
-                FontSize = 10.5,
-                Foreground = new SolidColorBrush(Color.FromRgb(0xF4, 0x72, 0xB6)),
-                Margin = new Thickness(0, 0, 5, 0),
-                VerticalAlignment = VerticalAlignment.Center
-            });
-            hStack.Children.Add(new TextBlock
-            {
-                Text = "Integrations",
-                FontSize = 11.5,
-                FontWeight = FontWeights.SemiBold,
-                Foreground = Brushes.White,
-                VerticalAlignment = VerticalAlignment.Center
-            });
-            hStack.Children.Add(new TextBlock
-            {
-                Text = " \u2304",
-                FontSize = 9.5,
-                Foreground = new SolidColorBrush(Color.FromRgb(0x6B, 0x72, 0x80)),
-                Margin = new Thickness(3, 0, 0, 0),
-                VerticalAlignment = VerticalAlignment.Center
-            });
-            header.Children.Add(hStack);
-            header.MouseLeftButtonDown += (s, e) =>
-            {
-                e.Handled = true;
-                ToggleHubFlyout("gmail");
+                Text = label,
+                FontSize = 17,
+                Foreground = new SolidColorBrush(Color.FromRgb(0xE8, 0xE8, 0xEA)),
+                FontFamily = AppleFont
             };
-            panel.Children.Add(header);
+            Canvas.SetLeft(lbl, 1269);
+            Canvas.SetTop(lbl, textY - 21);
+            row.Children.Add(lbl);
 
-            // Icons row: [N] Notion, [♫] Spotify, [✉] Gmail, [+ Add]
-            var iconsRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 2, 0, 0) };
-
-            // Notion tile
-            iconsRow.Children.Add(CreateHubTile("N", Brushes.White, 10.5, "Notion Integration (Ready)", (s, e) =>
-            {
-                e.Handled = true;
-                ShowAlert("notion", "Notion Connected", "Workspace ready");
-            }));
-
-            // Spotify tile
-            var spot = CreateHubTile("\u266B", new SolidColorBrush(Color.FromRgb(0x1D, 0xB9, 0x54)), 11.5, "Spotify Media Controls", (s, e) =>
-            {
-                e.Handled = true;
-                ShowAlert("spotify", "Spotify Ready", "Play, pause, skip enabled");
-            });
-            spot.Margin = new Thickness(4, 0, 0, 0);
-            iconsRow.Children.Add(spot);
-
-            // Gmail tile with live status dot
-            var gmailBtn = new Border
-            {
-                Width = 24,
-                Height = 24,
-                CornerRadius = new CornerRadius(5),
-                Background = new SolidColorBrush(Color.FromRgb(0x1B, 0x1D, 0x23)),
-                BorderBrush = new SolidColorBrush(Color.FromRgb(0x2C, 0x2F, 0x3A)),
-                BorderThickness = new Thickness(1),
-                Cursor = Cursors.Hand,
-                ToolTip = "Google Gmail (Read, Write & Send Emails)",
-                Margin = new Thickness(4, 0, 0, 0)
-            };
-            var gmailGrid = new Grid();
-            gmailGrid.Children.Add(new TextBlock
-            {
-                Text = "\u2709", // envelope
-                FontSize = 11.5,
-                Foreground = new SolidColorBrush(Color.FromRgb(0xEF, 0x44, 0x44)),
-                HorizontalAlignment = HorizontalAlignment.Center,
-                VerticalAlignment = VerticalAlignment.Center
-            });
-            _hubGmailStatusDot = new Ellipse
-            {
-                Width = 5,
-                Height = 5,
-                Fill = BackgroundAutomationsEngine.EmailConfig.IsConnected ? BrushMint : new SolidColorBrush(Color.FromRgb(0x4B, 0x55, 0x63)),
-                HorizontalAlignment = HorizontalAlignment.Right,
-                VerticalAlignment = VerticalAlignment.Top,
-                Margin = new Thickness(0, 2, 2, 0)
-            };
-            gmailGrid.Children.Add(_hubGmailStatusDot);
-            gmailBtn.Child = gmailGrid;
-            gmailBtn.MouseLeftButtonDown += (s, e) =>
-            {
-                e.Handled = true;
-                ToggleHubFlyout("gmail");
-            };
-            iconsRow.Children.Add(gmailBtn);
-
-            // [+ Add] Button
-            var addBtn = new Border
-            {
-                Height = 22,
-                Padding = new Thickness(6, 0, 6, 0),
-                CornerRadius = new CornerRadius(11),
-                Background = new SolidColorBrush(Color.FromRgb(0x18, 0x19, 0x20)),
-                BorderBrush = new SolidColorBrush(Color.FromRgb(0x37, 0x41, 0x51)),
-                BorderThickness = new Thickness(1),
-                Cursor = Cursors.Hand,
-                ToolTip = "Connect New Integration",
-                Margin = new Thickness(5, 0, 0, 0),
-                VerticalAlignment = VerticalAlignment.Center
-            };
-            addBtn.Child = new TextBlock
-            {
-                Text = "+ Add",
-                FontSize = 9.5,
-                FontWeight = FontWeights.Medium,
-                Foreground = new SolidColorBrush(Color.FromRgb(0xD1, 0xD5, 0xDB)),
-                VerticalAlignment = VerticalAlignment.Center
-            };
-            addBtn.MouseEnter += (s, e) => addBtn.Background = new SolidColorBrush(Color.FromArgb(0x33, 0xFF, 0xFF, 0xFF));
-            addBtn.MouseLeave += (s, e) => addBtn.Background = new SolidColorBrush(Color.FromRgb(0x18, 0x19, 0x20));
-            addBtn.MouseLeftButtonDown += (s, e) =>
-            {
-                e.Handled = true;
-                ToggleHubFlyout("gmail");
-            };
-            iconsRow.Children.Add(addBtn);
-
-            panel.Children.Add(iconsRow);
-            return panel;
-        }
-
-        private Border CreateHubTile(string text, Brush fg, double fontSize, string tooltip, MouseButtonEventHandler onClick)
-        {
-            var tile = new Border
-            {
-                Width = 24,
-                Height = 24,
-                CornerRadius = new CornerRadius(5),
-                Background = new SolidColorBrush(Color.FromRgb(0x1B, 0x1D, 0x23)),
-                BorderBrush = new SolidColorBrush(Color.FromRgb(0x2C, 0x2F, 0x3A)),
-                BorderThickness = new Thickness(1),
-                Cursor = Cursors.Hand,
-                ToolTip = tooltip
-            };
-            tile.Child = new TextBlock
-            {
-                Text = text,
-                FontSize = fontSize,
-                FontWeight = FontWeights.Bold,
-                Foreground = fg,
-                HorizontalAlignment = HorizontalAlignment.Center,
-                VerticalAlignment = VerticalAlignment.Center
-            };
-            tile.MouseEnter += (s, e) => tile.BorderBrush = BrushMint;
-            tile.MouseLeave += (s, e) => tile.BorderBrush = new SolidColorBrush(Color.FromRgb(0x2C, 0x2F, 0x3A));
-            if (onClick != null) tile.MouseLeftButtonDown += onClick;
-            return tile;
-        }
-
-        // ---------------------------------------------------------------------
-        // Column 2: Center Camera Cutout & Listening Island
-        // ---------------------------------------------------------------------
-        private UIElement BuildHubCenterColumn()
-        {
-            var panel = new StackPanel
-            {
-                Margin = new Thickness(0, 3, 0, 3),
-                HorizontalAlignment = HorizontalAlignment.Center,
-                VerticalAlignment = VerticalAlignment.Center
-            };
-
-            // Top Camera / Mic Emblem Badge
-            var badge = new Border
-            {
-                Width = 20,
-                Height = 20,
-                CornerRadius = new CornerRadius(10),
-                Background = new SolidColorBrush(Color.FromRgb(0x18, 0x1A, 0x20)),
-                BorderBrush = new SolidColorBrush(Color.FromRgb(0x2E, 0x31, 0x3D)),
-                BorderThickness = new Thickness(1),
-                HorizontalAlignment = HorizontalAlignment.Center,
-                ToolTip = "Flinch Core Camera & Voice Sensor"
-            };
-            badge.Child = new TextBlock
-            {
-                Text = "\U0001F399", // microphone
-                FontSize = 9.5,
-                Foreground = Brushes.White,
-                HorizontalAlignment = HorizontalAlignment.Center,
-                VerticalAlignment = VerticalAlignment.Center
-            };
-            panel.Children.Add(badge);
-
-            // Bottom Listening Card
-            var card = new Border
-            {
-                Width = 96,
-                Height = 36,
-                CornerRadius = new CornerRadius(8),
-                Background = new SolidColorBrush(Color.FromRgb(0x1B, 0x1C, 0x22)),
-                BorderBrush = new SolidColorBrush(Color.FromRgb(0x27, 0x29, 0x33)),
-                BorderThickness = new Thickness(1),
-                Cursor = Cursors.Hand,
-                Margin = new Thickness(0, 3, 0, 0),
-                ToolTip = "Click to Talk / Toggle Voice Recording"
-            };
-
-            var stack = new StackPanel
-            {
-                HorizontalAlignment = HorizontalAlignment.Center,
-                VerticalAlignment = VerticalAlignment.Center
-            };
-
-            // Soundwave bars
-            var barsPanel = new StackPanel
-            {
-                Orientation = Orientation.Horizontal,
-                HorizontalAlignment = HorizontalAlignment.Center,
-                VerticalAlignment = VerticalAlignment.Center
-            };
-            _hubWaveBars.Clear();
-            for (int i = 0; i < 6; i++)
-            {
-                var r = new Rectangle
-                {
-                    Width = 2,
-                    Height = _hubWaveBaseH[i],
-                    RadiusX = 1,
-                    RadiusY = 1,
-                    Fill = BrushMint,
-                    Margin = new Thickness(1, 0, 1, 0),
-                    VerticalAlignment = VerticalAlignment.Center
-                };
-                _hubWaveBars.Add(r);
-                barsPanel.Children.Add(r);
-            }
-            stack.Children.Add(barsPanel);
-
-            _hubListenStatusLabel = new TextBlock
-            {
-                Text = "Listening...",
-                FontSize = 8.5,
-                FontWeight = FontWeights.Medium,
-                Foreground = new SolidColorBrush(Color.FromRgb(0xE5, 0xE7, 0xEB)),
-                Margin = new Thickness(0, 2, 0, 0),
-                HorizontalAlignment = HorizontalAlignment.Center
-            };
-            stack.Children.Add(_hubListenStatusLabel);
-
-            card.Child = stack;
-            card.MouseEnter += (s, e) => card.BorderBrush = BrushMint;
-            card.MouseLeave += (s, e) => card.BorderBrush = new SolidColorBrush(Color.FromRgb(0x27, 0x29, 0x33));
-            card.MouseLeftButtonDown += (s, e) =>
-            {
-                e.Handled = true;
-                ToggleVoiceRecording();
-            };
-            panel.Children.Add(card);
-
-            return panel;
-        }
-
-        // ---------------------------------------------------------------------
-        // Column 3: Customization
-        // ---------------------------------------------------------------------
-        private UIElement BuildHubCustomizationColumn()
-        {
-            var panel = new StackPanel
-            {
-                Margin = new Thickness(8, 6, 8, 4),
-                VerticalAlignment = VerticalAlignment.Top
-            };
-
-            // Header button: 🖊 Customization ⌵
-            var header = new DockPanel { Cursor = Cursors.Hand, Margin = new Thickness(0, 0, 0, 5) };
-            var hStack = new StackPanel { Orientation = Orientation.Horizontal };
-            hStack.Children.Add(new TextBlock
-            {
-                Text = "\u270E", // pen
-                FontSize = 10.5,
-                Foreground = new SolidColorBrush(Color.FromRgb(0x60, 0xA5, 0xFA)),
-                Margin = new Thickness(0, 0, 5, 0),
-                VerticalAlignment = VerticalAlignment.Center
-            });
-            hStack.Children.Add(new TextBlock
-            {
-                Text = "Customization",
-                FontSize = 11.5,
-                FontWeight = FontWeights.SemiBold,
-                Foreground = Brushes.White,
-                VerticalAlignment = VerticalAlignment.Center
-            });
-            hStack.Children.Add(new TextBlock
-            {
-                Text = " \u2304",
-                FontSize = 9.5,
-                Foreground = new SolidColorBrush(Color.FromRgb(0x6B, 0x72, 0x80)),
-                Margin = new Thickness(3, 0, 0, 0),
-                VerticalAlignment = VerticalAlignment.Center
-            });
-            header.Children.Add(hStack);
-            panel.Children.Add(header);
-
-            // Controls row: [☼] Sun, [☾] Moon, [●] Gradient Sphere, [Aa] Font size
-            var ctrlRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 2, 0, 0) };
-
-            // Sun tile
-            ctrlRow.Children.Add(CreateHubTile("\u263C", new SolidColorBrush(Color.FromRgb(0xFB, 0xBF, 0x24)), 11.5, "Switch to Light Theme", (s, e) =>
-            {
-                e.Handled = true;
-                ShowAlert("theme", "Theme Updated", "Light mode enabled");
-            }));
-
-            // Moon tile (Active highlight)
-            var moon = CreateHubTile("\u263E", new SolidColorBrush(Color.FromRgb(0xE5, 0xE7, 0xEB)), 11.5, "Dark Theme (Active)", null);
-            moon.BorderBrush = BrushMint;
-            moon.Margin = new Thickness(4, 0, 0, 0);
-            ctrlRow.Children.Add(moon);
-
-            // Accent Dot Picker
-            var accentBtn = new Border
-            {
-                Width = 24,
-                Height = 24,
-                CornerRadius = new CornerRadius(5),
-                Background = new SolidColorBrush(Color.FromRgb(0x1B, 0x1D, 0x23)),
-                BorderBrush = new SolidColorBrush(Color.FromRgb(0x2C, 0x2F, 0x3A)),
-                BorderThickness = new Thickness(1),
-                Cursor = Cursors.Hand,
-                ToolTip = "Cycle Accent Theme Color",
-                Margin = new Thickness(4, 0, 0, 0)
-            };
-            _hubAccentDot = new Ellipse
-            {
-                Width = 10,
-                Height = 10,
-                Fill = new SolidColorBrush(HubAccentColors[_hubAccentIndex]),
-                HorizontalAlignment = HorizontalAlignment.Center,
-                VerticalAlignment = VerticalAlignment.Center
-            };
-            accentBtn.Child = _hubAccentDot;
-            accentBtn.MouseLeftButtonDown += (s, e) =>
-            {
-                e.Handled = true;
-                _hubAccentIndex = (_hubAccentIndex + 1) % HubAccentColors.Length;
-                _hubAccentDot.Fill = new SolidColorBrush(HubAccentColors[_hubAccentIndex]);
-                ShowAlert("color", "Accent Color Changed", "Theme refreshed");
-            };
-            ctrlRow.Children.Add(accentBtn);
-
-            // [Aa] Font Size Toggle
-            var fontBtn = new Border
-            {
-                Width = 26,
-                Height = 24,
-                CornerRadius = new CornerRadius(5),
-                Background = new SolidColorBrush(Color.FromRgb(0x1B, 0x1D, 0x23)),
-                BorderBrush = new SolidColorBrush(Color.FromRgb(0x2C, 0x2F, 0x3A)),
-                BorderThickness = new Thickness(1),
-                Cursor = Cursors.Hand,
-                ToolTip = "Toggle Typography Size",
-                Margin = new Thickness(4, 0, 0, 0)
-            };
-            fontBtn.Child = new TextBlock
-            {
-                Text = "Aa",
-                FontSize = 10,
-                FontWeight = FontWeights.SemiBold,
-                Foreground = new SolidColorBrush(Color.FromRgb(0xD1, 0xD5, 0xDB)),
-                HorizontalAlignment = HorizontalAlignment.Center,
-                VerticalAlignment = VerticalAlignment.Center
-            };
-            fontBtn.MouseLeftButtonDown += (s, e) =>
-            {
-                e.Handled = true;
-                ShowAlert("font", "Typography Adjusted", "Standard scaling applied");
-            };
-            ctrlRow.Children.Add(fontBtn);
-
-            panel.Children.Add(ctrlRow);
-            return panel;
-        }
-
-        // ---------------------------------------------------------------------
-        // Column 4: Settings
-        // ---------------------------------------------------------------------
-        private UIElement BuildHubSettingsColumn()
-        {
-            var panel = new StackPanel
-            {
-                Margin = new Thickness(8, 6, 14, 4),
-                VerticalAlignment = VerticalAlignment.Top
-            };
-
-            // Header button: ⚙ Settings ⌵
-            var header = new DockPanel { Cursor = Cursors.Hand, Margin = new Thickness(0, 0, 0, 4) };
-            var hStack = new StackPanel { Orientation = Orientation.Horizontal };
-            hStack.Children.Add(new TextBlock
-            {
-                Text = "\u2699", // gear
-                FontSize = 10.5,
-                Foreground = new SolidColorBrush(Color.FromRgb(0x9C, 0xA3, 0xAF)),
-                Margin = new Thickness(0, 0, 5, 0),
-                VerticalAlignment = VerticalAlignment.Center
-            });
-            hStack.Children.Add(new TextBlock
-            {
-                Text = "Settings",
-                FontSize = 11.5,
-                FontWeight = FontWeights.SemiBold,
-                Foreground = Brushes.White,
-                VerticalAlignment = VerticalAlignment.Center
-            });
-            hStack.Children.Add(new TextBlock
-            {
-                Text = " \u2304",
-                FontSize = 9.5,
-                Foreground = new SolidColorBrush(Color.FromRgb(0x6B, 0x72, 0x80)),
-                Margin = new Thickness(3, 0, 0, 0),
-                VerticalAlignment = VerticalAlignment.Center
-            });
-            header.Children.Add(hStack);
-            header.MouseLeftButtonDown += (s, e) =>
-            {
-                e.Handled = true;
-                ToggleHubFlyout("settings");
-            };
-            panel.Children.Add(header);
-
-            // 3 Settings Links
-            panel.Children.Add(CreateHubSettingsLink("\u2699 General", () => ToggleHubFlyout("settings")));
-            panel.Children.Add(CreateHubSettingsLink("\u2328 Hotkeys", () => ToggleHubFlyout("hotkeys")));
-            panel.Children.Add(CreateHubSettingsLink("\u2139 About Flinch", () =>
-            {
-                ShowAlert("info", "Flinch v0.1.0", "Built with 100% on-device local privacy");
-            }));
-
-            return panel;
-        }
-
-        private Border CreateHubSettingsLink(string title, Action onClick)
-        {
-            var link = new Border
-            {
-                Height = 15,
-                Margin = new Thickness(0, 0.5, 0, 0.5),
-                CornerRadius = new CornerRadius(3),
-                Background = Brushes.Transparent,
-                Cursor = Cursors.Hand
-            };
-            link.Child = new TextBlock
-            {
-                Text = title,
-                FontSize = 9.5,
-                Foreground = new SolidColorBrush(Color.FromRgb(0x9C, 0xA3, 0xAF)),
-                VerticalAlignment = VerticalAlignment.Center
-            };
-            link.MouseEnter += (s, e) =>
-            {
-                link.Background = new SolidColorBrush(Color.FromArgb(0x28, 0xFF, 0xFF, 0xFF));
-                ((TextBlock)link.Child).Foreground = Brushes.White;
-            };
-            link.MouseLeave += (s, e) =>
-            {
-                link.Background = Brushes.Transparent;
-                ((TextBlock)link.Child).Foreground = new SolidColorBrush(Color.FromRgb(0x9C, 0xA3, 0xAF));
-            };
-            link.MouseLeftButtonDown += (s, e) =>
+            row.MouseLeftButtonDown += (s, e) =>
             {
                 e.Handled = true;
                 if (onClick != null) onClick();
             };
-            return link;
+
+            return row;
         }
 
         // =====================================================================
-        // FLYOUT PANELS (Seamlessly drops down below the 68px notch bar)
+        // INTERACTIONS & FLYOUTS
         // =====================================================================
+        private void CycleHubAccentColor()
+        {
+            _hubAccentIndex = (_hubAccentIndex + 1) % HubAccentColors.Length;
+            Color newCol = HubAccentColors[_hubAccentIndex];
+            ShowAlert("theme", "Accent color updated.", "Accent");
+        }
+
         private void ToggleHubFlyout(string type)
         {
             if (_isHubFlyoutOpen && _activeHubFlyoutType == type)
@@ -831,7 +756,7 @@ namespace FlinchApp
 
             _hubFlyoutContent.Content = view;
             _hubFlyoutHost.Visibility = Visibility.Visible;
-            _targetH = 260; // Expand notch downwards
+            _targetH = 360; // Deepen notch downwards
         }
 
         private void CloseHubFlyout()
@@ -839,7 +764,7 @@ namespace FlinchApp
             _isHubFlyoutOpen = false;
             _activeHubFlyoutType = null;
             _hubFlyoutHost.Visibility = Visibility.Collapsed;
-            _targetH = 70; // Spring back to compact notch
+            _targetH = 192; // Spring back to exact 192px SVG panel
         }
 
         private bool HasFocusedInputInHub()
@@ -850,19 +775,62 @@ namespace FlinchApp
 
         private void RefreshHubData()
         {
-            PopulateHubHistoryRows();
+            // Populate recent turns if available
+            try
+            {
+                var turns = FlinchSkills.GetRecentTurns(3);
+                if (turns != null && turns.Count > 0)
+                {
+                    if (turns.Count >= 1 && _hubHistoryQ1 != null) { _hubHistoryQ1.Text = TruncateHubText(turns[0].u, 24); _hubHistoryT1.Text = FormatHubIsoTime(turns[0].t); }
+                    if (turns.Count >= 2 && _hubHistoryQ2 != null) { _hubHistoryQ2.Text = TruncateHubText(turns[1].u, 24); _hubHistoryT2.Text = FormatHubIsoTime(turns[1].t); }
+                    if (turns.Count >= 3 && _hubHistoryQ3 != null) { _hubHistoryQ3.Text = TruncateHubText(turns[2].u, 24); _hubHistoryT3.Text = FormatHubIsoTime(turns[2].t); }
+                }
+            }
+            catch { }
+
             if (_hubGmailStatusDot != null)
             {
-                _hubGmailStatusDot.Fill = BackgroundAutomationsEngine.EmailConfig.IsConnected ? BrushMint : new SolidColorBrush(Color.FromRgb(0x4B, 0x55, 0x63));
+                _hubGmailStatusDot.Fill = BackgroundAutomationsEngine.EmailConfig.IsConnected ? BrushMint : new SolidColorBrush(Color.FromRgb(0x6B, 0x72, 0x80));
             }
+
             if (_hubListenStatusLabel != null)
             {
                 _hubListenStatusLabel.Text = (_state == IslandState.Listening) ? "Listening..." : "Flinch Ready";
             }
         }
 
+        private static string FormatHubIsoTime(string iso)
+        {
+            DateTime dt;
+            if (!string.IsNullOrWhiteSpace(iso) && DateTime.TryParse(iso, out dt))
+            {
+                var span = DateTime.UtcNow - dt;
+                if (span.TotalMinutes < 1) return "Just now";
+                if (span.TotalMinutes < 60) return ((int)span.TotalMinutes) + "m ago";
+                if (span.TotalHours < 24) return ((int)span.TotalHours) + "h ago";
+                return ((int)span.TotalDays) + "d ago";
+            }
+            return "2m ago";
+        }
+
+        private static string TruncateHubText(string txt, int max)
+        {
+            if (string.IsNullOrWhiteSpace(txt)) return "";
+            txt = txt.Trim();
+            return (txt.Length > max) ? (txt.Substring(0, max) + "…") : txt;
+        }
+
+        private static string FormatHubTime(DateTime utc)
+        {
+            var span = DateTime.UtcNow - utc;
+            if (span.TotalMinutes < 1) return "Just now";
+            if (span.TotalMinutes < 60) return ((int)span.TotalMinutes) + "m ago";
+            if (span.TotalHours < 24) return ((int)span.TotalHours) + "h ago";
+            return ((int)span.TotalDays) + "d ago";
+        }
+
         // ---------------------------------------------------------------------
-        // Flyout 1: Gmail Connection & Actions
+        // FLYOUT 1: GMAIL
         // ---------------------------------------------------------------------
         private UIElement BuildHubGmailFlyout()
         {
@@ -870,109 +838,80 @@ namespace FlinchApp
             root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
             root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
 
-            // Header
             var header = new DockPanel { Margin = new Thickness(0, 0, 0, 10) };
             var closeBtn = new Border
             {
-                Width = 22,
-                Height = 22,
-                CornerRadius = new CornerRadius(11),
+                Width = 24,
+                Height = 24,
+                CornerRadius = new CornerRadius(12),
                 Background = new SolidColorBrush(Color.FromArgb(0x22, 0xFF, 0xFF, 0xFF)),
                 Cursor = Cursors.Hand
             };
-            closeBtn.Child = new TextBlock { Text = "\u2715", FontSize = 9.5, Foreground = Brushes.White, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+            closeBtn.Child = new TextBlock { Text = "\u2715", FontSize = 10, Foreground = Brushes.White, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
             closeBtn.MouseLeftButtonDown += (s, e) => CloseHubFlyout();
             DockPanel.SetDock(closeBtn, Dock.Right);
             header.Children.Add(closeBtn);
 
-            var titleRow = new StackPanel { Orientation = Orientation.Horizontal };
-            titleRow.Children.Add(new TextBlock { Text = "\u2709 Google Workspace & Gmail", FontSize = 13.5, FontWeight = FontWeights.SemiBold, Foreground = Brushes.White });
             _hubGmailStatusHeader = new TextBlock
             {
-                Text = BackgroundAutomationsEngine.EmailConfig.IsConnected ? "  \u2022 Connected" : "  \u2022 Disconnected",
-                FontSize = 11,
-                Foreground = BackgroundAutomationsEngine.EmailConfig.IsConnected ? BrushMint : BrushTextMuted,
-                VerticalAlignment = VerticalAlignment.Center,
-                Margin = new Thickness(6, 0, 0, 0)
+                Text = BackgroundAutomationsEngine.EmailConfig.IsConnected
+                    ? "\u2713 Gmail Connected (" + BackgroundAutomationsEngine.EmailConfig.EmailAddress + ")"
+                    : "\U0001F4E7 Connect Gmail for Voice Inbox & Autonomous Actions",
+                FontSize = 13.5,
+                FontWeight = FontWeights.SemiBold,
+                Foreground = BackgroundAutomationsEngine.EmailConfig.IsConnected ? BrushMint : Brushes.White
             };
-            titleRow.Children.Add(_hubGmailStatusHeader);
-            header.Children.Add(titleRow);
+            header.Children.Add(_hubGmailStatusHeader);
             Grid.SetRow(header, 0);
             root.Children.Add(header);
 
-            // Form Grid
-            var body = new Grid();
-            body.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1.1, GridUnitType.Star) });
-            body.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(0.9, GridUnitType.Star) });
+            var contentGrid = new Grid();
+            contentGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(320) });
+            contentGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
 
-            // Form Stack
-            var fStack = new StackPanel { Margin = new Thickness(0, 0, 14, 0) };
-            fStack.Children.Add(new TextBlock { Text = "Gmail Address:", FontSize = 10.5, FontWeight = FontWeights.SemiBold, Foreground = new SolidColorBrush(Color.FromRgb(0xD1, 0xD5, 0xDB)), Margin = new Thickness(0, 0, 0, 3) });
+            var formStack = new StackPanel { Margin = new Thickness(0, 0, 16, 0) };
             _hubEmailBox = new TextBox
             {
-                Height = 26,
-                Background = new SolidColorBrush(Color.FromRgb(0x18, 0x1A, 0x22)),
-                BorderBrush = new SolidColorBrush(Color.FromRgb(0x32, 0x36, 0x46)),
+                Height = 28,
+                Background = new SolidColorBrush(Color.FromRgb(0x1D, 0x1F, 0x27)),
                 Foreground = Brushes.White,
-                Padding = new Thickness(6, 2, 6, 2),
-                FontSize = 11,
+                BorderBrush = new SolidColorBrush(Color.FromRgb(0x35, 0x38, 0x44)),
+                Padding = new Thickness(8, 4, 8, 4),
                 Text = BackgroundAutomationsEngine.EmailConfig.EmailAddress ?? ""
             };
-            fStack.Children.Add(_hubEmailBox);
+            formStack.Children.Add(new TextBlock { Text = "Gmail Address", FontSize = 10.5, Foreground = BrushTextMuted, Margin = new Thickness(0, 0, 0, 3) });
+            formStack.Children.Add(_hubEmailBox);
 
-            fStack.Children.Add(new TextBlock { Text = "Google App Password (16 chars):", FontSize = 10.5, FontWeight = FontWeights.SemiBold, Foreground = new SolidColorBrush(Color.FromRgb(0xD1, 0xD5, 0xDB)), Margin = new Thickness(0, 6, 0, 3) });
             _hubPassBox = new PasswordBox
             {
-                Height = 26,
-                Background = new SolidColorBrush(Color.FromRgb(0x18, 0x1A, 0x22)),
-                BorderBrush = new SolidColorBrush(Color.FromRgb(0x32, 0x36, 0x46)),
+                Height = 28,
+                Background = new SolidColorBrush(Color.FromRgb(0x1D, 0x1F, 0x27)),
                 Foreground = Brushes.White,
-                Padding = new Thickness(6, 2, 6, 2),
-                FontSize = 11,
-                Password = BackgroundAutomationsEngine.GetEmailPassword() ?? ""
+                BorderBrush = new SolidColorBrush(Color.FromRgb(0x35, 0x38, 0x44)),
+                Padding = new Thickness(8, 4, 8, 4),
+                Margin = new Thickness(0, 6, 0, 0)
             };
-            fStack.Children.Add(_hubPassBox);
+            formStack.Children.Add(new TextBlock { Text = "Google App Password (16 chars)", FontSize = 10.5, Foreground = BrushTextMuted, Margin = new Thickness(0, 6, 0, 3) });
+            formStack.Children.Add(_hubPassBox);
 
-            var btnsRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 8, 0, 0) };
-            var connBtn = CreateHubActionButton("\u2713 Connect", BrushMint, Colors.Black, (s, e) => ConnectHubGmail());
-            btnsRow.Children.Add(connBtn);
+            var btnRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 10, 0, 0) };
+            btnRow.Children.Add(CreateHubActionButton("Save & Connect", BrushMint, Colors.Black, (s, e) => ConnectHubGmail()));
+            btnRow.Children.Add(CreateHubActionButton("Send Test", new SolidColorBrush(Color.FromArgb(0x33, 0xFF, 0xFF, 0xFF)), Colors.White, (s, e) => SendHubTestEmail()));
+            btnRow.Children.Add(CreateHubActionButton("Read Unread", new SolidColorBrush(Color.FromArgb(0x33, 0xFF, 0xFF, 0xFF)), Colors.White, (s, e) => FetchHubUnreadMessages()));
+            formStack.Children.Add(btnRow);
 
-            var testBtn = CreateHubActionButton("\u26A1 Send Test", new SolidColorBrush(Color.FromRgb(0x38, 0xBD, 0xF8)), Colors.Black, (s, e) => SendHubTestEmail());
-            testBtn.Margin = new Thickness(6, 0, 0, 0);
-            btnsRow.Children.Add(testBtn);
+            _hubEmailFeedbackText = new TextBlock { FontSize = 10.5, Foreground = BrushMint, Margin = new Thickness(0, 6, 0, 0), TextWrapping = TextWrapping.Wrap };
+            formStack.Children.Add(_hubEmailFeedbackText);
+            Grid.SetColumn(formStack, 0);
+            contentGrid.Children.Add(formStack);
 
-            var disBtn = CreateHubActionButton("\u2715 Disconnect", new SolidColorBrush(Color.FromRgb(0x28, 0x2A, 0x34)), Color.FromRgb(0xD1, 0xD5, 0xDB), (s, e) => DisconnectHubGmail());
-            disBtn.Margin = new Thickness(6, 0, 0, 0);
-            btnsRow.Children.Add(disBtn);
-
-            fStack.Children.Add(btnsRow);
-
-            _hubEmailFeedbackText = new TextBlock { FontSize = 10, Foreground = BrushTextMuted, Margin = new Thickness(0, 6, 0, 0), TextWrapping = TextWrapping.Wrap };
-            fStack.Children.Add(_hubEmailFeedbackText);
-
-            Grid.SetColumn(fStack, 0);
-            body.Children.Add(fStack);
-
-            // Inbox preview
-            var inbStack = new StackPanel { Margin = new Thickness(10, 0, 0, 0) };
-            var inbTop = new DockPanel { Margin = new Thickness(0, 0, 0, 4) };
-            inbTop.Children.Add(new TextBlock { Text = "Recent Inbox", FontSize = 10.5, FontWeight = FontWeights.SemiBold, Foreground = new SolidColorBrush(Color.FromRgb(0xD1, 0xD5, 0xDB)) });
-            var refLink = new TextBlock { Text = "\u21BB Refresh", FontSize = 9.5, Foreground = BrushMint, Cursor = Cursors.Hand };
-            refLink.MouseLeftButtonDown += (s, e) => FetchHubUnreadMessages();
-            DockPanel.SetDock(refLink, Dock.Right);
-            inbTop.Children.Add(refLink);
-            inbStack.Children.Add(inbTop);
-
-            var scroll = new ScrollViewer { Height = 120, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
             _hubInboxCardsPanel = new StackPanel();
-            scroll.Content = _hubInboxCardsPanel;
-            inbStack.Children.Add(scroll);
+            var scroll = new ScrollViewer { Content = _hubInboxCardsPanel, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Height = 125 };
+            Grid.SetColumn(scroll, 1);
+            contentGrid.Children.Add(scroll);
 
-            Grid.SetColumn(inbStack, 1);
-            body.Children.Add(inbStack);
-
-            Grid.SetRow(body, 1);
-            root.Children.Add(body);
+            Grid.SetRow(contentGrid, 1);
+            root.Children.Add(contentGrid);
 
             return root;
         }
@@ -981,16 +920,14 @@ namespace FlinchApp
         {
             var btn = new Border
             {
-                Height = 24,
-                Padding = new Thickness(10, 0, 10, 0),
-                CornerRadius = new CornerRadius(5),
                 Background = bg,
+                CornerRadius = new CornerRadius(5),
+                Padding = new Thickness(10, 5, 10, 5),
+                Margin = new Thickness(0, 0, 8, 0),
                 Cursor = Cursors.Hand
             };
-            btn.Child = new TextBlock { Text = label, FontSize = 10, FontWeight = FontWeights.SemiBold, Foreground = new SolidColorBrush(fg), VerticalAlignment = VerticalAlignment.Center };
-            btn.MouseEnter += (s, e) => btn.Opacity = 0.88;
-            btn.MouseLeave += (s, e) => btn.Opacity = 1.0;
-            if (onClick != null) btn.MouseLeftButtonDown += (s, e) => onClick(s, e);
+            btn.Child = new TextBlock { Text = label, Foreground = new SolidColorBrush(fg), FontSize = 11, FontWeight = FontWeights.SemiBold };
+            btn.MouseLeftButtonDown += (s, e) => { e.Handled = true; if (onClick != null) onClick(s, e); };
             return btn;
         }
 
@@ -1001,133 +938,102 @@ namespace FlinchApp
 
             if (string.IsNullOrWhiteSpace(email) || string.IsNullOrWhiteSpace(pass))
             {
-                _hubEmailFeedbackText.Foreground = BrushOrange;
-                _hubEmailFeedbackText.Text = "Enter Gmail address and 16-char App Password.";
+                _hubEmailFeedbackText.Foreground = new SolidColorBrush(Color.FromRgb(248, 113, 113));
+                _hubEmailFeedbackText.Text = "Please enter both Gmail address and 16-character App Password.";
                 return;
             }
 
-            _hubEmailFeedbackText.Foreground = BrushTextMuted;
-            _hubEmailFeedbackText.Text = "Verifying IMAP (993) & SMTP (587)...";
+            _hubEmailFeedbackText.Foreground = BrushMint;
+            _hubEmailFeedbackText.Text = "Testing connection with Google IMAP / SMTP...";
 
             Task.Run(() =>
             {
-                int count;
                 string err;
+                int count;
                 bool ok = DirectImapClient.TestConnection("imap.gmail.com", 993, true, email, pass, out count, out err);
-
                 Dispatcher.BeginInvoke(new Action(() =>
                 {
                     if (ok)
                     {
                         BackgroundAutomationsEngine.EmailConfig.EmailAddress = email;
+                        BackgroundAutomationsEngine.EmailConfig.Server = "imap.gmail.com";
+                        BackgroundAutomationsEngine.EmailConfig.Port = 993;
+                        BackgroundAutomationsEngine.EmailConfig.SmtpServer = "smtp.gmail.com";
+                        BackgroundAutomationsEngine.EmailConfig.SmtpPort = 587;
                         BackgroundAutomationsEngine.EmailConfig.IsConnected = true;
                         BackgroundAutomationsEngine.SaveEmailPassword(pass);
 
-                        _hubEmailFeedbackText.Foreground = BrushMint;
-                        _hubEmailFeedbackText.Text = string.Format("Connected! Found {0} unread email(s).", count);
-
-                        RefreshHubData();
-                        FetchHubUnreadMessages();
+                        _hubEmailFeedbackText.Text = string.Format("\u2713 Connected! Found {0} unread email(s).", count);
+                        _hubGmailStatusDot.Fill = BrushMint;
+                        _hubGmailStatusHeader.Text = "\u2713 Gmail Connected (" + email + ")";
+                        _hubGmailStatusHeader.Foreground = BrushMint;
                     }
                     else
                     {
-                        _hubEmailFeedbackText.Foreground = BrushOrange;
-                        _hubEmailFeedbackText.Text = "Failed: " + err;
+                        _hubEmailFeedbackText.Foreground = new SolidColorBrush(Color.FromRgb(248, 113, 113));
+                        _hubEmailFeedbackText.Text = "Connection failed: " + err;
                     }
                 }));
             });
         }
 
-        private void DisconnectHubGmail()
-        {
-            BackgroundAutomationsEngine.EmailConfig.IsConnected = false;
-            BackgroundAutomationsEngine.SaveEmailPassword("");
-            _hubPassBox.Password = "";
-            _hubEmailFeedbackText.Foreground = BrushTextMuted;
-            _hubEmailFeedbackText.Text = "Disconnected.";
-            RefreshHubData();
-            if (_hubInboxCardsPanel != null) _hubInboxCardsPanel.Children.Clear();
-        }
-
         private void SendHubTestEmail()
         {
-            string email = (_hubEmailBox.Text ?? "").Trim();
-            if (string.IsNullOrWhiteSpace(email) || !BackgroundAutomationsEngine.EmailConfig.IsConnected)
+            string email = BackgroundAutomationsEngine.EmailConfig.EmailAddress;
+            string pass = BackgroundAutomationsEngine.GetEmailPassword();
+            if (string.IsNullOrWhiteSpace(email) || string.IsNullOrWhiteSpace(pass))
             {
-                _hubEmailFeedbackText.Foreground = BrushOrange;
-                _hubEmailFeedbackText.Text = "Connect Gmail first.";
+                _hubEmailFeedbackText.Text = "Connect credentials first.";
                 return;
             }
-
-            _hubEmailFeedbackText.Foreground = BrushTextMuted;
-            _hubEmailFeedbackText.Text = "Sending test email...";
 
             Task.Run(() =>
             {
                 string err;
-                bool ok = DirectSmtpClient.SendGmailEmail(
-                    email,
-                    "Flinch Assistant Verification",
-                    "Success! Your Flinch AI Assistant is connected to Google Gmail. You can now read, draft, and send emails via voice.",
-                    out err);
-
+                bool ok = DirectSmtpClient.SendGmailEmail(email, "Flinch Test Email", "Hello! This test confirms Flinch can send emails autonomously on your command.", out err);
                 Dispatcher.BeginInvoke(new Action(() =>
                 {
-                    if (ok)
-                    {
-                        _hubEmailFeedbackText.Foreground = BrushMint;
-                        _hubEmailFeedbackText.Text = "Test email sent successfully to " + email;
-                        ShowAlert("email", "Test Email Sent", email);
-                    }
-                    else
-                    {
-                        _hubEmailFeedbackText.Foreground = BrushOrange;
-                        _hubEmailFeedbackText.Text = "Send error: " + err;
-                    }
+                    _hubEmailFeedbackText.Text = ok ? "\u2713 Test email delivered to your inbox!" : ("Error: " + err);
                 }));
             });
         }
 
         private void FetchHubUnreadMessages()
         {
-            if (!BackgroundAutomationsEngine.EmailConfig.IsConnected) return;
-
             string email = BackgroundAutomationsEngine.EmailConfig.EmailAddress;
             string pass = BackgroundAutomationsEngine.GetEmailPassword();
+            if (string.IsNullOrWhiteSpace(email) || string.IsNullOrWhiteSpace(pass))
+            {
+                _hubEmailFeedbackText.Text = "Connect credentials first.";
+                return;
+            }
 
             Task.Run(() =>
             {
-                List<EmailMessageInfo> msgs;
                 string err;
-                bool ok = DirectImapClient.FetchUnreadMessages("imap.gmail.com", 993, true, email, pass, 6, out msgs, out err);
-
+                List<EmailMessageInfo> msgs;
+                bool ok = DirectImapClient.FetchUnreadMessages("imap.gmail.com", 993, true, email, pass, 5, out msgs, out err);
                 Dispatcher.BeginInvoke(new Action(() =>
                 {
-                    if (_hubInboxCardsPanel == null) return;
                     _hubInboxCardsPanel.Children.Clear();
-
                     if (!ok || msgs == null || msgs.Count == 0)
                     {
-                        _hubInboxCardsPanel.Children.Add(new TextBlock { Text = ok ? "No unread emails." : ("Error: " + err), FontSize = 9.5, Foreground = BrushTextMuted });
+                        _hubInboxCardsPanel.Children.Add(new TextBlock { Text = "Inbox clean! No unread messages.", Foreground = BrushTextMuted, FontSize = 11 });
                         return;
                     }
-
-                    foreach (var m in msgs)
+                    foreach (var msg in msgs)
                     {
                         var card = new Border
                         {
-                            Margin = new Thickness(0, 0, 0, 4),
-                            Padding = new Thickness(6, 4, 6, 4),
-                            Background = new SolidColorBrush(Color.FromRgb(0x18, 0x1A, 0x22)),
-                            BorderBrush = new SolidColorBrush(Color.FromRgb(0x28, 0x2A, 0x36)),
-                            BorderThickness = new Thickness(1),
-                            CornerRadius = new CornerRadius(5)
+                            Background = new SolidColorBrush(Color.FromRgb(0x1B, 0x1C, 0x24)),
+                            CornerRadius = new CornerRadius(5),
+                            Padding = new Thickness(8, 5, 8, 5),
+                            Margin = new Thickness(0, 0, 0, 4)
                         };
-
-                        var st = new StackPanel();
-                        st.Children.Add(new TextBlock { Text = m.From ?? "Unknown", FontSize = 10, FontWeight = FontWeights.SemiBold, Foreground = Brushes.White });
-                        st.Children.Add(new TextBlock { Text = m.Subject ?? "(No Subject)", FontSize = 9, Foreground = new SolidColorBrush(Color.FromRgb(0x9C, 0xA3, 0xAF)), TextTrimming = TextTrimming.CharacterEllipsis });
-                        card.Child = st;
+                        var sp = new StackPanel();
+                        sp.Children.Add(new TextBlock { Text = msg.Subject, FontWeight = FontWeights.SemiBold, Foreground = Brushes.White, FontSize = 11 });
+                        sp.Children.Add(new TextBlock { Text = "From: " + msg.From + " · " + msg.Snippet, Foreground = BrushTextMuted, FontSize = 9.5 });
+                        card.Child = sp;
                         _hubInboxCardsPanel.Children.Add(card);
                     }
                 }));
@@ -1135,14 +1041,11 @@ namespace FlinchApp
         }
 
         // ---------------------------------------------------------------------
-        // Flyout 2: History Search Flyout
+        // FLYOUT 2: HISTORY SEARCH
         // ---------------------------------------------------------------------
         private UIElement BuildHubHistoryFlyout()
         {
-            var root = new Grid();
-            root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-            root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-
+            var root = new StackPanel();
             var header = new DockPanel { Margin = new Thickness(0, 0, 0, 8) };
             var closeBtn = new Border
             {
@@ -1157,56 +1060,42 @@ namespace FlinchApp
             DockPanel.SetDock(closeBtn, Dock.Right);
             header.Children.Add(closeBtn);
 
-            header.Children.Add(new TextBlock { Text = "\U0001F552 Conversation History", FontSize = 13.5, FontWeight = FontWeights.SemiBold, Foreground = Brushes.White });
-            Grid.SetRow(header, 0);
+            header.Children.Add(new TextBlock { Text = "\U0001F552 Full Chat & Interaction History", FontSize = 13.5, FontWeight = FontWeights.SemiBold, Foreground = Brushes.White });
             root.Children.Add(header);
 
-            var scroll = new ScrollViewer { Height = 140, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
-            var stack = new StackPanel();
-
-            var all = FlinchSkills.LoadRecentHistory();
-            if (all.Count == 0)
+            var turns = FlinchSkills.GetRecentTurns(10);
+            var historyStack = new StackPanel();
+            if (turns != null && turns.Count > 0)
             {
-                stack.Children.Add(new TextBlock { Text = "No past queries recorded.", FontSize = 10, Foreground = BrushTextMuted });
+                foreach (var t in turns)
+                {
+                    var card = new Border
+                    {
+                        Background = new SolidColorBrush(Color.FromRgb(0x18, 0x1A, 0x22)),
+                        CornerRadius = new CornerRadius(5),
+                        Padding = new Thickness(10, 6, 10, 6),
+                        Margin = new Thickness(0, 0, 0, 4),
+                        Cursor = Cursors.Hand
+                    };
+                    var sp = new StackPanel();
+                    sp.Children.Add(new TextBlock { Text = t.u, FontWeight = FontWeights.SemiBold, Foreground = Brushes.White, FontSize = 11.5 });
+                    sp.Children.Add(new TextBlock { Text = t.a, Foreground = BrushTextMuted, FontSize = 10, MaxHeight = 32, TextTrimming = TextTrimming.CharacterEllipsis });
+                    card.Child = sp;
+                    historyStack.Children.Add(card);
+                }
             }
             else
             {
-                for (int i = all.Count - 1; i >= 0; i--)
-                {
-                    var turn = all[i];
-                    var card = new Border
-                    {
-                        Margin = new Thickness(0, 0, 0, 4),
-                        Padding = new Thickness(8, 6, 8, 6),
-                        Background = new SolidColorBrush(Color.FromRgb(0x18, 0x1A, 0x22)),
-                        BorderBrush = new SolidColorBrush(Color.FromRgb(0x28, 0x2A, 0x36)),
-                        BorderThickness = new Thickness(1),
-                        CornerRadius = new CornerRadius(5),
-                        Cursor = Cursors.Hand
-                    };
-                    var st = new StackPanel();
-                    st.Children.Add(new TextBlock { Text = "\U0001F4AC " + turn.u, FontSize = 10.5, FontWeight = FontWeights.SemiBold, Foreground = Brushes.White });
-                    if (!string.IsNullOrWhiteSpace(turn.a))
-                    {
-                        st.Children.Add(new TextBlock { Text = turn.a, FontSize = 9.5, Foreground = new SolidColorBrush(Color.FromRgb(0x9C, 0xA3, 0xAF)), TextWrapping = TextWrapping.Wrap });
-                    }
-                    card.Child = st;
-                    card.MouseLeftButtonDown += (s, e) =>
-                    {
-                        if (!string.IsNullOrWhiteSpace(turn.a)) SpeakAnswer(turn.a);
-                    };
-                    stack.Children.Add(card);
-                }
+                historyStack.Children.Add(new TextBlock { Text = "No prior conversations yet. Ask Flinch anything!", Foreground = BrushTextMuted, FontSize = 11 });
             }
 
-            scroll.Content = stack;
-            Grid.SetRow(scroll, 1);
+            var scroll = new ScrollViewer { Content = historyStack, Height = 125, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
             root.Children.Add(scroll);
             return root;
         }
 
         // ---------------------------------------------------------------------
-        // Flyout 3: Hotkeys
+        // FLYOUT 3: HOTKEYS
         // ---------------------------------------------------------------------
         private UIElement BuildHubHotkeysFlyout()
         {
@@ -1225,48 +1114,42 @@ namespace FlinchApp
             DockPanel.SetDock(closeBtn, Dock.Right);
             header.Children.Add(closeBtn);
 
-            header.Children.Add(new TextBlock { Text = "\u2328 Keyboard Shortcuts", FontSize = 13.5, FontWeight = FontWeights.SemiBold, Foreground = Brushes.White });
+            header.Children.Add(new TextBlock { Text = "\u2328 Keyboard Shortcuts & Gestures", FontSize = 13.5, FontWeight = FontWeights.SemiBold, Foreground = Brushes.White });
             root.Children.Add(header);
 
-            string[,] keys = new string[,]
-            {
-                { "Alt + V", "Start / Stop Voice Recording" },
-                { "Ctrl + Alt + X", "Emergency Stop (Speech, Tasks & Timers)" },
-                { "Alt + S", "Screen Window Capture Context" },
-                { "Hover Notch", "Fluidly widens into Flinch Hub" },
-                { "Voice Command", "\"Check my email\", \"Draft email to alex saying hello\"" }
-            };
-
-            for (int i = 0; i < keys.GetLength(0); i++)
-            {
-                var row = new DockPanel { Margin = new Thickness(0, 2, 0, 2) };
-                var badge = new Border
-                {
-                    Background = new SolidColorBrush(Color.FromRgb(0x1F, 0x22, 0x2D)),
-                    BorderBrush = new SolidColorBrush(Color.FromRgb(0x35, 0x3A, 0x4B)),
-                    BorderThickness = new Thickness(1),
-                    CornerRadius = new CornerRadius(4),
-                    Padding = new Thickness(5, 1, 5, 1)
-                };
-                badge.Child = new TextBlock { Text = keys[i, 0], FontSize = 9.5, FontWeight = FontWeights.SemiBold, Foreground = BrushMint };
-                DockPanel.SetDock(badge, Dock.Left);
-                row.Children.Add(badge);
-
-                row.Children.Add(new TextBlock
-                {
-                    Text = "  " + keys[i, 1],
-                    FontSize = 10,
-                    Foreground = new SolidColorBrush(Color.FromRgb(0xD1, 0xD5, 0xDB)),
-                    VerticalAlignment = VerticalAlignment.Center
-                });
-                root.Children.Add(row);
-            }
+            root.Children.Add(CreateHotkeyCard("Alt + V", "Hold to talk or tap to start recording voice query."));
+            root.Children.Add(CreateHotkeyCard("Top Notch Hover", "Expands the 5-section control hub seamlessly."));
+            root.Children.Add(CreateHotkeyCard("Escape", "Instantly cancels speech playback, alerts, and timers."));
 
             return root;
         }
 
+        private Border CreateHotkeyCard(string key, string desc)
+        {
+            var card = new Border
+            {
+                Background = new SolidColorBrush(Color.FromRgb(0x18, 0x1A, 0x22)),
+                CornerRadius = new CornerRadius(5),
+                Padding = new Thickness(10, 6, 10, 6),
+                Margin = new Thickness(0, 0, 0, 4)
+            };
+            var dock = new DockPanel();
+            var badge = new Border
+            {
+                Background = new SolidColorBrush(Color.FromRgb(0x28, 0x2A, 0x36)),
+                CornerRadius = new CornerRadius(4),
+                Padding = new Thickness(8, 2, 8, 2)
+            };
+            badge.Child = new TextBlock { Text = key, Foreground = BrushMint, FontSize = 11, FontWeight = FontWeights.Bold };
+            DockPanel.SetDock(badge, Dock.Right);
+            dock.Children.Add(badge);
+            dock.Children.Add(new TextBlock { Text = desc, Foreground = Brushes.White, FontSize = 11, VerticalAlignment = VerticalAlignment.Center });
+            card.Child = dock;
+            return card;
+        }
+
         // ---------------------------------------------------------------------
-        // Flyout 4: General Settings
+        // FLYOUT 4: GENERAL SETTINGS
         // ---------------------------------------------------------------------
         private UIElement BuildHubGeneralSettingsFlyout()
         {
@@ -1292,10 +1175,7 @@ namespace FlinchApp
                 "Launch at Windows Startup",
                 "Automatically starts Flinch whenever you turn on or sign in to Windows.",
                 AutoStartManager.IsAutoStartEnabled(),
-                val =>
-                {
-                    AutoStartManager.SetAutoStart(val);
-                }));
+                val => AutoStartManager.SetAutoStart(val)));
 
             root.Children.Add(CreateHubToggleCard(
                 "Email Guardian",
@@ -1324,7 +1204,7 @@ namespace FlinchApp
         {
             var card = new Border
             {
-                Margin = new Thickness(0, 0, 0, 6),
+                Margin = new Thickness(0, 0, 0, 5),
                 Padding = new Thickness(10, 6, 10, 6),
                 Background = new SolidColorBrush(Color.FromRgb(0x18, 0x1A, 0x22)),
                 BorderBrush = new SolidColorBrush(Color.FromRgb(0x28, 0x2A, 0x36)),

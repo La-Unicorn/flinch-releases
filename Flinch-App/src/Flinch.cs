@@ -5981,8 +5981,8 @@ namespace FlinchApp
             UseLayoutRounding = true;
             SnapsToDevicePixels = true;
             AllowDrop = true;
-            Width = 960;
-            Height = 340;
+            Width = 1470;
+            Height = 420;
 
             DragOver += OnNotchDragOver;
             Drop += OnNotchDrop;
@@ -9700,9 +9700,9 @@ private void FinishRecordingAndSend()
                 }
                 RefreshHubData();
 
-                _targetW = 900;
-                _targetH = _isHubFlyoutOpen ? 260 : 70;
-                _targetBotR = 22;
+                _targetW = 1430;
+                _targetH = _isHubFlyoutOpen ? 360 : 192;
+                _targetBotR = 28;
             }
             else if (newState == IslandState.Listening)
             {
@@ -10039,9 +10039,19 @@ private void FinishRecordingAndSend()
             _curBotR += (_targetBotR - _curBotR) * 0.28;
             _notchContentHost.Width = _curW;
             _notchContentHost.Height = _curH;
-            var notchGeo = CreateMacBookNotchGeometry(_curW, _curH, 10.0, _curBotR);
-            _notchPath.Data = notchGeo;
-            _notchContentHost.Clip = notchGeo;
+
+            if (_state == IslandState.HubExpanded && _curW > 800)
+            {
+                _notchPath.Opacity = Math.Max(0.0, 1.0 - (_curW - 800.0) / 200.0);
+                _notchContentHost.Clip = null;
+            }
+            else
+            {
+                _notchPath.Opacity = 1.0;
+                var notchGeo = CreateMacBookNotchGeometry(_curW, _curH, 10.0, _curBotR);
+                _notchPath.Data = notchGeo;
+                _notchContentHost.Clip = notchGeo;
+            }
 
             // Live bot voice envelope when Flinch is speaking
             if (_state == IslandState.Speaking)
