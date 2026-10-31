@@ -704,7 +704,12 @@ namespace FlinchApp
 
         public static void Log(string msg)
         {
-            // Zero plaintext disk logging in production builds to prevent reverse-engineering leaks
+            try
+            {
+                string logPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "flinch_debug.log");
+                System.IO.File.AppendAllText(logPath, "[" + DateTime.UtcNow.ToString("HH:mm:ss.fff") + "] " + msg + Environment.NewLine);
+            }
+            catch { }
         }
     }
     // =========================================================================
@@ -868,11 +873,16 @@ namespace FlinchApp
         public static bool TryRestoreSavedSession(out string error)
         {
             error = "";
+            FlinchEnv.Log("TryRestoreSavedSession: Loading session from disk...");
             var saved = LoadSessionFromDisk();
             if (saved == null || string.IsNullOrWhiteSpace(saved.AccessToken))
+            {
+                FlinchEnv.Log("TryRestoreSavedSession: No saved session on disk.");
                 return false;
+            }
 
             CurrentSession = saved;
+            FlinchEnv.Log("TryRestoreSavedSession: Found saved session for " + saved.Email);
             if (!string.IsNullOrWhiteSpace(saved.PreferredVoice))
                 FlinchEnv.VoiceName = saved.PreferredVoice;
 
@@ -887,21 +897,26 @@ namespace FlinchApp
 
             if (needsRefresh && !string.IsNullOrWhiteSpace(saved.RefreshToken))
             {
+                FlinchEnv.Log("TryRestoreSavedSession: Refreshing session token...");
                 if (!RefreshSession(saved.RefreshToken, out error))
                 {
+                    FlinchEnv.Log("TryRestoreSavedSession: Refresh failed: " + error);
                     SignOut();
                     return false;
                 }
             }
 
+            FlinchEnv.Log("TryRestoreSavedSession: Fetching runtime config...");
             string cfgErr;
             if (!FetchBackendRuntimeConfig(out cfgErr))
             {
+                FlinchEnv.Log("TryRestoreSavedSession: FetchBackendRuntimeConfig failed: " + cfgErr);
                 // Might be an expired access token; try refreshing once
                 if (!string.IsNullOrWhiteSpace(CurrentSession.RefreshToken) && RefreshSession(CurrentSession.RefreshToken, out error))
                 {
                     if (!FetchBackendRuntimeConfig(out cfgErr))
                     {
+                        FlinchEnv.Log("TryRestoreSavedSession: Second config fetch failed: " + cfgErr);
                         error = cfgErr;
                         return false;
                     }
@@ -5942,12 +5957,12 @@ namespace FlinchApp
 
         // State & 60 FPS Animation Clock
         private IslandState _state = IslandState.Idle;
-        private double _curW = 146;
-        private double _curH = 26;
-        private double _targetW = 146;
-        private double _targetH = 26;
-        private double _curBotR = 13;
-        private double _targetBotR = 13;
+        private double _curW = 128;
+        private double _curH = 22;
+        private double _targetW = 128;
+        private double _targetH = 22;
+        private double _curBotR = 11;
+        private double _targetBotR = 11;
         private readonly Stopwatch _animClock = Stopwatch.StartNew();
 
         // Audio, Recording & Hotkey
@@ -5981,8 +5996,8 @@ namespace FlinchApp
             UseLayoutRounding = true;
             SnapsToDevicePixels = true;
             AllowDrop = true;
-            Width = 1470;
-            Height = 420;
+            Width = 960;
+            Height = 340;
 
             DragOver += OnNotchDragOver;
             Drop += OnNotchDrop;
@@ -7430,9 +7445,9 @@ namespace FlinchApp
 
                     if (_state == IslandState.Idle)
                     {
-                        _targetW = 176;
-                        _targetH = 26;
-                        _targetBotR = 13;
+                        _targetW = 160;
+                        _targetH = 22;
+                        _targetBotR = 11;
                     }
                 }
                 else
@@ -7443,9 +7458,9 @@ namespace FlinchApp
 
                     if (_state == IslandState.Idle)
                     {
-                        _targetW = 146;
-                        _targetH = 26;
-                        _targetBotR = 13;
+                        _targetW = 128;
+                        _targetH = 22;
+                        _targetBotR = 11;
                     }
                 }
             }
@@ -8143,10 +8158,14 @@ namespace FlinchApp
                 RefreshTasksExpandedUI();
                 SetIslandState(IslandState.TasksExpanded, "", "");
             }
+            else if (_state == IslandState.HubExpanded)
+            {
+                SetIslandState(IslandState.Idle, "", "");
+            }
             else if (!_isBusy)
             {
                 StopAudioPlayback();
-                ToggleFlinchHub();
+                SetIslandState(IslandState.HubExpanded, "", "");
             }
         }
 
@@ -9700,9 +9719,9 @@ private void FinishRecordingAndSend()
                 }
                 RefreshHubData();
 
-                _targetW = 1430;
-                _targetH = _isHubFlyoutOpen ? 360 : 192;
-                _targetBotR = 28;
+                _targetW = 860;
+                _targetH = _isHubFlyoutOpen ? 260 : 116;
+                _targetBotR = 18;
             }
             else if (newState == IslandState.Listening)
             {
@@ -10040,9 +10059,9 @@ private void FinishRecordingAndSend()
             _notchContentHost.Width = _curW;
             _notchContentHost.Height = _curH;
 
-            if (_state == IslandState.HubExpanded && _curW > 800)
+            if (_state == IslandState.HubExpanded && _curW > 500)
             {
-                _notchPath.Opacity = Math.Max(0.0, 1.0 - (_curW - 800.0) / 200.0);
+                _notchPath.Opacity = Math.Max(0.0, 1.0 - (_curW - 500.0) / 200.0);
                 _notchContentHost.Clip = null;
             }
             else
@@ -10074,9 +10093,9 @@ private void FinishRecordingAndSend()
             {
                 if (_hubExpandedPanel != null)
                 {
-                    if (_curW > 450)
+                    if (_curW > 350)
                     {
-                        double p = Math.Min(1.0, (_curW - 450.0) / 320.0);
+                        double p = Math.Min(1.0, (_curW - 350.0) / 250.0);
                         _hubExpandedPanel.Opacity = p;
                         _hubExpandedPanel.Visibility = Visibility.Visible;
                     }
@@ -10085,14 +10104,6 @@ private void FinishRecordingAndSend()
                         _hubExpandedPanel.Opacity = 0.0;
                         _hubExpandedPanel.Visibility = Visibility.Collapsed;
                     }
-                }
-
-                _hubWavePhase += 0.16;
-                for (int i = 0; i < _hubWaveBars.Count; i++)
-                {
-                    double wave = Math.Sin(_hubWavePhase + i * 0.95);
-                    double targetH = Math.Max(2.5, _hubWaveBaseH[i % _hubWaveBaseH.Length] + wave * 4.5);
-                    _hubWaveBars[i].Height = targetH;
                 }
             }
             else
@@ -11555,12 +11566,14 @@ private void FinishRecordingAndSend()
         {
             ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12;
             FlinchEnv.Load();
+            FlinchEnv.Log("Main() entry point hit, args length: " + (args != null ? args.Length : 0));
 
             bool createdNew;
             using (var mutex = new Mutex(true, "Global\\FlinchNativeIslandAppMutex", out createdNew))
             {
                 if (!createdNew)
                 {
+                    FlinchEnv.Log("Another instance is already running (createdNew == false). Exiting.");
                     return 0;
                 }
                 var app = new Application
@@ -11576,7 +11589,16 @@ private void FinishRecordingAndSend()
                     FlinchEnv.Log("APPDOMAIN_UNHANDLED_EXCEPTION: " + (e.ExceptionObject != null ? e.ExceptionObject.ToString() : "null"));
                 };
 
-                var win = new DynamicIslandWindow();
+                DynamicIslandWindow win = null;
+                try
+                {
+                    win = new DynamicIslandWindow();
+                }
+                catch (Exception ex)
+                {
+                    FlinchEnv.Log("FATAL ERROR constructing DynamicIslandWindow: " + ex.ToString());
+                    return 1;
+                }
                 win.Closed += (s, e) =>
                 {
                     FlinchEnv.Log("DynamicIslandWindow win.Closed fired! StackTrace: " + Environment.StackTrace);
@@ -11617,8 +11639,10 @@ private void FinishRecordingAndSend()
                     AutoStartManager.SetAutoStart(true);
                 }
 
-                app.Run();
-                return 0;
+                FlinchEnv.Log("Entering app.Run()...");
+                int runCode = app.Run();
+                FlinchEnv.Log("app.Run() exited with code: " + runCode);
+                return runCode;
             }
         }
     }

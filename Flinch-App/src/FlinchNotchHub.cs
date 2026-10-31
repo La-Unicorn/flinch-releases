@@ -31,11 +31,6 @@ namespace FlinchApp
         private bool _isHubFlyoutOpen = false;
         private string _activeHubFlyoutType = null;
 
-        // Animated soundbars in center section
-        private double _hubWavePhase = 0;
-        private readonly List<Rectangle> _hubWaveBars = new List<Rectangle>();
-        private static readonly double[] _hubWaveBaseH = new double[] { 6.0, 14.0, 22.0, 12.0, 18.0, 8.0, 15.0 };
-        private TextBlock _hubListenStatusLabel;
 
         // Customization Theme States
         private int _hubAccentIndex = 0;
@@ -69,37 +64,46 @@ namespace FlinchApp
 
         // =====================================================================
         // BUILD HUB EXPANDED PANEL (Directly inside notch content host)
+        // Scaled to sleek compact size (860 x 116)
         // =====================================================================
         private Grid BuildHubExpandedPanel()
         {
             var root = new Grid
             {
-                Width = 1430,
+                Width = 860,
                 HorizontalAlignment = HorizontalAlignment.Center,
                 VerticalAlignment = VerticalAlignment.Top,
                 Visibility = Visibility.Collapsed,
                 Opacity = 0.0
             };
 
-            root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(192) }); // Exact SVG height
+            root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(116) });
             root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });     // Dropdown Flyout
 
-            // Row 0: Exact SVG Canvas (1430 x 192)
+            // Row 0: SVG Canvas (1430 x 192) scaled down smoothly with a Viewbox to 860 x 116
             _hubSvgCanvas = BuildHubSvgCanvas();
-            Grid.SetRow(_hubSvgCanvas, 0);
-            root.Children.Add(_hubSvgCanvas);
+            var viewbox = new Viewbox
+            {
+                Width = 860,
+                Height = 116,
+                Stretch = Stretch.Uniform,
+                Child = _hubSvgCanvas
+            };
+            Grid.SetRow(viewbox, 0);
+            root.Children.Add(viewbox);
 
             // Row 1: Dropdown Flyout Host
             _hubFlyoutHost = new Border
             {
+                Width = 780,
                 Background = new SolidColorBrush(Color.FromRgb(0x14, 0x15, 0x18)),
                 BorderBrush = new SolidColorBrush(Color.FromArgb(0x28, 0xFF, 0xFF, 0xFF)),
                 BorderThickness = new Thickness(0, 1, 0, 0),
-                CornerRadius = new CornerRadius(0, 0, 24, 24),
+                CornerRadius = new CornerRadius(0, 0, 18, 18),
                 Visibility = Visibility.Collapsed,
-                Padding = new Thickness(36, 14, 36, 18),
-                Margin = new Thickness(40, -4, 40, 0),
-                Effect = new DropShadowEffect { BlurRadius = 24, ShadowDepth = 6, Opacity = 0.4 }
+                Padding = new Thickness(24, 12, 24, 16),
+                Margin = new Thickness(24, -2, 24, 0),
+                Effect = new DropShadowEffect { BlurRadius = 20, ShadowDepth = 6, Opacity = 0.4 }
             };
             _hubFlyoutContent = new ContentControl();
             _hubFlyoutHost.Child = _hubFlyoutContent;
@@ -329,97 +333,11 @@ namespace FlinchApp
             canvas.Children.Add(addBtn);
 
             // =================================================================
-            // COLUMN 2: CENTER AREA (Under Camera Notch Cutout: x: 595 to 845)
+            // COLUMN 2: CENTER AREA (Empty MacBook Camera Bezel Notch)
             // =================================================================
-            var centerCard = new Border
-            {
-                Width = 230,
-                Height = 115,
-                CornerRadius = new CornerRadius(18),
-                Background = new SolidColorBrush(Color.FromRgb(0x15, 0x16, 0x1A)),
-                BorderBrush = new SolidColorBrush(Color.FromArgb(24, 255, 255, 255)),
-                BorderThickness = new Thickness(1),
-                Cursor = Cursors.Hand
-            };
-            var centerStack = new StackPanel
-            {
-                Orientation = Orientation.Vertical,
-                HorizontalAlignment = HorizontalAlignment.Center,
-                VerticalAlignment = VerticalAlignment.Center
-            };
-
-            // Camera Cutout Pill with Mic Glyph
-            var micCircle = new Border
-            {
-                Width = 36,
-                Height = 36,
-                CornerRadius = new CornerRadius(18),
-                Background = new SolidColorBrush(Color.FromRgb(0x22, 0x24, 0x2C)),
-                HorizontalAlignment = HorizontalAlignment.Center,
-                Margin = new Thickness(0, 0, 0, 6)
-            };
-            micCircle.Child = CreateSvgPath(
-                "M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3zm6 7a1 1 0 0 0-2 0 4 4 0 0 1-8 0 1 1 0 0 0-2 0 6 6 0 0 0 5 5.92V18H9a1 1 0 0 0 0 2h6a1 1 0 0 0 0-2h-2v-3.08A6 6 0 0 0 18 9z",
-                0, 0, 20, 20, Brushes.White, 0, Brushes.White);
-            centerStack.Children.Add(micCircle);
-
-            // Live Soundbars
-            var waveStack = new StackPanel
-            {
-                Orientation = Orientation.Horizontal,
-                HorizontalAlignment = HorizontalAlignment.Center,
-                Height = 24,
-                Margin = new Thickness(0, 2, 0, 4)
-            };
-            _hubWaveBars.Clear();
-            Color[] barCols = new Color[]
-            {
-                Color.FromRgb(0x3D, 0xDC, 0x84),
-                Color.FromRgb(0xFF, 0xFF, 0xFF),
-                Color.FromRgb(0x3D, 0xDC, 0x84),
-                Color.FromRgb(0xFF, 0x8A, 0x3D),
-                Color.FromRgb(0x3D, 0xDC, 0x84),
-                Color.FromRgb(0xFF, 0xFF, 0xFF),
-                Color.FromRgb(0x3D, 0xDC, 0x84)
-            };
-            for (int i = 0; i < 7; i++)
-            {
-                var rect = new Rectangle
-                {
-                    Width = 3.5,
-                    Height = _hubWaveBaseH[i],
-                    RadiusX = 1.8,
-                    RadiusY = 1.8,
-                    Fill = new SolidColorBrush(barCols[i]),
-                    Margin = new Thickness(2.2, 0, 2.2, 0),
-                    VerticalAlignment = VerticalAlignment.Center
-                };
-                _hubWaveBars.Add(rect);
-                waveStack.Children.Add(rect);
-            }
-            centerStack.Children.Add(waveStack);
-
-            // Listening / Ready Status Label
-            _hubListenStatusLabel = new TextBlock
-            {
-                Text = "Listening...",
-                FontSize = 13.5,
-                FontWeight = FontWeights.Medium,
-                Foreground = new SolidColorBrush(Color.FromRgb(0x9A, 0x9B, 0xA5)),
-                FontFamily = AppleFont,
-                HorizontalAlignment = HorizontalAlignment.Center
-            };
-            centerStack.Children.Add(_hubListenStatusLabel);
-
-            centerCard.Child = centerStack;
-            centerCard.MouseLeftButtonDown += (s, e) =>
-            {
-                e.Handled = true;
-                ToggleVoiceRecording();
-            };
-            Canvas.SetLeft(centerCard, 605);
-            Canvas.SetTop(centerCard, 58);
-            canvas.Children.Add(centerCard);
+            // Intentionally clean and empty between dividers x=595 and x=845,
+            // faithfully preserving the top bezel camera notch cutout aesthetic
+            // without any mic or listening status card cluttering the center.
 
             // =================================================================
             // COLUMN 3: CUSTOMIZATION (x: 845 to 1194)
@@ -756,7 +674,7 @@ namespace FlinchApp
 
             _hubFlyoutContent.Content = view;
             _hubFlyoutHost.Visibility = Visibility.Visible;
-            _targetH = 360; // Deepen notch downwards
+            _targetH = 260; // Deepen notch downwards
         }
 
         private void CloseHubFlyout()
@@ -764,7 +682,7 @@ namespace FlinchApp
             _isHubFlyoutOpen = false;
             _activeHubFlyoutType = null;
             _hubFlyoutHost.Visibility = Visibility.Collapsed;
-            _targetH = 192; // Spring back to exact 192px SVG panel
+            _targetH = 116; // Spring back to compact 116px SVG panel
         }
 
         private bool HasFocusedInputInHub()
@@ -793,10 +711,6 @@ namespace FlinchApp
                 _hubGmailStatusDot.Fill = BackgroundAutomationsEngine.EmailConfig.IsConnected ? BrushMint : new SolidColorBrush(Color.FromRgb(0x6B, 0x72, 0x80));
             }
 
-            if (_hubListenStatusLabel != null)
-            {
-                _hubListenStatusLabel.Text = (_state == IslandState.Listening) ? "Listening..." : "Flinch Ready";
-            }
         }
 
         private static string FormatHubIsoTime(string iso)
