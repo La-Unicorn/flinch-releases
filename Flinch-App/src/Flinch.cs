@@ -7372,7 +7372,7 @@ namespace FlinchApp
             }
         }
 
-        private void ShowAlert(string type, string text, string label)
+        public void ShowAlert(string type, string text, string label)
         {
             PlayChimeSound();
 
@@ -8059,7 +8059,7 @@ namespace FlinchApp
             }
         }
 
-        private void ToggleVoiceRecording()
+        public void ToggleVoiceRecording()
         {
             if (_state == IslandState.Countdown)
             {
@@ -8130,17 +8130,36 @@ namespace FlinchApp
             }
             else
             {
-                try
+                ShowFlinchHub(fromHover: false);
+            }
+        }
+
+        public void ShowFlinchHub(bool fromHover = false)
+        {
+            try
+            {
+                if (_hubWindow == null || !_hubWindow.IsVisible)
                 {
                     _hubWindow = new FlinchHubWindow(this);
+                    _hubWindow.IsHoverSummoned = fromHover;
                     _hubWindow.Closed += (s, e) => { _hubWindow = null; };
                     _hubWindow.Show();
-                    _hubWindow.Activate();
+                    if (!fromHover)
+                    {
+                        _hubWindow.Activate();
+                    }
                 }
-                catch (Exception ex)
+                else
                 {
-                    FlinchEnv.Log("Failed to open Flinch Hub: " + ex.Message);
+                    if (!fromHover)
+                    {
+                        _hubWindow.Activate();
+                    }
                 }
+            }
+            catch (Exception ex)
+            {
+                FlinchEnv.Log("Failed to show Flinch Hub: " + ex.Message);
             }
         }
 
@@ -8289,9 +8308,12 @@ namespace FlinchApp
         }
 
         private bool _isPillHovered = false;
+        private System.Windows.Threading.DispatcherTimer _notchHoverTimer = null;
+        private bool _isNotchHovered = false;
 
         private void OnPillMouseEnter(object sender, MouseEventArgs e)
         {
+            _isNotchHovered = true;
             int timerCount;
             lock (_timerLock) { timerCount = _activeTimers.Count; }
             if (BackgroundTaskManager.ActiveCount > 0 || timerCount > 0 || _isBackgroundTaskRunning)
@@ -8299,11 +8321,36 @@ namespace FlinchApp
                 _isPillHovered = true;
                 RefreshTasksExpandedUI();
                 SetIslandState(IslandState.TasksExpanded, "", "");
+                return;
+            }
+
+            if (_state == IslandState.Idle && !_isBusy)
+            {
+                if (_notchHoverTimer == null)
+                {
+                    _notchHoverTimer = new System.Windows.Threading.DispatcherTimer();
+                    _notchHoverTimer.Interval = TimeSpan.FromMilliseconds(220);
+                    _notchHoverTimer.Tick += (s, ev) =>
+                    {
+                        _notchHoverTimer.Stop();
+                        if (_isNotchHovered && (_hubWindow == null || !_hubWindow.IsVisible) && _state == IslandState.Idle && !_isBusy)
+                        {
+                            ShowFlinchHub(fromHover: true);
+                        }
+                    };
+                }
+                _notchHoverTimer.Stop();
+                _notchHoverTimer.Start();
             }
         }
 
         private void OnPillMouseLeave(object sender, MouseEventArgs e)
         {
+            _isNotchHovered = false;
+            if (_notchHoverTimer != null)
+            {
+                _notchHoverTimer.Stop();
+            }
             _isPillHovered = false;
             if (_state == IslandState.TasksExpanded)
             {
@@ -8317,6 +8364,10 @@ namespace FlinchApp
                         }
                     }));
                 });
+            }
+            else if (_hubWindow != null && _hubWindow.IsVisible && _hubWindow.IsHoverSummoned)
+            {
+                _hubWindow.NotifyNotchMouseLeave();
             }
         }
 
@@ -9729,7 +9780,7 @@ private void FinishRecordingAndSend()
         private static readonly double[] SoundBarSvgDurs    = new[] { 1.2, 1.0, 1.3, 1.1 };
         private static readonly double[] SoundBarSvgOffsets = new[] { 0.0, 0.3, 0.6, 0.15 };
 
-        private static PathGeometry CreateMacBookNotchGeometry(double totalW, double height, double earRadius = 10.0, double botRadius = 0.0)
+        internal static PathGeometry CreateMacBookNotchGeometry(double totalW, double height, double earRadius = 10.0, double botRadius = 0.0)
         {
             if (botRadius <= 0)
                 botRadius = (height <= 60) ? (height / 2.0) : 32.0;

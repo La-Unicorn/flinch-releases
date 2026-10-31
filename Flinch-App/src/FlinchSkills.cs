@@ -59,6 +59,7 @@ namespace FlinchApp
             string r;
             r = TryPomodoro(transcript, low);        if (r != null) return r;
             r = TryVoicePicker(transcript, low);     if (r != null) return r;
+            r = TryEmail(transcript, low);           if (r != null) return r;
             r = TryPlus(transcript, low);            if (r != null) return r;
             r = TryMemory(transcript, low);          if (r != null) return r;
             r = TryScreenTranslate(transcript, low); if (r != null) return r;
@@ -120,7 +121,7 @@ namespace FlinchApp
         // =====================================================================
         // 2. DAILY PUSH-TO-TALK MEMORY
         // =====================================================================
-        private sealed class HistoryTurn
+        public sealed class HistoryTurn
         {
             public string t { get; set; } // ISO 8601 timestamp
             public string u { get; set; } // user transcript
@@ -157,7 +158,7 @@ namespace FlinchApp
             catch { }
         }
 
-        private static List<HistoryTurn> LoadRecentHistory()
+        public static List<HistoryTurn> LoadRecentHistory()
         {
             var list = new List<HistoryTurn>();
             try
@@ -179,6 +180,19 @@ namespace FlinchApp
             }
             catch { }
             return list;
+        }
+
+        public static List<HistoryTurn> GetRecentTurns(int count)
+        {
+            var all = LoadRecentHistory();
+            if (all.Count == 0) return new List<HistoryTurn>();
+            int take = Math.Min(count, all.Count);
+            var sub = new List<HistoryTurn>();
+            for (int i = all.Count - 1; i >= all.Count - take; i--)
+            {
+                sub.Add(all[i]);
+            }
+            return sub;
         }
 
         private static string TryMemory(string transcript, string low)

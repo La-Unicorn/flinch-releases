@@ -1179,6 +1179,157 @@ namespace FlinchApp
             });
         }
 
+        // =====================================================================
+        // EMAIL SKILLS: Read, Draft, and Send Emails via Gmail (IMAP + SMTP)
+        // =====================================================================
+        internal static string TryEmail(string transcript, string low)
+        {
+            if (string.IsNullOrWhiteSpace(low)) return null;
+
+            // 1. Read / Check Unread Emails
+            if (Regex.IsMatch(low, @"\b(check|read|get|fetch|list|show)\b.*\b(email|emails|gmail|inbox|messages)\b")
+                || low == "check email" || low == "read email" || low == "unread emails" || low == "check gmail"
+                || low.Contains("do i have any new emails") || low.Contains("do i have any unread emails"))
+            {
+                if (!BackgroundAutomationsEngine.EmailConfig.IsConnected)
+                {
+                    return "Your Google Gmail account is not connected yet. Hover over the notch to open the Flinch Hub and connect your account.";
+                }
+
+                string user = BackgroundAutomationsEngine.EmailConfig.EmailAddress;
+                string pass = BackgroundAutomationsEngine.GetEmailPassword();
+                string srv = BackgroundAutomationsEngine.EmailConfig.Server ?? "imap.gmail.com";
+                int port = BackgroundAutomationsEngine.EmailConfig.Port > 0 ? BackgroundAutomationsEngine.EmailConfig.Port : 993;
+
+                List<EmailMessageInfo> msgs;
+                string err;
+                bool ok = DirectImapClient.FetchUnreadMessages(srv, port, true, user, pass, 5, out msgs, out err);
+                if (!ok)
+                {
+                    return "Could not check your Gmail inbox: " + err;
+                }
+
+                if (msgs == null || msgs.Count == 0)
+                {
+                    return "You're all caught up! There are no unread emails in your inbox right now.";
+                }
+
+                var sb = new StringBuilder();
+                sb.AppendFormat("You have {0} unread email{1}. ", msgs.Count, msgs.Count > 1 ? "s" : "");
+                for (int i = 0; i < Math.Min(3, msgs.Count); i++)
+                {
+                    var m = msgs[i];
+                    sb.AppendFormat("{0}: from {1}, subject '{2}'. ", i == 0 ? "Latest" : "Next", m.From, m.Subject);
+                }
+                return sb.ToString().Trim();
+            }
+
+            // 2. Draft / Compose Email
+            if (Regex.IsMatch(low, @"\b(draft|compose|write)\b.*\b(email|mail|message)\b"))
+            {
+                string to = "";
+                string subj = "Note from Flinch";
+                string body = "";
+
+                var mTo = Regex.Match(transcript, @"\bto\s+([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}|[A-Za-z]+)", RegexOptions.IgnoreCase);
+                if (mTo.Success) to = mTo.Groups[1].Value.Trim();
+
+                var mSubj = Regex.Match(transcript, @"\b(?:about|with subject)\s+([^,]+?)(?:\s+(?:saying|body|that)\b|$)", RegexOptions.IgnoreCase);
+                if (mSubj.Success) subj = mSubj.Groups[1].Value.Trim();
+
+                var mBody = Regex.Match(transcript, @"\b(?:saying|body|that)\s+(.+)$", RegexOptions.IgnoreCase);
+                if (mBody.Success) body = mBody.Groups[1].Value.Trim();
+                else if (string.IsNullOrEmpty(body) && !string.IsNullOrEmpty(subj)) body = subj;
+
+                if (string.IsNullOrWhiteSpace(to))
+                {
+                    to = "recipient";
+                }
+
+                BackgroundAutomationsEngine.AddDraft(to, subj, body);
+                return string.Format("I've drafted an email to {0} with subject '{1}'. Ready to send whenever you say 'send that email'.", to, subj);
+            }
+
+            // 3. Send Email (Direct or drafted)
+            if (Regex.IsMatch(low, @"\b(send)\b.*\b(email|mail|draft|drafted email|that email)\b"))
+            {
+                if (!BackgroundAutomationsEngine.EmailConfig.IsConnected)
+                {
+                    return "Gmail is not connected. Hover over the notch to connect your Google account in Flinch Hub first.";
+                }
+
+                string to = "";
+                string subj = "";
+                string body = "";
+
+                if (low.Contains("that email") || low.Contains("the draft") || low.Contains("drafted email") || low == "send email" || low == "send it")
+                {
+                    var draft = BackgroundAutomationsEngine.GetLatestDraft();
+                    if (draft == null)
+                    {
+                        return "There is no drafted email to send. Ask me to draft an email first.";
+                    }
+                    to = draft.To;
+                    subj = draft.Subject;
+                    body = draft.Body;
+                }
+                else
+                {
+                    var mTo = Regex.Match(transcript, @"\bto\s+([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}|[A-Za-z]+)", RegexOptions.IgnoreCase);
+                    if (mTo.Success) to = mTo.Groups[1].Value.Trim();
+
+                    var mSubj = Regex.Match(transcript, @"\b(?:about|with subject)\s+([^,]+?)(?:\s+(?:saying|body|that)\b|$)", RegexOptions.IgnoreCase);
+                    if (mSubj.Success) subj = mSubj.Groups[1].Value.Trim();
+
+                    var mBody = Regex.Match(transcript, @"\b(?:saying|body|that)\s+(.+)$", RegexOptions.IgnoreCase);
+                    if (mBody.Success) body = mBody.Groups[1].Value.Trim();
+                }
+
+                if (string.IsNullOrWhiteSpace(to))
+                {
+                    return "Please specify the recipient email address to send to.";
+                }
+
+                string sendTo = to;
+                string sendSubj = string.IsNullOrWhiteSpace(subj) ? "Message from Flinch" : subj;
+                string sendBody = string.IsNullOrWhiteSpace(body) ? "Sent from Flinch AI Assistant." : body;
+
+                var action = new ActionPayload
+                {
+                    type = "send_email",
+                    name = "Send Email via Gmail",
+                    target = sendTo,
+                    description = string.Format("To: {0}\nSubject: {1}\nBody: {2}", sendTo, sendSubj, sendBody.Length > 80 ? sendBody.Substring(0, 80) + "..." : sendBody),
+                    requires_approval = true
+                };
+
+                ActionApprovalWindow.ShowApproval(
+                    action,
+                    delegate(ActionPayload act)
+                    {
+                        string sendErr;
+                        bool ok = DirectSmtpClient.SendGmailEmail(sendTo, sendSubj, sendBody, out sendErr);
+                        if (ok)
+                        {
+                            if (Speak != null) Speak("Your email to " + sendTo + " has been sent successfully.");
+                        }
+                        else
+                        {
+                            if (Speak != null) Speak("Failed to send email: " + sendErr);
+                        }
+                    },
+                    delegate(ActionPayload act)
+                    {
+                        if (Speak != null) Speak("Email sending cancelled.");
+                    }
+                );
+
+                return string.Format("I am requesting your confirmation to send this email to {0}. Please click Allow or say 'Yes'.", to);
+            }
+
+            return null;
+        }
+
         private static string TryPlusToggles(string transcript, string low)
         {
             if (Regex.IsMatch(low, @"^(?:please\s+)?turn\s+off\s+download\s+(?:alerts|notifications)$|^stop\s+(?:alerting|telling)\s+me\s+(?:about|when)\s+downloads?.*$"))

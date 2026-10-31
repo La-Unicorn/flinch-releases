@@ -1,7 +1,7 @@
-// ============================================================================
+﻿// ============================================================================
 // FLINCH AI: FLINCH HUB & BACKGROUND AUTOMATIONS ENGINE
 // Direct App Integrations (Email / Files / Clipboard) & Autonomous Background Workers
-// Zero Third-Party Account Creation Required — 100% Local On-Device Execution
+// Zero Third-Party Account Creation Required â€” 100% Local On-Device Execution
 // ============================================================================
 
 using System;
@@ -9,6 +9,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
+using System.Net.Mail;
 using System.Net.Security;
 using System.Net.Sockets;
 using System.Security.Cryptography;
@@ -24,6 +25,7 @@ using System.Windows.Media;
 using System.Windows.Media.Animation;
 using System.Windows.Media.Effects;
 using System.Windows.Shapes;
+using System.Windows.Threading;
 
 namespace FlinchApp
 {
@@ -47,6 +49,8 @@ namespace FlinchApp
         public string EncryptedSecret { get; set; }
         public string Server { get; set; }
         public int Port { get; set; }
+        public string SmtpServer { get; set; }
+        public int SmtpPort { get; set; }
         public bool UseSsl { get; set; }
         public int CheckIntervalMinutes { get; set; }
         public bool IsConnected { get; set; }
@@ -59,6 +63,8 @@ namespace FlinchApp
             EncryptedSecret = "";
             Server = "imap.gmail.com";
             Port = 993;
+            SmtpServer = "smtp.gmail.com";
+            SmtpPort = 587;
             UseSsl = true;
             CheckIntervalMinutes = 15;
             IsConnected = false;
@@ -400,6 +406,88 @@ namespace FlinchApp
     }
 
     // =========================================================================
+    // 2B. Direct SMTP Client (100% Local SSL/TLS, Zero Account Creation)
+    // =========================================================================
+    internal static class DirectSmtpClient
+    {
+        public static bool SendEmail(string smtpServer, int smtpPort, bool useSsl, string username, string password, string toAddress, string subject, string body, out string errorMessage)
+        {
+            errorMessage = "";
+            if (string.IsNullOrWhiteSpace(smtpServer)) smtpServer = "smtp.gmail.com";
+            if (smtpPort <= 0) smtpPort = 587;
+
+            if (string.IsNullOrWhiteSpace(username) || string.IsNullOrWhiteSpace(password))
+            {
+                errorMessage = "Email address or Google App Password is not provided.";
+                return false;
+            }
+            if (string.IsNullOrWhiteSpace(toAddress))
+            {
+                errorMessage = "Recipient email address is required.";
+                return false;
+            }
+
+            try
+            {
+                using (var client = new SmtpClient(smtpServer, smtpPort))
+                {
+                    client.EnableSsl = useSsl;
+                    client.DeliveryMethod = SmtpDeliveryMethod.Network;
+                    client.UseDefaultCredentials = false;
+                    client.Credentials = new System.Net.NetworkCredential(username, password);
+                    client.Timeout = 15000;
+
+                    using (var msg = new MailMessage())
+                    {
+                        msg.From = new MailAddress(username, "Flinch Assistant");
+                        msg.To.Add(toAddress);
+                        msg.Subject = string.IsNullOrWhiteSpace(subject) ? "(No Subject)" : subject;
+                        msg.Body = body ?? "";
+                        msg.IsBodyHtml = false;
+
+                        client.Send(msg);
+                    }
+                }
+                return true;
+            }
+            catch (Exception ex)
+            {
+                errorMessage = ex.Message;
+                return false;
+            }
+        }
+
+        public static bool SendGmailEmail(string toAddress, string subject, string body, out string errorMessage)
+        {
+            errorMessage = "";
+            var cfg = BackgroundAutomationsEngine.EmailConfig;
+            if (cfg == null || !cfg.IsConnected || string.IsNullOrWhiteSpace(cfg.EmailAddress))
+            {
+                errorMessage = "Gmail is not connected. Please connect your Gmail account in the Flinch Hub Integrations panel.";
+                return false;
+            }
+            string pw = BackgroundAutomationsEngine.GetEmailPassword();
+            if (string.IsNullOrWhiteSpace(pw))
+            {
+                errorMessage = "Gmail app password is not configured.";
+                return false;
+            }
+            string server = string.IsNullOrWhiteSpace(cfg.SmtpServer) ? "smtp.gmail.com" : cfg.SmtpServer;
+            int port = cfg.SmtpPort > 0 ? cfg.SmtpPort : 587;
+            return SendEmail(server, port, true, cfg.EmailAddress, pw, toAddress, subject, body, out errorMessage);
+        }
+    }
+
+    public sealed class EmailDraft
+    {
+        public string Id { get; set; }
+        public string To { get; set; }
+        public string Subject { get; set; }
+        public string Body { get; set; }
+        public DateTime CreatedUtc { get; set; }
+    }
+
+    // =========================================================================
     // 3. Background Automations Engine (Autonomous Workers & Triage)
     // =========================================================================
     internal static class BackgroundAutomationsEngine
@@ -411,6 +499,44 @@ namespace FlinchApp
         public static AutomationConfig Config { get; private set; }
         public static EmailIntegrationConfig EmailConfig { get; private set; }
         public static List<EmailMessageInfo> RecentMessages { get; private set; }
+
+        private static readonly List<EmailDraft> _drafts = new List<EmailDraft>();
+
+        public static List<EmailDraft> Drafts
+        {
+            get { lock (_syncLock) { return new List<EmailDraft>(_drafts); } }
+        }
+
+        public static EmailDraft AddDraft(string to, string subject, string body)
+        {
+            lock (_syncLock)
+            {
+                var d = new EmailDraft
+                {
+                    Id = Guid.NewGuid().ToString("N"),
+                    To = to,
+                    Subject = subject,
+                    Body = body,
+                    CreatedUtc = DateTime.UtcNow
+                };
+                _drafts.Add(d);
+                return d;
+            }
+        }
+
+        public static EmailDraft GetLatestDraft()
+        {
+            lock (_syncLock)
+            {
+                if (_drafts.Count == 0) return null;
+                return _drafts[_drafts.Count - 1];
+            }
+        }
+
+        public static void ClearDrafts()
+        {
+            lock (_syncLock) { _drafts.Clear(); }
+        }
 
         private static System.Threading.Timer _emailTimer = null;
         private static System.Threading.Timer _downloadsTimer = null;
@@ -611,11 +737,11 @@ namespace FlinchApp
                     }
                 }
 
-                EmailStatusText = string.Format("Active • Checked {0:t} ({1} unread)", DateTime.Now, msgs.Count);
+                EmailStatusText = string.Format("Active â€¢ Checked {0:t} ({1} unread)", DateTime.Now, msgs.Count);
 
                 if (firstUrgent != null && OnUrgentAlertTriggered != null)
                 {
-                    string alertMsg = string.Format("✉️ Urgent Email from {0}: \"{1}\"", firstUrgent.From, firstUrgent.Subject);
+                    string alertMsg = string.Format("âœ‰ï¸ Urgent Email from {0}: \"{1}\"", firstUrgent.From, firstUrgent.Subject);
                     OnUrgentAlertTriggered(alertMsg, firstUrgent.From, true);
                 }
 
@@ -701,7 +827,7 @@ namespace FlinchApp
                 }
 
                 OrganizedFilesCount += moved;
-                DownloadsStatusText = string.Format("Active • {0} files auto-sorted", OrganizedFilesCount);
+                DownloadsStatusText = string.Format("Active â€¢ {0} files auto-sorted", OrganizedFilesCount);
             }
             catch (Exception ex)
             {
@@ -764,13 +890,15 @@ namespace FlinchApp
     }
 
     // =========================================================================
-    // 4. Modern Frosted-Glass Flinch Hub UI (Expands Beneath Notch)
+    // 4. Modern Notch-Hover Flinch Hub UI (Expands Around Top Screen Notch)
     // =========================================================================
     internal sealed class FlinchHubWindow : Window
     {
-        private static readonly Color ColBgDark = Color.FromRgb(0x12, 0x14, 0x1A);
-        private static readonly Color ColCardBg = Color.FromRgb(0x1A, 0x1D, 0x26);
-        private static readonly Color ColBorder = Color.FromRgb(0x2A, 0x2E, 0x3D);
+        public bool IsHoverSummoned { get; set; }
+
+        private static readonly Color ColBgDark = Color.FromRgb(0x14, 0x15, 0x19);
+        private static readonly Color ColCardBg = Color.FromRgb(0x1B, 0x1D, 0x24);
+        private static readonly Color ColBorder = Color.FromRgb(0x2E, 0x32, 0x3D);
         private static readonly Color ColMint = Color.FromRgb(0x3D, 0xDC, 0x84);
         private static readonly Color ColOrange = Color.FromRgb(0xFF, 0x8A, 0x3D);
         private static readonly Color ColCream = Color.FromRgb(0xF4, 0xEB, 0xDD);
@@ -792,1014 +920,1648 @@ namespace FlinchApp
         }
 
         private readonly DynamicIslandWindow _parentIsland;
-        private readonly StackPanel _tabNavHost;
-        private readonly ContentControl _tabContentHost;
+        private readonly Border _rootBorder;
+        private readonly Grid _mainGrid;
+        private readonly Border _flyoutHost;
+        private readonly ContentControl _flyoutContent;
 
-        // Tabs
-        private Border _tabBtnAutomations;
-        private Border _tabBtnIntegrations;
-        private Border _tabBtnInbox;
+        // Notch Animation & Sound Wave
+        private DispatcherTimer _waveAnimTimer;
+        private readonly List<Rectangle> _waveBars = new List<Rectangle>();
+        private double _wavePhase = 0;
+        private TextBlock _listenStatusLabel;
 
-        // Integration Inputs
-        private ComboBox _providerCombo;
+        // Hover & Interaction Management
+        private bool _isMouseInHub = false;
+        private bool _isInteracting = false;
+        private bool _isFlyoutOpen = false;
+        private string _activeFlyoutType = null;
+        private DispatcherTimer _collapseTimer;
+
+        // Badges & Controls
+        private Ellipse _gmailStatusDot;
+        private Ellipse _accentDot;
+        private int _accentIndex = 0;
+        private static readonly Color[] AccentColors = new Color[]
+        {
+            Color.FromRgb(0x3D, 0xDC, 0x84), // Mint
+            Color.FromRgb(0xA7, 0x8B, 0xFA), // Violet
+            Color.FromRgb(0x38, 0xBD, 0xF8), // Sky
+            Color.FromRgb(0xFB, 0x92, 0x3C), // Amber
+            Color.FromRgb(0xF8, 0x71, 0x71)  // Coral
+        };
+
+        // Flyout Views (Cached)
+        private UIElement _gmailFlyoutView;
+        private UIElement _historyFlyoutView;
+        private UIElement _settingsFlyoutView;
+        private UIElement _hotkeysFlyoutView;
+
+        // Gmail inputs
         private TextBox _emailBox;
         private PasswordBox _passBox;
-        private TextBox _serverBox;
-        private TextBox _portBox;
         private TextBlock _emailFeedbackText;
-
-        // Status Badges
-        private TextBlock _emailStatusBadge;
-        private TextBlock _downloadsStatusBadge;
-        private StackPanel _inboxItemsPanel;
+        private TextBlock _gmailStatusHeader;
+        private StackPanel _inboxCardsPanel;
 
         public FlinchHubWindow(DynamicIslandWindow parentIsland)
         {
             _parentIsland = parentIsland;
 
             Title = "Flinch Hub";
-            Width = 760;
-            Height = 520;
+            Width = 920;
+            Height = 104;
             WindowStyle = WindowStyle.None;
             AllowsTransparency = true;
             Background = Brushes.Transparent;
             ShowInTaskbar = false;
             Topmost = true;
 
-            // Position directly beneath the Dynamic Island notch
+            // Anchor flush with the top screen bezel
             var scr = System.Windows.Forms.Screen.PrimaryScreen;
             Left = (scr.Bounds.Width - Width) / 2.0;
-            Top = 46;
+            Top = 0;
 
-            var rootCard = new Border
+            _rootBorder = new Border
             {
                 Background = BrushBgDark,
                 BorderBrush = BrushBorder,
-                BorderThickness = new Thickness(1.5),
-                CornerRadius = new CornerRadius(18),
+                BorderThickness = new Thickness(1),
                 Effect = new DropShadowEffect
                 {
                     Color = Colors.Black,
-                    BlurRadius = 36,
+                    BlurRadius = 32,
                     ShadowDepth = 10,
                     Direction = 270,
-                    Opacity = 0.65
+                    Opacity = 0.55
                 }
             };
 
-            rootCard.MouseLeftButtonDown += (s, e) =>
+            UpdateWindowClip();
+
+            _mainGrid = new Grid();
+            _mainGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(104) }); // Top Bar
+            _mainGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) }); // Flyout Host
+
+            // 1. Build Top Bar (5 Columns matching mockup)
+            var topBar = BuildTopBar();
+            Grid.SetRow(topBar, 0);
+            _mainGrid.Children.Add(topBar);
+
+            // 2. Flyout Host (Smooth drop-down below top bar)
+            _flyoutHost = new Border
             {
-                if (e.ButtonState == MouseButtonState.Pressed)
+                Background = new SolidColorBrush(Color.FromRgb(0x11, 0x12, 0x16)),
+                BorderBrush = new SolidColorBrush(Color.FromArgb(0x28, 0xFF, 0xFF, 0xFF)),
+                BorderThickness = new Thickness(0, 1, 0, 0),
+                Visibility = Visibility.Collapsed,
+                Padding = new Thickness(24, 16, 24, 18)
+            };
+            _flyoutContent = new ContentControl();
+            _flyoutHost.Child = _flyoutContent;
+            Grid.SetRow(_flyoutHost, 1);
+            _mainGrid.Children.Add(_flyoutHost);
+
+            _rootBorder.Child = _mainGrid;
+            Content = _rootBorder;
+
+            // Window Hover & Interaction Events
+            MouseEnter += (s, e) =>
+            {
+                _isMouseInHub = true;
+                StopCollapseTimer();
+            };
+            MouseLeave += (s, e) =>
+            {
+                _isMouseInHub = false;
+                if (IsHoverSummoned && !_isInteracting && !_isFlyoutOpen && !HasFocusedInput())
                 {
-                    try { DragMove(); } catch { }
+                    StartCollapseTimer();
                 }
             };
-
-            var mainGrid = new Grid();
-            mainGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(56) }); // Header
-            mainGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(44) }); // Tab bar
-            mainGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) }); // Content
-
-            // 1. Header
-            var headerGrid = CreateHeader();
-            Grid.SetRow(headerGrid, 0);
-            mainGrid.Children.Add(headerGrid);
-
-            // 2. Tab Navigation
-            _tabNavHost = CreateTabBar();
-            Grid.SetRow(_tabNavHost, 1);
-            mainGrid.Children.Add(_tabNavHost);
-
-            // 3. Tab Content
-            _tabContentHost = new ContentControl { Margin = new Thickness(16, 8, 16, 16) };
-            Grid.SetRow(_tabContentHost, 2);
-            mainGrid.Children.Add(_tabContentHost);
-
-            rootCard.Child = mainGrid;
-            Content = rootCard;
-
-            // Wire up background updates
-            BackgroundAutomationsEngine.OnStateChanged += () =>
-            {
-                Dispatcher.BeginInvoke(new Action(() => UpdateLiveStatusUI()));
-            };
-
             KeyDown += (s, e) =>
             {
                 if (e.Key == Key.Escape)
                 {
+                    if (_isFlyoutOpen) CloseFlyout();
+                    else Close();
+                }
+            };
+
+            // Sound Wave Animation
+            StartWaveAnimation();
+        }
+
+        private void UpdateWindowClip()
+        {
+            if (_rootBorder != null)
+            {
+                _rootBorder.Clip = DynamicIslandWindow.CreateMacBookNotchGeometry(Width, Height, 14.0, 26.0);
+            }
+        }
+
+        public void NotifyNotchMouseLeave()
+        {
+            if (!_isMouseInHub && !_isInteracting && !_isFlyoutOpen && !HasFocusedInput())
+            {
+                StartCollapseTimer();
+            }
+        }
+
+        private void StartCollapseTimer()
+        {
+            StopCollapseTimer();
+            _collapseTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(550) };
+            _collapseTimer.Tick += (s, e) =>
+            {
+                _collapseTimer.Stop();
+                if (!_isMouseInHub && !_isInteracting && !_isFlyoutOpen && !HasFocusedInput())
+                {
                     Close();
                 }
             };
-
-            // Default to Automations tab
-            SelectTab(0);
+            _collapseTimer.Start();
         }
 
-        private Grid CreateHeader()
+        private void StopCollapseTimer()
         {
-            var g = new Grid { Margin = new Thickness(18, 0, 18, 0) };
-
-            var leftStack = new StackPanel
+            if (_collapseTimer != null)
             {
-                Orientation = Orientation.Horizontal,
-                VerticalAlignment = VerticalAlignment.Center
+                _collapseTimer.Stop();
+                _collapseTimer = null;
+            }
+        }
+
+        private bool HasFocusedInput()
+        {
+            var focused = Keyboard.FocusedElement as DependencyObject;
+            return (focused is TextBox || focused is PasswordBox);
+        }
+
+        private void StartWaveAnimation()
+        {
+            _waveAnimTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(85) };
+            _waveAnimTimer.Tick += (s, e) =>
+            {
+                _wavePhase += 0.35;
+                if (_waveBars.Count == 0) return;
+
+                double[] baseH = new double[] { 5, 11, 15, 8, 13, 7 };
+                for (int i = 0; i < _waveBars.Count; i++)
+                {
+                    double b = i < baseH.Length ? baseH[i] : 8.0;
+                    double h = b + (Math.Sin(_wavePhase + (i * 0.9)) * 3.5);
+                    _waveBars[i].Height = Math.Max(3.0, Math.Min(19.0, h));
+                }
+            };
+            _waveAnimTimer.Start();
+        }
+
+        // =====================================================================
+        // TOP BAR (5 Columns matching mockup)
+        // =====================================================================
+        private Grid BuildTopBar()
+        {
+            var grid = new Grid();
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(230) });
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(165) });
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(130) });
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(165) });
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(175) });
+
+            // Subtle Dividers between columns
+            for (int c = 0; c < 4; c++)
+            {
+                var div = new Rectangle
+                {
+                    Width = 1,
+                    Height = 54,
+                    Fill = new SolidColorBrush(Color.FromArgb(0x22, 0xFF, 0xFF, 0xFF)),
+                    HorizontalAlignment = HorizontalAlignment.Right,
+                    VerticalAlignment = VerticalAlignment.Center
+                };
+                Grid.SetColumn(div, c);
+                grid.Children.Add(div);
+            }
+
+            // Col 0: Chat History
+            var colHistory = BuildHistoryColumn();
+            Grid.SetColumn(colHistory, 0);
+            grid.Children.Add(colHistory);
+
+            // Col 1: Integrations
+            var colIntegrations = BuildIntegrationsColumn();
+            Grid.SetColumn(colIntegrations, 1);
+            grid.Children.Add(colIntegrations);
+
+            // Col 2: Notch Listening Island
+            var colIsland = BuildCenterIslandColumn();
+            Grid.SetColumn(colIsland, 2);
+            grid.Children.Add(colIsland);
+
+            // Col 3: Customization
+            var colCustomization = BuildCustomizationColumn();
+            Grid.SetColumn(colCustomization, 3);
+            grid.Children.Add(colCustomization);
+
+            // Col 4: Settings
+            var colSettings = BuildSettingsColumn();
+            Grid.SetColumn(colSettings, 4);
+            grid.Children.Add(colSettings);
+
+            return grid;
+        }
+
+        // ---------------------------------------------------------------------
+        // Column 0: Chat History
+        // ---------------------------------------------------------------------
+        private UIElement BuildHistoryColumn()
+        {
+            var panel = new StackPanel
+            {
+                Margin = new Thickness(16, 12, 12, 10),
+                VerticalAlignment = VerticalAlignment.Top
             };
 
-            var catIcon = new TextBlock
+            // Header button: ðŸ•’ Chat History âŒµ
+            var header = new DockPanel { Cursor = Cursors.Hand, Margin = new Thickness(0, 0, 0, 6) };
+            var hStack = new StackPanel { Orientation = Orientation.Horizontal };
+            hStack.Children.Add(new TextBlock
             {
-                Text = "⚡",
-                FontSize = 20,
-                Foreground = BrushOrange,
-                VerticalAlignment = VerticalAlignment.Center,
-                Margin = new Thickness(0, 0, 10, 0)
-            };
-
-            var titleText = new TextBlock
-            {
-                Text = "Flinch Hub",
-                FontSize = 18,
-                FontWeight = FontWeights.Bold,
-                Foreground = BrushCream,
-                VerticalAlignment = VerticalAlignment.Center,
-                Margin = new Thickness(0, 0, 14, 0)
-            };
-
-            var pillBadge = new Border
-            {
-                Background = new SolidColorBrush(Color.FromArgb(0x28, 0x3D, 0xDC, 0x84)),
-                BorderBrush = BrushMint,
-                BorderThickness = new Thickness(1),
-                CornerRadius = new CornerRadius(10),
-                Padding = new Thickness(10, 3, 10, 3),
-                VerticalAlignment = VerticalAlignment.Center
-            };
-            var pillText = new TextBlock
-            {
-                Text = "Autonomous Background Engine",
+                Text = "\U0001F552", // clock
                 FontSize = 11,
-                FontWeight = FontWeights.SemiBold,
-                Foreground = BrushMint
-            };
-            pillBadge.Child = pillText;
-
-            leftStack.Children.Add(catIcon);
-            leftStack.Children.Add(titleText);
-            leftStack.Children.Add(pillBadge);
-            g.Children.Add(leftStack);
-
-            // Right Action Buttons (Voice Mode + Close)
-            var rightStack = new StackPanel
-            {
-                Orientation = Orientation.Horizontal,
-                HorizontalAlignment = HorizontalAlignment.Right,
+                Foreground = BrushMuted,
+                Margin = new Thickness(0, 0, 6, 0),
                 VerticalAlignment = VerticalAlignment.Center
-            };
-
-            var voiceBtn = new Border
+            });
+            hStack.Children.Add(new TextBlock
             {
-                Background = new SolidColorBrush(Color.FromArgb(0x28, 0xFF, 0x8A, 0x3D)),
-                BorderBrush = BrushOrange,
-                BorderThickness = new Thickness(1),
-                CornerRadius = new CornerRadius(8),
-                Padding = new Thickness(12, 6, 12, 6),
-                Cursor = Cursors.Hand,
-                Margin = new Thickness(0, 0, 10, 0)
-            };
-            var voiceBtnText = new TextBlock
-            {
-                Text = "🎙️ Voice Mode",
+                Text = "Chat History",
                 FontSize = 12,
                 FontWeight = FontWeights.SemiBold,
-                Foreground = BrushOrange
-            };
-            voiceBtn.Child = voiceBtnText;
-            voiceBtn.MouseLeftButtonDown += (s, e) =>
+                Foreground = Brushes.White,
+                VerticalAlignment = VerticalAlignment.Center
+            });
+            hStack.Children.Add(new TextBlock
             {
-                e.Handled = true;
-                Close();
-                if (_parentIsland != null)
+                Text = " \u2304", // chevron down
+                FontSize = 10,
+                Foreground = BrushMuted,
+                Margin = new Thickness(4, 0, 0, 0),
+                VerticalAlignment = VerticalAlignment.Center
+            });
+            header.Children.Add(hStack);
+            header.MouseLeftButtonDown += (s, e) =>
+            {
+                _isInteracting = true;
+                ToggleFlyout("history");
+            };
+            panel.Children.Add(header);
+
+            // 3 Recent Query Rows
+            var recentTurns = FlinchSkills.GetRecentTurns(3);
+            if (recentTurns.Count == 0)
+            {
+                recentTurns = new List<FlinchSkills.HistoryTurn>
                 {
-                    _parentIsland.Dispatcher.BeginInvoke(new Action(() =>
-                    {
-                        _parentIsland.StartVoiceRecording();
-                    }));
+                    new FlinchSkills.HistoryTurn { u = "What is flinch?", t = DateTime.UtcNow.AddMinutes(-2).ToString("o"), a = "Flinch is your autonomous desktop companion." },
+                    new FlinchSkills.HistoryTurn { u = "Create a portfolio site", t = DateTime.UtcNow.AddMinutes(-5).ToString("o"), a = "I can generate clean modern web layouts." },
+                    new FlinchSkills.HistoryTurn { u = "Explain this code", t = DateTime.UtcNow.AddMinutes(-12).ToString("o"), a = "I break down complex architectures step by step." }
+                };
+            }
+
+            foreach (var item in recentTurns)
+            {
+                var row = CreateHistoryRow(item);
+                panel.Children.Add(row);
+            }
+
+            return panel;
+        }
+
+        private Border CreateHistoryRow(FlinchSkills.HistoryTurn turn)
+        {
+            var row = new Border
+            {
+                Height = 20,
+                Margin = new Thickness(0, 1, 0, 1),
+                CornerRadius = new CornerRadius(4),
+                Background = Brushes.Transparent,
+                Cursor = Cursors.Hand
+            };
+
+            var dock = new DockPanel { LastChildFill = true };
+
+            // Relative timestamp (right-aligned)
+            string relTime = FormatRelativeTime(turn.t);
+            var timeTb = new TextBlock
+            {
+                Text = relTime,
+                FontSize = 9.5,
+                Foreground = new SolidColorBrush(Color.FromRgb(0x6B, 0x72, 0x80)),
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(6, 0, 2, 0)
+            };
+            DockPanel.SetDock(timeTb, Dock.Right);
+            dock.Children.Add(timeTb);
+
+            // Type icon: ðŸ’¬ or ðŸ“„ or </>
+            string iconStr = "\U0001F4AC";
+            string low = (turn.u ?? "").ToLowerInvariant();
+            if (low.Contains("code") || low.Contains("function") || low.Contains("debug") || low.Contains("explain")) iconStr = "</>";
+            else if (low.Contains("create") || low.Contains("site") || low.Contains("file") || low.Contains("draft")) iconStr = "\U0001F4C4";
+
+            var iconTb = new TextBlock
+            {
+                Text = iconStr,
+                FontSize = (iconStr == "</>") ? 8.5 : 10,
+                Foreground = BrushMuted,
+                FontWeight = (iconStr == "</>") ? FontWeights.Bold : FontWeights.Normal,
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(0, 0, 5, 0)
+            };
+            DockPanel.SetDock(iconTb, Dock.Left);
+            dock.Children.Add(iconTb);
+
+            // Question snippet
+            var queryTb = new TextBlock
+            {
+                Text = turn.u ?? "",
+                FontSize = 10.5,
+                Foreground = new SolidColorBrush(Color.FromRgb(0xD1, 0xD5, 0xDB)),
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            dock.Children.Add(queryTb);
+
+            row.Child = dock;
+
+            row.MouseEnter += (s, e) => row.Background = new SolidColorBrush(Color.FromArgb(0x33, 0xFF, 0xFF, 0xFF));
+            row.MouseLeave += (s, e) => row.Background = Brushes.Transparent;
+            row.MouseLeftButtonDown += (s, e) =>
+            {
+                _isInteracting = true;
+                if (_parentIsland != null && !string.IsNullOrWhiteSpace(turn.a))
+                {
+                    _parentIsland.SpeakAnswer(turn.a);
                 }
             };
 
-            var closeBtn = new Border
+            return row;
+        }
+
+        private static string FormatRelativeTime(string iso)
+        {
+            if (string.IsNullOrWhiteSpace(iso)) return "now";
+            DateTime dt;
+            if (!DateTime.TryParse(iso, out dt)) return "now";
+            var diff = DateTime.UtcNow - dt.ToUniversalTime();
+            if (diff.TotalMinutes < 1) return "just now";
+            if (diff.TotalMinutes < 60) return string.Format("{0}m ago", (int)diff.TotalMinutes);
+            if (diff.TotalHours < 24) return string.Format("{0}h ago", (int)diff.TotalHours);
+            return string.Format("{0}d ago", (int)diff.TotalDays);
+        }
+
+        // ---------------------------------------------------------------------
+        // Column 1: Integrations
+        // ---------------------------------------------------------------------
+        private UIElement BuildIntegrationsColumn()
+        {
+            var panel = new StackPanel
+            {
+                Margin = new Thickness(10, 12, 10, 10),
+                VerticalAlignment = VerticalAlignment.Top
+            };
+
+            // Header button: ðŸŒ¸ Integrations âŒµ
+            var header = new DockPanel { Cursor = Cursors.Hand, Margin = new Thickness(0, 0, 0, 8) };
+            var hStack = new StackPanel { Orientation = Orientation.Horizontal };
+            hStack.Children.Add(new TextBlock
+            {
+                Text = "\U0001F338", // flower / sparkle
+                FontSize = 11,
+                Foreground = new SolidColorBrush(Color.FromRgb(0xF4, 0x72, 0xB6)),
+                Margin = new Thickness(0, 0, 6, 0),
+                VerticalAlignment = VerticalAlignment.Center
+            });
+            hStack.Children.Add(new TextBlock
+            {
+                Text = "Integrations",
+                FontSize = 12,
+                FontWeight = FontWeights.SemiBold,
+                Foreground = Brushes.White,
+                VerticalAlignment = VerticalAlignment.Center
+            });
+            hStack.Children.Add(new TextBlock
+            {
+                Text = " \u2304",
+                FontSize = 10,
+                Foreground = BrushMuted,
+                Margin = new Thickness(4, 0, 0, 0),
+                VerticalAlignment = VerticalAlignment.Center
+            });
+            header.Children.Add(hStack);
+            header.MouseLeftButtonDown += (s, e) =>
+            {
+                _isInteracting = true;
+                ToggleFlyout("gmail");
+            };
+            panel.Children.Add(header);
+
+            // Icons Row: [N] Notion, [â™«] Spotify, [âœ‰] Gmail, [+ Add]
+            var iconsRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 2, 0, 0) };
+
+            // Notion Button
+            var notionBtn = CreateIconTile("N", Brushes.White, "Notion Integration (Ready)", (s, e) =>
+            {
+                _isInteracting = true;
+                if (_parentIsland != null) _parentIsland.ShowAlert("notion", "Notion Connected", "Workspace ready");
+            });
+            iconsRow.Children.Add(notionBtn);
+
+            // Spotify Button
+            var spotifyBtn = CreateIconTile("\u266B", new SolidColorBrush(Color.FromRgb(0x1D, 0xB9, 0x54)), "Spotify Media Controls", (s, e) =>
+            {
+                _isInteracting = true;
+                if (_parentIsland != null) _parentIsland.ShowAlert("spotify", "Spotify Ready", "Play, pause, skip enabled");
+            });
+            spotifyBtn.Margin = new Thickness(5, 0, 0, 0);
+            iconsRow.Children.Add(spotifyBtn);
+
+            // Gmail Button (with live status dot)
+            var gmailBtn = new Border
             {
                 Width = 28,
                 Height = 28,
-                Background = BrushCardBg,
-                BorderBrush = BrushBorder,
+                CornerRadius = new CornerRadius(6),
+                Background = new SolidColorBrush(Color.FromRgb(0x1C, 0x1E, 0x26)),
+                BorderBrush = new SolidColorBrush(Color.FromRgb(0x2F, 0x33, 0x40)),
                 BorderThickness = new Thickness(1),
-                CornerRadius = new CornerRadius(7),
-                Cursor = Cursors.Hand
+                Cursor = Cursors.Hand,
+                ToolTip = "Google Gmail (Read, Write & Send Emails)",
+                Margin = new Thickness(5, 0, 0, 0)
             };
-            var closeText = new TextBlock
+            var gmailGrid = new Grid();
+            gmailGrid.Children.Add(new TextBlock
             {
-                Text = "✕",
+                Text = "\u2709", // envelope
                 FontSize = 13,
-                Foreground = BrushMuted,
+                Foreground = new SolidColorBrush(Color.FromRgb(0xEF, 0x44, 0x44)),
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center
+            });
+            _gmailStatusDot = new Ellipse
+            {
+                Width = 6,
+                Height = 6,
+                Fill = BackgroundAutomationsEngine.EmailConfig.IsConnected ? BrushMint : new SolidColorBrush(Color.FromRgb(0x4B, 0x55, 0x63)),
+                HorizontalAlignment = HorizontalAlignment.Right,
+                VerticalAlignment = VerticalAlignment.Top,
+                Margin = new Thickness(0, 3, 3, 0)
+            };
+            gmailGrid.Children.Add(_gmailStatusDot);
+            gmailBtn.Child = gmailGrid;
+            gmailBtn.MouseLeftButtonDown += (s, e) =>
+            {
+                _isInteracting = true;
+                ToggleFlyout("gmail");
+            };
+            iconsRow.Children.Add(gmailBtn);
+
+            // [+ Add] Button
+            var addBtn = new Border
+            {
+                Height = 26,
+                Padding = new Thickness(7, 0, 7, 0),
+                CornerRadius = new CornerRadius(13),
+                Background = new SolidColorBrush(Color.FromRgb(0x19, 0x1B, 0x22)),
+                BorderBrush = new SolidColorBrush(Color.FromRgb(0x37, 0x41, 0x51)),
+                BorderThickness = new Thickness(1),
+                Cursor = Cursors.Hand,
+                ToolTip = "Connect New Integration",
+                Margin = new Thickness(6, 0, 0, 0),
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            addBtn.Child = new TextBlock
+            {
+                Text = "+ Add",
+                FontSize = 10.5,
+                FontWeight = FontWeights.Medium,
+                Foreground = new SolidColorBrush(Color.FromRgb(0xD1, 0xD5, 0xDB)),
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            addBtn.MouseEnter += (s, e) => addBtn.Background = new SolidColorBrush(Color.FromArgb(0x33, 0xFF, 0xFF, 0xFF));
+            addBtn.MouseLeave += (s, e) => addBtn.Background = new SolidColorBrush(Color.FromRgb(0x19, 0x1B, 0x22));
+            addBtn.MouseLeftButtonDown += (s, e) =>
+            {
+                _isInteracting = true;
+                ToggleFlyout("gmail");
+            };
+            iconsRow.Children.Add(addBtn);
+
+            panel.Children.Add(iconsRow);
+            return panel;
+        }
+
+        private Border CreateIconTile(string text, Brush fg, string tooltip, MouseButtonEventHandler onClick)
+        {
+            var tile = new Border
+            {
+                Width = 28,
+                Height = 28,
+                CornerRadius = new CornerRadius(6),
+                Background = new SolidColorBrush(Color.FromRgb(0x1C, 0x1E, 0x26)),
+                BorderBrush = new SolidColorBrush(Color.FromRgb(0x2F, 0x33, 0x40)),
+                BorderThickness = new Thickness(1),
+                Cursor = Cursors.Hand,
+                ToolTip = tooltip
+            };
+            tile.Child = new TextBlock
+            {
+                Text = text,
+                FontSize = (text.Length > 1) ? 11 : 12.5,
+                FontWeight = FontWeights.Bold,
+                Foreground = fg,
                 HorizontalAlignment = HorizontalAlignment.Center,
                 VerticalAlignment = VerticalAlignment.Center
             };
-            closeBtn.Child = closeText;
-            closeBtn.MouseEnter += (s, e) => closeText.Foreground = BrushCream;
-            closeBtn.MouseLeave += (s, e) => closeText.Foreground = BrushMuted;
-            closeBtn.MouseLeftButtonDown += (s, e) =>
-            {
-                e.Handled = true;
-                Close();
-            };
-
-            rightStack.Children.Add(voiceBtn);
-            rightStack.Children.Add(closeBtn);
-            g.Children.Add(rightStack);
-
-            return g;
+            tile.MouseEnter += (s, e) => tile.BorderBrush = BrushMint;
+            tile.MouseLeave += (s, e) => tile.BorderBrush = new SolidColorBrush(Color.FromRgb(0x2F, 0x33, 0x40));
+            if (onClick != null) tile.MouseLeftButtonDown += onClick;
+            return tile;
         }
 
-        private StackPanel CreateTabBar()
+        // ---------------------------------------------------------------------
+        // Column 2: Center Notch Audio / Listening Island
+        // ---------------------------------------------------------------------
+        private UIElement BuildCenterIslandColumn()
         {
-            var sp = new StackPanel
+            var panel = new StackPanel
+            {
+                Margin = new Thickness(0, 6, 0, 6),
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+
+            // Top Emblem Badge
+            var badge = new Border
+            {
+                Width = 32,
+                Height = 32,
+                CornerRadius = new CornerRadius(16),
+                Background = new SolidColorBrush(Color.FromRgb(0x1E, 0x20, 0x28)),
+                BorderBrush = new SolidColorBrush(Color.FromRgb(0x32, 0x36, 0x44)),
+                BorderThickness = new Thickness(1),
+                HorizontalAlignment = HorizontalAlignment.Center,
+                ToolTip = "Flinch Intelligence Core"
+            };
+            badge.Child = new TextBlock
+            {
+                Text = "\U0001F984", // Unicorn
+                FontSize = 13,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            panel.Children.Add(badge);
+
+            // Bottom Audio Wave Pill
+            var pill = new Border
+            {
+                Width = 120,
+                Height = 26,
+                CornerRadius = new CornerRadius(13),
+                Background = new SolidColorBrush(Color.FromRgb(0x0B, 0x0C, 0x10)),
+                BorderBrush = new SolidColorBrush(Color.FromRgb(0x26, 0x29, 0x33)),
+                BorderThickness = new Thickness(1),
+                Cursor = Cursors.Hand,
+                Margin = new Thickness(0, 5, 0, 0),
+                ToolTip = "Click to Talk / Toggle Voice Recording"
+            };
+
+            var pillStack = new StackPanel
             {
                 Orientation = Orientation.Horizontal,
-                Margin = new Thickness(18, 0, 18, 4)
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center
             };
 
-            _tabBtnAutomations = CreateTabItem("🤖 Background Automations", 0);
-            _tabBtnIntegrations = CreateTabItem("🔌 App Integrations (Email)", 1);
-            _tabBtnInbox = CreateTabItem("✉️ Triaged Inbox", 2);
+            // Animated Bars Panel
+            var barsPanel = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+            _waveBars.Clear();
+            double[] initH = new double[] { 5, 11, 15, 8, 13, 7 };
+            for (int i = 0; i < 6; i++)
+            {
+                var r = new Rectangle
+                {
+                    Width = 2,
+                    Height = initH[i],
+                    RadiusX = 1,
+                    RadiusY = 1,
+                    Fill = BrushMint,
+                    Margin = new Thickness(1, 0, 1, 0),
+                    VerticalAlignment = VerticalAlignment.Center
+                };
+                _waveBars.Add(r);
+                barsPanel.Children.Add(r);
+            }
+            pillStack.Children.Add(barsPanel);
 
-            sp.Children.Add(_tabBtnAutomations);
-            sp.Children.Add(_tabBtnIntegrations);
-            sp.Children.Add(_tabBtnInbox);
+            _listenStatusLabel = new TextBlock
+            {
+                Text = "Listening...",
+                FontSize = 10,
+                FontWeight = FontWeights.Medium,
+                Foreground = new SolidColorBrush(Color.FromRgb(0xE5, 0xE7, 0xEB)),
+                Margin = new Thickness(5, 0, 0, 0),
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            pillStack.Children.Add(_listenStatusLabel);
 
-            return sp;
+            pill.Child = pillStack;
+            pill.MouseEnter += (s, e) => pill.BorderBrush = BrushMint;
+            pill.MouseLeave += (s, e) => pill.BorderBrush = new SolidColorBrush(Color.FromRgb(0x26, 0x29, 0x33));
+            pill.MouseLeftButtonDown += (s, e) =>
+            {
+                _isInteracting = true;
+                if (_parentIsland != null)
+                {
+                    _parentIsland.ToggleVoiceRecording();
+                }
+            };
+            panel.Children.Add(pill);
+
+            return panel;
         }
 
-        private Border CreateTabItem(string label, int index)
+        // ---------------------------------------------------------------------
+        // Column 3: Customization
+        // ---------------------------------------------------------------------
+        private UIElement BuildCustomizationColumn()
         {
-            var b = new Border
+            var panel = new StackPanel
             {
+                Margin = new Thickness(10, 12, 10, 10),
+                VerticalAlignment = VerticalAlignment.Top
+            };
+
+            // Header button: ðŸ–Š Customization âŒµ
+            var header = new DockPanel { Cursor = Cursors.Hand, Margin = new Thickness(0, 0, 0, 8) };
+            var hStack = new StackPanel { Orientation = Orientation.Horizontal };
+            hStack.Children.Add(new TextBlock
+            {
+                Text = "\u270E", // pen
+                FontSize = 11,
+                Foreground = new SolidColorBrush(Color.FromRgb(0x60, 0xA5, 0xFA)),
+                Margin = new Thickness(0, 0, 6, 0),
+                VerticalAlignment = VerticalAlignment.Center
+            });
+            hStack.Children.Add(new TextBlock
+            {
+                Text = "Customization",
+                FontSize = 12,
+                FontWeight = FontWeights.SemiBold,
+                Foreground = Brushes.White,
+                VerticalAlignment = VerticalAlignment.Center
+            });
+            hStack.Children.Add(new TextBlock
+            {
+                Text = " \u2304",
+                FontSize = 10,
+                Foreground = BrushMuted,
+                Margin = new Thickness(4, 0, 0, 0),
+                VerticalAlignment = VerticalAlignment.Center
+            });
+            header.Children.Add(hStack);
+            panel.Children.Add(header);
+
+            // Controls Row: [â˜¼] Light, [â˜¾] Dark (active), [â—] Accent, [Aa] Font size
+            var ctrlRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 2, 0, 0) };
+
+            // Light Mode
+            var lightBtn = CreateIconTile("\u263C", new SolidColorBrush(Color.FromRgb(0xFB, 0xBF, 0x24)), "Switch to Light Theme", (s, e) =>
+            {
+                _isInteracting = true;
+                if (_parentIsland != null) _parentIsland.ShowAlert("theme", "Theme Updated", "Light mode enabled");
+            });
+            ctrlRow.Children.Add(lightBtn);
+
+            // Dark Mode (Active highlight)
+            var darkBtn = CreateIconTile("\u263E", new SolidColorBrush(Color.FromRgb(0xE5, 0xE7, 0xEB)), "Dark Theme (Active)", null);
+            darkBtn.BorderBrush = BrushMint;
+            darkBtn.Margin = new Thickness(5, 0, 0, 0);
+            ctrlRow.Children.Add(darkBtn);
+
+            // Accent Dot Picker
+            var accentBtn = new Border
+            {
+                Width = 28,
+                Height = 28,
+                CornerRadius = new CornerRadius(6),
+                Background = new SolidColorBrush(Color.FromRgb(0x1C, 0x1E, 0x26)),
+                BorderBrush = new SolidColorBrush(Color.FromRgb(0x2F, 0x33, 0x40)),
+                BorderThickness = new Thickness(1),
+                Cursor = Cursors.Hand,
+                ToolTip = "Cycle Accent Theme Color",
+                Margin = new Thickness(5, 0, 0, 0)
+            };
+            _accentDot = new Ellipse
+            {
+                Width = 11,
+                Height = 11,
+                Fill = BrushMint,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            accentBtn.Child = _accentDot;
+            accentBtn.MouseLeftButtonDown += (s, e) =>
+            {
+                _isInteracting = true;
+                _accentIndex = (_accentIndex + 1) % AccentColors.Length;
+                var col = AccentColors[_accentIndex];
+                _accentDot.Fill = new SolidColorBrush(col);
+                if (_parentIsland != null) _parentIsland.ShowAlert("color", "Accent Color Changed", "Theme refreshed");
+            };
+            ctrlRow.Children.Add(accentBtn);
+
+            // [Aa] Font Size Toggle
+            var fontBtn = new Border
+            {
+                Width = 30,
+                Height = 28,
+                CornerRadius = new CornerRadius(6),
+                Background = new SolidColorBrush(Color.FromRgb(0x1C, 0x1E, 0x26)),
+                BorderBrush = new SolidColorBrush(Color.FromRgb(0x2F, 0x33, 0x40)),
+                BorderThickness = new Thickness(1),
+                Cursor = Cursors.Hand,
+                ToolTip = "Toggle Typography Size",
+                Margin = new Thickness(5, 0, 0, 0)
+            };
+            fontBtn.Child = new TextBlock
+            {
+                Text = "Aa",
+                FontSize = 11,
+                FontWeight = FontWeights.SemiBold,
+                Foreground = new SolidColorBrush(Color.FromRgb(0xD1, 0xD5, 0xDB)),
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            fontBtn.MouseLeftButtonDown += (s, e) =>
+            {
+                _isInteracting = true;
+                if (_parentIsland != null) _parentIsland.ShowAlert("font", "Typography Adjusted", "Standard scaling applied");
+            };
+            ctrlRow.Children.Add(fontBtn);
+
+            panel.Children.Add(ctrlRow);
+            return panel;
+        }
+
+        // ---------------------------------------------------------------------
+        // Column 4: Settings
+        // ---------------------------------------------------------------------
+        private UIElement BuildSettingsColumn()
+        {
+            var panel = new StackPanel
+            {
+                Margin = new Thickness(10, 12, 16, 10),
+                VerticalAlignment = VerticalAlignment.Top
+            };
+
+            // Header button: âš™ Settings âŒµ
+            var header = new DockPanel { Cursor = Cursors.Hand, Margin = new Thickness(0, 0, 0, 6) };
+            var hStack = new StackPanel { Orientation = Orientation.Horizontal };
+            hStack.Children.Add(new TextBlock
+            {
+                Text = "\u2699", // gear
+                FontSize = 11,
+                Foreground = BrushMuted,
+                Margin = new Thickness(0, 0, 6, 0),
+                VerticalAlignment = VerticalAlignment.Center
+            });
+            hStack.Children.Add(new TextBlock
+            {
+                Text = "Settings",
+                FontSize = 12,
+                FontWeight = FontWeights.SemiBold,
+                Foreground = Brushes.White,
+                VerticalAlignment = VerticalAlignment.Center
+            });
+            hStack.Children.Add(new TextBlock
+            {
+                Text = " \u2304",
+                FontSize = 10,
+                Foreground = BrushMuted,
+                Margin = new Thickness(4, 0, 0, 0),
+                VerticalAlignment = VerticalAlignment.Center
+            });
+            header.Children.Add(hStack);
+            header.MouseLeftButtonDown += (s, e) =>
+            {
+                _isInteracting = true;
+                ToggleFlyout("settings");
+            };
+            panel.Children.Add(header);
+
+            // Menu rows
+            panel.Children.Add(CreateSettingsLink("\u2699 General", () => ToggleFlyout("settings")));
+            panel.Children.Add(CreateSettingsLink("\u2328 Hotkeys", () => ToggleFlyout("hotkeys")));
+            panel.Children.Add(CreateSettingsLink("\u2139 About Flinch", () =>
+            {
+                if (_parentIsland != null) _parentIsland.ShowAlert("info", "Flinch v0.1.0", "Built with 100% on-device local privacy");
+            }));
+
+            return panel;
+        }
+
+        private Border CreateSettingsLink(string title, Action onClick)
+        {
+            var link = new Border
+            {
+                Height = 18,
+                Margin = new Thickness(0, 1, 0, 1),
+                CornerRadius = new CornerRadius(4),
                 Background = Brushes.Transparent,
-                BorderBrush = Brushes.Transparent,
-                BorderThickness = new Thickness(0, 0, 0, 2),
-                Padding = new Thickness(14, 8, 14, 8),
-                Margin = new Thickness(0, 0, 8, 0),
                 Cursor = Cursors.Hand
             };
-            var t = new TextBlock
+            link.Child = new TextBlock
             {
-                Text = label,
-                FontSize = 13,
-                FontWeight = FontWeights.SemiBold,
-                Foreground = BrushMuted
+                Text = title,
+                FontSize = 10.5,
+                Foreground = new SolidColorBrush(Color.FromRgb(0x9C, 0xA3, 0xAF)),
+                VerticalAlignment = VerticalAlignment.Center
             };
-            b.Child = t;
-
-            b.MouseLeftButtonDown += (s, e) =>
+            link.MouseEnter += (s, e) =>
             {
-                e.Handled = true;
-                SelectTab(index);
+                link.Background = new SolidColorBrush(Color.FromArgb(0x33, 0xFF, 0xFF, 0xFF));
+                ((TextBlock)link.Child).Foreground = Brushes.White;
             };
-
-            return b;
+            link.MouseLeave += (s, e) =>
+            {
+                link.Background = Brushes.Transparent;
+                ((TextBlock)link.Child).Foreground = new SolidColorBrush(Color.FromRgb(0x9C, 0xA3, 0xAF));
+            };
+            link.MouseLeftButtonDown += (s, e) =>
+            {
+                _isInteracting = true;
+                if (onClick != null) onClick();
+            };
+            return link;
         }
 
-        private void SelectTab(int index)
+        // =====================================================================
+        // FLYOUT MANAGEMENT & VIEWS
+        // =====================================================================
+        private void ToggleFlyout(string type)
         {
-            SetTabActive(_tabBtnAutomations, index == 0);
-            SetTabActive(_tabBtnIntegrations, index == 1);
-            SetTabActive(_tabBtnInbox, index == 2);
-
-            if (index == 0)
+            if (_isFlyoutOpen && _activeFlyoutType == type)
             {
-                _tabContentHost.Content = BuildAutomationsView();
+                CloseFlyout();
+                return;
             }
-            else if (index == 1)
+
+            _activeFlyoutType = type;
+            _isFlyoutOpen = true;
+            _isInteracting = true;
+
+            UIElement view = null;
+            if (type == "gmail")
             {
-                _tabContentHost.Content = BuildIntegrationsView();
+                if (_gmailFlyoutView == null) _gmailFlyoutView = BuildGmailFlyout();
+                RefreshGmailStatusUI();
+                view = _gmailFlyoutView;
+            }
+            else if (type == "history")
+            {
+                if (_historyFlyoutView == null) _historyFlyoutView = BuildHistoryFlyout();
+                view = _historyFlyoutView;
+            }
+            else if (type == "settings")
+            {
+                if (_settingsFlyoutView == null) _settingsFlyoutView = BuildGeneralSettingsFlyout();
+                view = _settingsFlyoutView;
+            }
+            else if (type == "hotkeys")
+            {
+                if (_hotkeysFlyoutView == null) _hotkeysFlyoutView = BuildHotkeysFlyout();
+                view = _hotkeysFlyoutView;
+            }
+
+            _flyoutContent.Content = view;
+            _flyoutHost.Visibility = Visibility.Visible;
+            Height = 410;
+            UpdateWindowClip();
+        }
+
+        private void CloseFlyout()
+        {
+            _isFlyoutOpen = false;
+            _activeFlyoutType = null;
+            _flyoutHost.Visibility = Visibility.Collapsed;
+            Height = 104;
+            UpdateWindowClip();
+        }
+
+        // ---------------------------------------------------------------------
+        // Flyout 1: Google Gmail & Workspace (Read, Write, Send)
+        // ---------------------------------------------------------------------
+        private UIElement BuildGmailFlyout()
+        {
+            var root = new Grid();
+            root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); // Header
+            root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) }); // Content
+
+            // 1. Header
+            var header = new DockPanel { Margin = new Thickness(0, 0, 0, 14) };
+            var closeBtn = new Border
+            {
+                Width = 24,
+                Height = 24,
+                CornerRadius = new CornerRadius(12),
+                Background = new SolidColorBrush(Color.FromArgb(0x22, 0xFF, 0xFF, 0xFF)),
+                Cursor = Cursors.Hand
+            };
+            closeBtn.Child = new TextBlock
+            {
+                Text = "\u2715",
+                FontSize = 10.5,
+                Foreground = Brushes.White,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            closeBtn.MouseLeftButtonDown += (s, e) => CloseFlyout();
+            DockPanel.SetDock(closeBtn, Dock.Right);
+            header.Children.Add(closeBtn);
+
+            var titleStack = new StackPanel();
+            var titleRow = new StackPanel { Orientation = Orientation.Horizontal };
+            titleRow.Children.Add(new TextBlock
+            {
+                Text = "\u2709 Google Workspace & Gmail Integration",
+                FontSize = 15,
+                FontWeight = FontWeights.SemiBold,
+                Foreground = Brushes.White
+            });
+            _gmailStatusHeader = new TextBlock
+            {
+                Text = BackgroundAutomationsEngine.EmailConfig.IsConnected ? "  \u2022 Connected" : "  \u2022 Disconnected",
+                FontSize = 12,
+                FontWeight = FontWeights.Medium,
+                Foreground = BackgroundAutomationsEngine.EmailConfig.IsConnected ? BrushMint : BrushMuted,
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(8, 0, 0, 0)
+            };
+            titleRow.Children.Add(_gmailStatusHeader);
+            titleStack.Children.Add(titleRow);
+
+            titleStack.Children.Add(new TextBlock
+            {
+                Text = "Read unread emails, triage urgent tasks, draft messages, and send directly via secure SSL/TLS.",
+                FontSize = 11,
+                Foreground = BrushMuted,
+                Margin = new Thickness(0, 3, 0, 0)
+            });
+            header.Children.Add(titleStack);
+            Grid.SetRow(header, 0);
+            root.Children.Add(header);
+
+            // 2. Form & Actions Split
+            var contentGrid = new Grid();
+            contentGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1.1, GridUnitType.Star) });
+            contentGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(0.9, GridUnitType.Star) });
+
+            // Left: Credentials Form
+            var formStack = new StackPanel { Margin = new Thickness(0, 0, 16, 0) };
+
+            formStack.Children.Add(new TextBlock
+            {
+                Text = "Gmail Address:",
+                FontSize = 11,
+                FontWeight = FontWeights.SemiBold,
+                Foreground = new SolidColorBrush(Color.FromRgb(0xD1, 0xD5, 0xDB)),
+                Margin = new Thickness(0, 0, 0, 4)
+            });
+            _emailBox = new TextBox
+            {
+                Height = 28,
+                Background = new SolidColorBrush(Color.FromRgb(0x18, 0x1A, 0x22)),
+                BorderBrush = new SolidColorBrush(Color.FromRgb(0x32, 0x36, 0x46)),
+                Foreground = Brushes.White,
+                Padding = new Thickness(8, 4, 8, 4),
+                FontSize = 11.5,
+                Text = BackgroundAutomationsEngine.EmailConfig.EmailAddress ?? ""
+            };
+            formStack.Children.Add(_emailBox);
+
+            formStack.Children.Add(new TextBlock
+            {
+                Text = "Google App Password (16 chars):",
+                FontSize = 11,
+                FontWeight = FontWeights.SemiBold,
+                Foreground = new SolidColorBrush(Color.FromRgb(0xD1, 0xD5, 0xDB)),
+                Margin = new Thickness(0, 10, 0, 4)
+            });
+            _passBox = new PasswordBox
+            {
+                Height = 28,
+                Background = new SolidColorBrush(Color.FromRgb(0x18, 0x1A, 0x22)),
+                BorderBrush = new SolidColorBrush(Color.FromRgb(0x32, 0x36, 0x46)),
+                Foreground = Brushes.White,
+                Padding = new Thickness(8, 4, 8, 4),
+                FontSize = 11.5,
+                Password = BackgroundAutomationsEngine.GetEmailPassword() ?? ""
+            };
+            formStack.Children.Add(_passBox);
+
+            var helpLink = new TextBlock
+            {
+                Text = "\u2197 Generate a Google App Password (myaccount.google.com)",
+                FontSize = 10,
+                Foreground = new SolidColorBrush(Color.FromRgb(0x60, 0xA5, 0xFA)),
+                Cursor = Cursors.Hand,
+                Margin = new Thickness(0, 6, 0, 12)
+            };
+            helpLink.MouseLeftButtonDown += (s, e) =>
+            {
+                try { Process.Start(new ProcessStartInfo("https://myaccount.google.com/apppasswords") { UseShellExecute = true }); } catch { }
+            };
+            formStack.Children.Add(helpLink);
+
+            // Buttons: Connect & Save | Disconnect
+            var btnRow = new StackPanel { Orientation = Orientation.Horizontal };
+
+            var connectBtn = CreateActionButton("\u2713 Connect & Save", BrushMint, Colors.Black, (s, e) =>
+            {
+                ConnectGmailAccount();
+            });
+            btnRow.Children.Add(connectBtn);
+
+            var testBtn = CreateActionButton("\u26A1 Send Test Email", new SolidColorBrush(Color.FromRgb(0x38, 0xBD, 0xF8)), Colors.Black, (s, e) =>
+            {
+                SendTestEmail();
+            });
+            testBtn.Margin = new Thickness(8, 0, 0, 0);
+            btnRow.Children.Add(testBtn);
+
+            var disconnectBtn = CreateActionButton("\u2715 Disconnect", new SolidColorBrush(Color.FromRgb(0x32, 0x36, 0x46)), Color.FromRgb(0xD1, 0xD5, 0xDB), (s, e) =>
+            {
+                DisconnectGmailAccount();
+            });
+            disconnectBtn.Margin = new Thickness(8, 0, 0, 0);
+            btnRow.Children.Add(disconnectBtn);
+
+            formStack.Children.Add(btnRow);
+
+            _emailFeedbackText = new TextBlock
+            {
+                FontSize = 11,
+                Foreground = BrushMuted,
+                Margin = new Thickness(0, 8, 0, 0),
+                TextWrapping = TextWrapping.Wrap
+            };
+            formStack.Children.Add(_emailFeedbackText);
+
+            Grid.SetColumn(formStack, 0);
+            contentGrid.Children.Add(formStack);
+
+            // Right: Unread Inbox Cards Preview
+            var inboxStack = new StackPanel { Margin = new Thickness(12, 0, 0, 0) };
+            var inboxHeader = new DockPanel { Margin = new Thickness(0, 0, 0, 6) };
+            inboxHeader.Children.Add(new TextBlock
+            {
+                Text = "Recent Unread Messages",
+                FontSize = 11,
+                FontWeight = FontWeights.SemiBold,
+                Foreground = new SolidColorBrush(Color.FromRgb(0xD1, 0xD5, 0xDB))
+            });
+
+            var checkNowBtn = new TextBlock
+            {
+                Text = "\u21BB Refresh",
+                FontSize = 10.5,
+                Foreground = BrushMint,
+                Cursor = Cursors.Hand,
+                HorizontalAlignment = HorizontalAlignment.Right
+            };
+            checkNowBtn.MouseLeftButtonDown += (s, e) => FetchUnreadInboxMessages();
+            DockPanel.SetDock(checkNowBtn, Dock.Right);
+            inboxHeader.Children.Add(checkNowBtn);
+            inboxStack.Children.Add(inboxHeader);
+
+            var scroll = new ScrollViewer { Height = 175, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+            _inboxCardsPanel = new StackPanel();
+            scroll.Content = _inboxCardsPanel;
+            inboxStack.Children.Add(scroll);
+
+            Grid.SetColumn(inboxStack, 1);
+            contentGrid.Children.Add(inboxStack);
+
+            Grid.SetRow(contentGrid, 1);
+            root.Children.Add(contentGrid);
+
+            return root;
+        }
+
+        private Border CreateActionButton(string label, Brush bg, Color fg, RoutedEventHandler onClick)
+        {
+            var btn = new Border
+            {
+                Height = 28,
+                Padding = new Thickness(12, 0, 12, 0),
+                CornerRadius = new CornerRadius(6),
+                Background = bg,
+                Cursor = Cursors.Hand
+            };
+            btn.Child = new TextBlock
+            {
+                Text = label,
+                FontSize = 11,
+                FontWeight = FontWeights.SemiBold,
+                Foreground = new SolidColorBrush(fg),
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            btn.MouseEnter += (s, e) => btn.Opacity = 0.88;
+            btn.MouseLeave += (s, e) => btn.Opacity = 1.0;
+            if (onClick != null) btn.MouseLeftButtonDown += (s, e) => onClick(s, e);
+            return btn;
+        }
+
+        private void ConnectGmailAccount()
+        {
+            string email = (_emailBox.Text ?? "").Trim();
+            string pass = _passBox.Password ?? "";
+
+            if (string.IsNullOrWhiteSpace(email) || string.IsNullOrWhiteSpace(pass))
+            {
+                _emailFeedbackText.Foreground = BrushOrange;
+                _emailFeedbackText.Text = "Please enter both your Gmail address and 16-character App Password.";
+                return;
+            }
+
+            _emailFeedbackText.Foreground = BrushMuted;
+            _emailFeedbackText.Text = "Verifying IMAP (Port 993) & SMTP (Port 587)...";
+
+            Task.Run(() =>
+            {
+                int count;
+                string err;
+                bool ok = DirectImapClient.TestConnection("imap.gmail.com", 993, true, email, pass, out count, out err);
+
+                Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    if (ok)
+                    {
+                        BackgroundAutomationsEngine.EmailConfig.EmailAddress = email;
+                        BackgroundAutomationsEngine.EmailConfig.Server = "imap.gmail.com";
+                        BackgroundAutomationsEngine.EmailConfig.Port = 993;
+                        BackgroundAutomationsEngine.EmailConfig.SmtpServer = "smtp.gmail.com";
+                        BackgroundAutomationsEngine.EmailConfig.SmtpPort = 587;
+                        BackgroundAutomationsEngine.EmailConfig.IsConnected = true;
+                        BackgroundAutomationsEngine.SaveEmailPassword(pass);
+
+                        _emailFeedbackText.Foreground = BrushMint;
+                        _emailFeedbackText.Text = string.Format("Connected successfully! Found {0} unread email(s).", count);
+
+                        RefreshGmailStatusUI();
+                        FetchUnreadInboxMessages();
+                    }
+                    else
+                    {
+                        _emailFeedbackText.Foreground = BrushOrange;
+                        _emailFeedbackText.Text = "Connection failed: " + err;
+                    }
+                }));
+            });
+        }
+
+        private void DisconnectGmailAccount()
+        {
+            BackgroundAutomationsEngine.EmailConfig.IsConnected = false;
+            BackgroundAutomationsEngine.SaveEmailPassword("");
+            _passBox.Password = "";
+            _emailFeedbackText.Foreground = BrushMuted;
+            _emailFeedbackText.Text = "Gmail account disconnected.";
+            RefreshGmailStatusUI();
+            if (_inboxCardsPanel != null) _inboxCardsPanel.Children.Clear();
+        }
+
+        private void SendTestEmail()
+        {
+            string email = (_emailBox.Text ?? "").Trim();
+            if (string.IsNullOrWhiteSpace(email) || !BackgroundAutomationsEngine.EmailConfig.IsConnected)
+            {
+                _emailFeedbackText.Foreground = BrushOrange;
+                _emailFeedbackText.Text = "Connect your account before sending a test email.";
+                return;
+            }
+
+            _emailFeedbackText.Foreground = BrushMuted;
+            _emailFeedbackText.Text = "Sending test email via Gmail SMTP...";
+
+            Task.Run(() =>
+            {
+                string err;
+                bool ok = DirectSmtpClient.SendGmailEmail(
+                    email,
+                    "Flinch Assistant Test Verification",
+                    "Success! Your Flinch AI Assistant is connected to Google Gmail. You can now read, draft, and send emails with your voice.",
+                    out err);
+
+                Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    if (ok)
+                    {
+                        _emailFeedbackText.Foreground = BrushMint;
+                        _emailFeedbackText.Text = "Test email sent successfully to " + email;
+                        if (_parentIsland != null) _parentIsland.ShowAlert("email", "Test Email Sent", email);
+                    }
+                    else
+                    {
+                        _emailFeedbackText.Foreground = BrushOrange;
+                        _emailFeedbackText.Text = "Failed to send test email: " + err;
+                    }
+                }));
+            });
+        }
+
+        private void FetchUnreadInboxMessages()
+        {
+            if (!BackgroundAutomationsEngine.EmailConfig.IsConnected) return;
+
+            string email = BackgroundAutomationsEngine.EmailConfig.EmailAddress;
+            string pass = BackgroundAutomationsEngine.GetEmailPassword();
+
+            Task.Run(() =>
+            {
+                List<EmailMessageInfo> msgs;
+                string err;
+                bool ok = DirectImapClient.FetchUnreadMessages("imap.gmail.com", 993, true, email, pass, 8, out msgs, out err);
+
+                Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    if (_inboxCardsPanel == null) return;
+                    _inboxCardsPanel.Children.Clear();
+
+                    if (!ok || msgs == null || msgs.Count == 0)
+                    {
+                        _inboxCardsPanel.Children.Add(new TextBlock
+                        {
+                            Text = ok ? "No unread emails in inbox." : ("Could not fetch: " + err),
+                            FontSize = 10.5,
+                            Foreground = BrushMuted,
+                            Margin = new Thickness(4)
+                        });
+                        return;
+                    }
+
+                    foreach (var m in msgs)
+                    {
+                        var card = new Border
+                        {
+                            Margin = new Thickness(0, 0, 0, 5),
+                            Padding = new Thickness(8, 6, 8, 6),
+                            Background = new SolidColorBrush(Color.FromRgb(0x18, 0x1A, 0x22)),
+                            BorderBrush = new SolidColorBrush(Color.FromRgb(0x2E, 0x32, 0x40)),
+                            BorderThickness = new Thickness(1),
+                            CornerRadius = new CornerRadius(6)
+                        };
+
+                        var cardStack = new StackPanel();
+                        var topRow = new DockPanel();
+
+                        var fromTb = new TextBlock
+                        {
+                            Text = m.From ?? "Unknown",
+                            FontSize = 11,
+                            FontWeight = FontWeights.SemiBold,
+                            Foreground = Brushes.White
+                        };
+                        DockPanel.SetDock(fromTb, Dock.Left);
+                        topRow.Children.Add(fromTb);
+
+                        if (m.IsUrgent)
+                        {
+                            var urgBadge = new Border
+                            {
+                                Background = new SolidColorBrush(Color.FromArgb(0x33, 0xFF, 0x44, 0x44)),
+                                CornerRadius = new CornerRadius(3),
+                                Padding = new Thickness(4, 1, 4, 1),
+                                Margin = new Thickness(6, 0, 0, 0)
+                            };
+                            urgBadge.Child = new TextBlock { Text = "URGENT", FontSize = 8.5, FontWeight = FontWeights.Bold, Foreground = new SolidColorBrush(Color.FromRgb(0xFF, 0x6B, 0x6B)) };
+                            DockPanel.SetDock(urgBadge, Dock.Right);
+                            topRow.Children.Add(urgBadge);
+                        }
+
+                        cardStack.Children.Add(topRow);
+
+                        cardStack.Children.Add(new TextBlock
+                        {
+                            Text = m.Subject ?? "(No Subject)",
+                            FontSize = 10.5,
+                            Foreground = new SolidColorBrush(Color.FromRgb(0x9C, 0xA3, 0xAF)),
+                            TextTrimming = TextTrimming.CharacterEllipsis,
+                            Margin = new Thickness(0, 2, 0, 0)
+                        });
+
+                        card.Child = cardStack;
+                        _inboxCardsPanel.Children.Add(card);
+                    }
+                }));
+            });
+        }
+
+        private void RefreshGmailStatusUI()
+        {
+            bool isConn = BackgroundAutomationsEngine.EmailConfig.IsConnected;
+            if (_gmailStatusDot != null)
+            {
+                _gmailStatusDot.Fill = isConn ? BrushMint : new SolidColorBrush(Color.FromRgb(0x4B, 0x55, 0x63));
+            }
+            if (_gmailStatusHeader != null)
+            {
+                _gmailStatusHeader.Text = isConn ? ("  \u2022 Connected (" + BackgroundAutomationsEngine.EmailConfig.EmailAddress + ")") : "  \u2022 Disconnected";
+                _gmailStatusHeader.Foreground = isConn ? BrushMint : BrushMuted;
+            }
+        }
+
+        // ---------------------------------------------------------------------
+        // Flyout 2: Chat History
+        // ---------------------------------------------------------------------
+        private UIElement BuildHistoryFlyout()
+        {
+            var root = new Grid();
+            root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+
+            var header = new DockPanel { Margin = new Thickness(0, 0, 0, 10) };
+            var closeBtn = new Border
+            {
+                Width = 24,
+                Height = 24,
+                CornerRadius = new CornerRadius(12),
+                Background = new SolidColorBrush(Color.FromArgb(0x22, 0xFF, 0xFF, 0xFF)),
+                Cursor = Cursors.Hand
+            };
+            closeBtn.Child = new TextBlock { Text = "\u2715", FontSize = 10.5, Foreground = Brushes.White, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+            closeBtn.MouseLeftButtonDown += (s, e) => CloseFlyout();
+            DockPanel.SetDock(closeBtn, Dock.Right);
+            header.Children.Add(closeBtn);
+
+            header.Children.Add(new TextBlock
+            {
+                Text = "\U0001F552 Full Chat & Conversation History",
+                FontSize = 15,
+                FontWeight = FontWeights.SemiBold,
+                Foreground = Brushes.White
+            });
+            Grid.SetRow(header, 0);
+            root.Children.Add(header);
+
+            var scroll = new ScrollViewer { VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+            var listStack = new StackPanel();
+
+            var all = FlinchSkills.LoadRecentHistory();
+            if (all.Count == 0)
+            {
+                listStack.Children.Add(new TextBlock
+                {
+                    Text = "No previous conversations recorded yet. Ask Flinch anything by voice!",
+                    FontSize = 11,
+                    Foreground = BrushMuted,
+                    Margin = new Thickness(4)
+                });
             }
             else
             {
-                _tabContentHost.Content = BuildInboxView();
+                for (int i = all.Count - 1; i >= 0; i--)
+                {
+                    var turn = all[i];
+                    var card = new Border
+                    {
+                        Margin = new Thickness(0, 0, 0, 6),
+                        Padding = new Thickness(10, 8, 10, 8),
+                        Background = new SolidColorBrush(Color.FromRgb(0x18, 0x1A, 0x22)),
+                        BorderBrush = new SolidColorBrush(Color.FromRgb(0x2E, 0x32, 0x40)),
+                        BorderThickness = new Thickness(1),
+                        CornerRadius = new CornerRadius(6),
+                        Cursor = Cursors.Hand
+                    };
+                    var cardStack = new StackPanel();
+
+                    var top = new DockPanel();
+                    var time = new TextBlock
+                    {
+                        Text = FormatRelativeTime(turn.t),
+                        FontSize = 9.5,
+                        Foreground = BrushMuted
+                    };
+                    DockPanel.SetDock(time, Dock.Right);
+                    top.Children.Add(time);
+
+                    var q = new TextBlock
+                    {
+                        Text = "\U0001F4AC " + turn.u,
+                        FontSize = 11.5,
+                        FontWeight = FontWeights.SemiBold,
+                        Foreground = Brushes.White
+                    };
+                    top.Children.Add(q);
+                    cardStack.Children.Add(top);
+
+                    if (!string.IsNullOrWhiteSpace(turn.a))
+                    {
+                        cardStack.Children.Add(new TextBlock
+                        {
+                            Text = turn.a,
+                            FontSize = 10.5,
+                            Foreground = new SolidColorBrush(Color.FromRgb(0x9C, 0xA3, 0xAF)),
+                            TextWrapping = TextWrapping.Wrap,
+                            Margin = new Thickness(0, 4, 0, 0)
+                        });
+                    }
+
+                    card.Child = cardStack;
+                    card.MouseEnter += (s, e) => card.BorderBrush = BrushMint;
+                    card.MouseLeave += (s, e) => card.BorderBrush = new SolidColorBrush(Color.FromRgb(0x2E, 0x32, 0x40));
+                    card.MouseLeftButtonDown += (s, e) =>
+                    {
+                        if (_parentIsland != null && !string.IsNullOrWhiteSpace(turn.a))
+                        {
+                            _parentIsland.SpeakAnswer(turn.a);
+                        }
+                    };
+
+                    listStack.Children.Add(card);
+                }
             }
+
+            scroll.Content = listStack;
+            Grid.SetRow(scroll, 1);
+            root.Children.Add(scroll);
+
+            return root;
         }
 
-        private void SetTabActive(Border tabBtn, bool isActive)
+        // ---------------------------------------------------------------------
+        // Flyout 3: Hotkeys Reference
+        // ---------------------------------------------------------------------
+        private UIElement BuildHotkeysFlyout()
         {
-            tabBtn.BorderBrush = isActive ? BrushMint : Brushes.Transparent;
-            var t = tabBtn.Child as TextBlock;
-            if (t != null)
+            var root = new StackPanel();
+            var header = new DockPanel { Margin = new Thickness(0, 0, 0, 12) };
+            var closeBtn = new Border
             {
-                t.Foreground = isActive ? BrushCream : BrushMuted;
+                Width = 24,
+                Height = 24,
+                CornerRadius = new CornerRadius(12),
+                Background = new SolidColorBrush(Color.FromArgb(0x22, 0xFF, 0xFF, 0xFF)),
+                Cursor = Cursors.Hand
+            };
+            closeBtn.Child = new TextBlock { Text = "\u2715", FontSize = 10.5, Foreground = Brushes.White, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+            closeBtn.MouseLeftButtonDown += (s, e) => CloseFlyout();
+            DockPanel.SetDock(closeBtn, Dock.Right);
+            header.Children.Add(closeBtn);
+
+            header.Children.Add(new TextBlock { Text = "\u2328 Keyboard Shortcuts & Hotkeys", FontSize = 15, FontWeight = FontWeights.SemiBold, Foreground = Brushes.White });
+            root.Children.Add(header);
+
+            var table = new Grid { Margin = new Thickness(0, 4, 0, 0) };
+            table.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(140) });
+            table.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+
+            string[,] keys = new string[,]
+            {
+                { "Alt + V", "Toggle Voice Listening / Instant Barge-in" },
+                { "Ctrl + Alt + X", "Emergency Stop: Cancel active speech, downloads, tasks & timers" },
+                { "Alt + S", "Capture Foreground Window context for visual questions" },
+                { "Hover Notch", "Reveal and interact with Flinch Hub" },
+                { "Escape", "Close Flinch Hub or dismiss active flyout" },
+                { "Voice Command", "\"Check my email\", \"Draft email to alex saying hello\", \"Send that email\"" }
+            };
+
+            for (int i = 0; i < keys.GetLength(0); i++)
+            {
+                table.RowDefinitions.Add(new RowDefinition { Height = new GridLength(28) });
+
+                var kBorder = new Border
+                {
+                    Background = new SolidColorBrush(Color.FromRgb(0x1F, 0x22, 0x2D)),
+                    BorderBrush = new SolidColorBrush(Color.FromRgb(0x35, 0x3A, 0x4B)),
+                    BorderThickness = new Thickness(1),
+                    CornerRadius = new CornerRadius(4),
+                    Padding = new Thickness(6, 2, 6, 2),
+                    HorizontalAlignment = HorizontalAlignment.Left,
+                    VerticalAlignment = VerticalAlignment.Center
+                };
+                kBorder.Child = new TextBlock { Text = keys[i, 0], FontSize = 10.5, FontWeight = FontWeights.SemiBold, Foreground = BrushMint };
+                Grid.SetRow(kBorder, i);
+                Grid.SetColumn(kBorder, 0);
+                table.Children.Add(kBorder);
+
+                var dText = new TextBlock
+                {
+                    Text = keys[i, 1],
+                    FontSize = 11,
+                    Foreground = new SolidColorBrush(Color.FromRgb(0xD1, 0xD5, 0xDB)),
+                    VerticalAlignment = VerticalAlignment.Center
+                };
+                Grid.SetRow(dText, i);
+                Grid.SetColumn(dText, 1);
+                table.Children.Add(dText);
             }
+
+            root.Children.Add(table);
+            return root;
         }
 
-        // =====================================================================
-        // Tab 1: Background Automations ("Hard Work")
-        // =====================================================================
-        private UIElement BuildAutomationsView()
+        // ---------------------------------------------------------------------
+        // Flyout 4: General Settings
+        // ---------------------------------------------------------------------
+        private UIElement BuildGeneralSettingsFlyout()
         {
-            var scroll = new ScrollViewer
+            var root = new StackPanel();
+            var header = new DockPanel { Margin = new Thickness(0, 0, 0, 12) };
+            var closeBtn = new Border
             {
-                VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-                HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled
+                Width = 24,
+                Height = 24,
+                CornerRadius = new CornerRadius(12),
+                Background = new SolidColorBrush(Color.FromArgb(0x22, 0xFF, 0xFF, 0xFF)),
+                Cursor = Cursors.Hand
             };
+            closeBtn.Child = new TextBlock { Text = "\u2715", FontSize = 10.5, Foreground = Brushes.White, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+            closeBtn.MouseLeftButtonDown += (s, e) => CloseFlyout();
+            DockPanel.SetDock(closeBtn, Dock.Right);
+            header.Children.Add(closeBtn);
 
-            var stack = new StackPanel { Margin = new Thickness(2, 4, 6, 8) };
+            header.Children.Add(new TextBlock { Text = "\u2699 General Settings & Automations", FontSize = 15, FontWeight = FontWeights.SemiBold, Foreground = Brushes.White });
+            root.Children.Add(header);
 
-            // Card 1: Email Guardian
-            _emailStatusBadge = new TextBlock
-            {
-                Text = BackgroundAutomationsEngine.EmailStatusText,
-                FontSize = 11,
-                Foreground = BrushMint,
-                FontWeight = FontWeights.SemiBold
-            };
-            var emailCard = CreateAutomationCard(
-                "✉️ Email Guardian & Smart Triage",
-                "Silently monitors unread emails in the background using direct local SSL IMAP (zero 3rd-party accounts). Identifies urgent deadlines and surfaces instant alerts on the Dynamic Island.",
-                _emailStatusBadge,
+            // Automations toggles
+            root.Children.Add(CreateToggleCard(
+                "Email Guardian",
+                "Monitors Gmail in background every 15 min for urgent action items and security alerts.",
                 BackgroundAutomationsEngine.Config.EmailGuardianEnabled,
                 val =>
                 {
                     BackgroundAutomationsEngine.Config.EmailGuardianEnabled = val;
                     BackgroundAutomationsEngine.SaveConfigurations();
-                },
-                "⚡ Check Now",
-                () =>
-                {
-                    _emailStatusBadge.Text = "Running manual check...";
-                    BackgroundAutomationsEngine.RunEmailTriageAsync();
-                }
-            );
+                }));
 
-            // Card 2: Downloads & Desktop Organizer
-            _downloadsStatusBadge = new TextBlock
-            {
-                Text = BackgroundAutomationsEngine.DownloadsStatusText,
-                FontSize = 11,
-                Foreground = BrushMint,
-                FontWeight = FontWeights.SemiBold
-            };
-            var downloadsCard = CreateAutomationCard(
-                "📁 Smart Downloads & Desktop Organizer",
-                "Automatically categorizes loose files in Downloads into subfolders (Documents, Installers, Archives, Images) to keep your PC organized without lifting a finger.",
-                _downloadsStatusBadge,
+            root.Children.Add(CreateToggleCard(
+                "Downloads Organizer",
+                "Automatically clusters incoming downloads into clean category folders.",
                 BackgroundAutomationsEngine.Config.DownloadsOrganizerEnabled,
                 val =>
                 {
                     BackgroundAutomationsEngine.Config.DownloadsOrganizerEnabled = val;
                     BackgroundAutomationsEngine.SaveConfigurations();
-                },
-                "⚡ Organize Now",
-                () =>
-                {
-                    _downloadsStatusBadge.Text = "Scanning Downloads...";
-                    BackgroundAutomationsEngine.RunDownloadsOrganizerAsync();
-                }
-            );
+                }));
 
-            // Card 3: Morning Executive Briefing
-            var briefingBadge = new TextBlock
-            {
-                Text = "Ready • Scheduled 9:00 AM",
-                FontSize = 11,
-                Foreground = BrushMuted,
-                FontWeight = FontWeights.SemiBold
-            };
-            var briefingCard = CreateAutomationCard(
-                "🌅 Morning Executive Briefing",
-                "Synthesizes unread emails, calendar schedule, and system health into a snappy spoken voice summary directly on the pill when you start work.",
-                briefingBadge,
+            root.Children.Add(CreateToggleCard(
+                "Daily Morning Briefing",
+                "Speaks weather, calendar events, and inbox highlights upon first morning wake.",
                 BackgroundAutomationsEngine.Config.DailyBriefingEnabled,
                 val =>
                 {
                     BackgroundAutomationsEngine.Config.DailyBriefingEnabled = val;
                     BackgroundAutomationsEngine.SaveConfigurations();
-                },
-                "⚡ Run Briefing",
-                () =>
-                {
-                    string summary = BackgroundAutomationsEngine.GetSpokenEmailSummary();
-                    if (_parentIsland != null)
-                    {
-                        _parentIsland.SpeakAnswer(summary);
-                    }
-                }
-            );
+                }));
 
-            stack.Children.Add(emailCard);
-            stack.Children.Add(downloadsCard);
-            stack.Children.Add(briefingCard);
-
-            scroll.Content = stack;
-            return scroll;
+            return root;
         }
 
-        private Border CreateAutomationCard(string title, string description, TextBlock statusBadge, bool isEnabled, Action<bool> onToggle, string actionBtnText, Action onAction)
+        private Border CreateToggleCard(string title, string subtitle, bool initial, Action<bool> onToggle)
         {
             var card = new Border
             {
-                Background = BrushCardBg,
-                BorderBrush = BrushBorder,
+                Margin = new Thickness(0, 0, 0, 8),
+                Padding = new Thickness(12, 10, 12, 10),
+                Background = new SolidColorBrush(Color.FromRgb(0x18, 0x1A, 0x22)),
+                BorderBrush = new SolidColorBrush(Color.FromRgb(0x2E, 0x32, 0x40)),
                 BorderThickness = new Thickness(1),
-                CornerRadius = new CornerRadius(12),
-                Padding = new Thickness(16),
-                Margin = new Thickness(0, 0, 0, 12)
+                CornerRadius = new CornerRadius(6)
             };
 
-            var g = new Grid();
-            g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(150) });
-
-            var infoStack = new StackPanel();
-
-            var titleRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 4) };
-            var titleText = new TextBlock
+            var dock = new DockPanel();
+            var check = new CheckBox
             {
-                Text = title,
-                FontSize = 14,
-                FontWeight = FontWeights.Bold,
-                Foreground = BrushCream,
-                Margin = new Thickness(0, 0, 10, 0)
-            };
-            titleRow.Children.Add(titleText);
-            titleRow.Children.Add(statusBadge);
-            infoStack.Children.Add(titleRow);
-
-            var descText = new TextBlock
-            {
-                Text = description,
-                FontSize = 12,
-                Foreground = BrushMuted,
-                TextWrapping = TextWrapping.Wrap,
-                LineHeight = 17
-            };
-            infoStack.Children.Add(descText);
-
-            Grid.SetColumn(infoStack, 0);
-            g.Children.Add(infoStack);
-
-            // Controls Column (Toggle + Action Button)
-            var ctrlStack = new StackPanel
-            {
-                HorizontalAlignment = HorizontalAlignment.Right,
-                VerticalAlignment = VerticalAlignment.Center
-            };
-
-            var toggleRow = new StackPanel
-            {
-                Orientation = Orientation.Horizontal,
-                HorizontalAlignment = HorizontalAlignment.Right,
-                Margin = new Thickness(0, 0, 0, 8)
-            };
-
-            var toggleLabel = new TextBlock
-            {
-                Text = isEnabled ? "Active" : "Disabled",
-                FontSize = 11,
-                Foreground = isEnabled ? BrushMint : BrushMuted,
-                FontWeight = FontWeights.SemiBold,
+                IsChecked = initial,
                 VerticalAlignment = VerticalAlignment.Center,
-                Margin = new Thickness(0, 0, 8, 0)
+                Margin = new Thickness(10, 0, 0, 0)
             };
+            check.Checked += (s, e) => { if (onToggle != null) onToggle(true); };
+            check.Unchecked += (s, e) => { if (onToggle != null) onToggle(false); };
+            DockPanel.SetDock(check, Dock.Right);
+            dock.Children.Add(check);
 
-            var toggleTrack = new Border
-            {
-                Width = 38,
-                Height = 20,
-                CornerRadius = new CornerRadius(10),
-                Background = isEnabled ? BrushMint : new SolidColorBrush(Color.FromRgb(0x35, 0x39, 0x48)),
-                Cursor = Cursors.Hand
-            };
-            var thumb = new Ellipse
-            {
-                Width = 14,
-                Height = 14,
-                Fill = BrushCream,
-                HorizontalAlignment = isEnabled ? HorizontalAlignment.Right : HorizontalAlignment.Left,
-                Margin = new Thickness(3)
-            };
-            toggleTrack.Child = thumb;
+            var stack = new StackPanel();
+            stack.Children.Add(new TextBlock { Text = title, FontSize = 12, FontWeight = FontWeights.SemiBold, Foreground = Brushes.White });
+            stack.Children.Add(new TextBlock { Text = subtitle, FontSize = 10.5, Foreground = BrushMuted, Margin = new Thickness(0, 2, 0, 0) });
+            dock.Children.Add(stack);
 
-            bool currentVal = isEnabled;
-            toggleTrack.MouseLeftButtonDown += (s, e) =>
-            {
-                e.Handled = true;
-                currentVal = !currentVal;
-                toggleTrack.Background = currentVal ? BrushMint : new SolidColorBrush(Color.FromRgb(0x35, 0x39, 0x48));
-                thumb.HorizontalAlignment = currentVal ? HorizontalAlignment.Right : HorizontalAlignment.Left;
-                toggleLabel.Text = currentVal ? "Active" : "Disabled";
-                toggleLabel.Foreground = currentVal ? BrushMint : BrushMuted;
-                onToggle(currentVal);
-            };
-
-            toggleRow.Children.Add(toggleLabel);
-            toggleRow.Children.Add(toggleTrack);
-            ctrlStack.Children.Add(toggleRow);
-
-            var actionBtn = new Border
-            {
-                Background = new SolidColorBrush(Color.FromArgb(0x28, 0x3C, 0xC8, 0xFF)),
-                BorderBrush = new SolidColorBrush(Color.FromRgb(0x3C, 0xC8, 0xFF)),
-                BorderThickness = new Thickness(1),
-                CornerRadius = new CornerRadius(6),
-                Padding = new Thickness(12, 5, 12, 5),
-                Cursor = Cursors.Hand,
-                HorizontalAlignment = HorizontalAlignment.Right
-            };
-            var actionBtnTextEl = new TextBlock
-            {
-                Text = actionBtnText,
-                FontSize = 11,
-                FontWeight = FontWeights.SemiBold,
-                Foreground = new SolidColorBrush(Color.FromRgb(0x3C, 0xC8, 0xFF))
-            };
-            actionBtn.Child = actionBtnTextEl;
-            actionBtn.MouseLeftButtonDown += (s, e) =>
-            {
-                e.Handled = true;
-                onAction();
-            };
-
-            ctrlStack.Children.Add(actionBtn);
-            Grid.SetColumn(ctrlStack, 1);
-            g.Children.Add(ctrlStack);
-
-            card.Child = g;
+            card.Child = dock;
             return card;
-        }
-
-        // =====================================================================
-        // Tab 2: App Integrations (Direct Local Email Setup)
-        // =====================================================================
-        private UIElement BuildIntegrationsView()
-        {
-            var scroll = new ScrollViewer { VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
-            var stack = new StackPanel { Margin = new Thickness(2, 4, 6, 8) };
-
-            var emailCard = new Border
-            {
-                Background = BrushCardBg,
-                BorderBrush = BrushBorder,
-                BorderThickness = new Thickness(1),
-                CornerRadius = new CornerRadius(12),
-                Padding = new Thickness(18),
-                Margin = new Thickness(0, 0, 0, 14)
-            };
-
-            var cardStack = new StackPanel();
-
-            var hText = new TextBlock
-            {
-                Text = "Direct Email Integration (No Account Creation Required)",
-                FontSize = 14,
-                FontWeight = FontWeights.Bold,
-                Foreground = BrushCream,
-                Margin = new Thickness(0, 0, 0, 4)
-            };
-            var subText = new TextBlock
-            {
-                Text = "Connects directly from your PC to your mail server via standard SSL IMAP (Port 993). Zero cloud middleman services. Your credentials are encrypted locally with Windows DPAPI.",
-                FontSize = 12,
-                Foreground = BrushMuted,
-                TextWrapping = TextWrapping.Wrap,
-                Margin = new Thickness(0, 0, 0, 16),
-                LineHeight = 17
-            };
-            cardStack.Children.Add(hText);
-            cardStack.Children.Add(subText);
-
-            // Provider Dropdown
-            var pRow = new StackPanel { Margin = new Thickness(0, 0, 0, 10) };
-            pRow.Children.Add(new TextBlock { Text = "Email Provider", FontSize = 12, Foreground = BrushMuted, Margin = new Thickness(0, 0, 0, 4) });
-            _providerCombo = new ComboBox
-            {
-                Height = 32,
-                Background = BrushBgDark,
-                Foreground = BrushCream,
-                BorderBrush = BrushBorder
-            };
-            _providerCombo.Items.Add("Gmail (imap.gmail.com:993)");
-            _providerCombo.Items.Add("Outlook / Office 365 (outlook.office365.com:993)");
-            _providerCombo.Items.Add("Yahoo Mail (imap.mail.yahoo.com:993)");
-            _providerCombo.Items.Add("Custom IMAP Server");
-            _providerCombo.SelectedIndex = BackgroundAutomationsEngine.EmailConfig.Provider == "Outlook" ? 1 :
-                                           BackgroundAutomationsEngine.EmailConfig.Provider == "Yahoo" ? 2 :
-                                           BackgroundAutomationsEngine.EmailConfig.Provider == "Custom" ? 3 : 0;
-
-            _providerCombo.SelectionChanged += (s, e) =>
-            {
-                if (_providerCombo.SelectedIndex == 0)
-                {
-                    _serverBox.Text = "imap.gmail.com";
-                    _portBox.Text = "993";
-                }
-                else if (_providerCombo.SelectedIndex == 1)
-                {
-                    _serverBox.Text = "outlook.office365.com";
-                    _portBox.Text = "993";
-                }
-                else if (_providerCombo.SelectedIndex == 2)
-                {
-                    _serverBox.Text = "imap.mail.yahoo.com";
-                    _portBox.Text = "993";
-                }
-            };
-            pRow.Children.Add(_providerCombo);
-            cardStack.Children.Add(pRow);
-
-            // Email Address
-            var eRow = new StackPanel { Margin = new Thickness(0, 0, 0, 10) };
-            eRow.Children.Add(new TextBlock { Text = "Email Address", FontSize = 12, Foreground = BrushMuted, Margin = new Thickness(0, 0, 0, 4) });
-            _emailBox = new TextBox
-            {
-                Height = 32,
-                Background = BrushBgDark,
-                Foreground = BrushCream,
-                BorderBrush = BrushBorder,
-                Padding = new Thickness(8, 4, 8, 4),
-                Text = BackgroundAutomationsEngine.EmailConfig.EmailAddress ?? ""
-            };
-            eRow.Children.Add(_emailBox);
-            cardStack.Children.Add(eRow);
-
-            // App Password
-            var pwRow = new StackPanel { Margin = new Thickness(0, 0, 0, 10) };
-            var pwHeader = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 4) };
-            pwHeader.Children.Add(new TextBlock { Text = "App Password", FontSize = 12, Foreground = BrushMuted });
-            pwHeader.Children.Add(new TextBlock
-            {
-                Text = " (Use an App Password from your Google/Microsoft account)",
-                FontSize = 11,
-                Foreground = BrushOrange
-            });
-            pwRow.Children.Add(pwHeader);
-            _passBox = new PasswordBox
-            {
-                Height = 32,
-                Background = BrushBgDark,
-                Foreground = BrushCream,
-                BorderBrush = BrushBorder,
-                Padding = new Thickness(8, 4, 8, 4),
-                Password = BackgroundAutomationsEngine.GetEmailPassword()
-            };
-            pwRow.Children.Add(_passBox);
-            cardStack.Children.Add(pwRow);
-
-            // Server & Port Row
-            var spGrid = new Grid { Margin = new Thickness(0, 0, 0, 16) };
-            spGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            spGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(12) });
-            spGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(100) });
-
-            var sStack = new StackPanel();
-            sStack.Children.Add(new TextBlock { Text = "IMAP Server", FontSize = 12, Foreground = BrushMuted, Margin = new Thickness(0, 0, 0, 4) });
-            _serverBox = new TextBox
-            {
-                Height = 32,
-                Background = BrushBgDark,
-                Foreground = BrushCream,
-                BorderBrush = BrushBorder,
-                Padding = new Thickness(8, 4, 8, 4),
-                Text = BackgroundAutomationsEngine.EmailConfig.Server ?? "imap.gmail.com"
-            };
-            sStack.Children.Add(_serverBox);
-            Grid.SetColumn(sStack, 0);
-            spGrid.Children.Add(sStack);
-
-            var pStack = new StackPanel();
-            pStack.Children.Add(new TextBlock { Text = "Port (SSL)", FontSize = 12, Foreground = BrushMuted, Margin = new Thickness(0, 0, 0, 4) });
-            _portBox = new TextBox
-            {
-                Height = 32,
-                Background = BrushBgDark,
-                Foreground = BrushCream,
-                BorderBrush = BrushBorder,
-                Padding = new Thickness(8, 4, 8, 4),
-                Text = BackgroundAutomationsEngine.EmailConfig.Port > 0 ? BackgroundAutomationsEngine.EmailConfig.Port.ToString() : "993"
-            };
-            pStack.Children.Add(_portBox);
-            Grid.SetColumn(pStack, 2);
-            spGrid.Children.Add(pStack);
-
-            cardStack.Children.Add(spGrid);
-
-            // Feedback Text
-            _emailFeedbackText = new TextBlock
-            {
-                FontSize = 12,
-                Foreground = BrushMint,
-                FontWeight = FontWeights.SemiBold,
-                Margin = new Thickness(0, 0, 0, 12),
-                TextWrapping = TextWrapping.Wrap
-            };
-            cardStack.Children.Add(_emailFeedbackText);
-
-            // Button Row
-            var btnRow = new StackPanel { Orientation = Orientation.Horizontal };
-
-            var testBtn = new Border
-            {
-                Background = new SolidColorBrush(Color.FromArgb(0x28, 0x3D, 0xDC, 0x84)),
-                BorderBrush = BrushMint,
-                BorderThickness = new Thickness(1),
-                CornerRadius = new CornerRadius(8),
-                Padding = new Thickness(16, 7, 16, 7),
-                Cursor = Cursors.Hand,
-                Margin = new Thickness(0, 0, 10, 0)
-            };
-            var testBtnText = new TextBlock { Text = "⚡ Test & Save Connection", FontSize = 12, FontWeight = FontWeights.Bold, Foreground = BrushMint };
-            testBtn.Child = testBtnText;
-
-            testBtn.MouseLeftButtonDown += (s, e) =>
-            {
-                e.Handled = true;
-                string srv = (_serverBox.Text ?? "").Trim();
-                int prt = 993;
-                int.TryParse((_portBox.Text ?? "993").Trim(), out prt);
-                string em = (_emailBox.Text ?? "").Trim();
-                string pw = _passBox.Password ?? "";
-
-                _emailFeedbackText.Foreground = BrushOrange;
-                _emailFeedbackText.Text = "Connecting directly over SSL (port " + prt + ")...";
-
-                Task.Run(() =>
-                {
-                    int unread;
-                    string err;
-                    bool ok = DirectImapClient.TestConnection(srv, prt, true, em, pw, out unread, out err);
-                    Dispatcher.BeginInvoke(new Action(() =>
-                    {
-                        if (ok)
-                        {
-                            BackgroundAutomationsEngine.EmailConfig.Server = srv;
-                            BackgroundAutomationsEngine.EmailConfig.Port = prt;
-                            BackgroundAutomationsEngine.EmailConfig.EmailAddress = em;
-                            BackgroundAutomationsEngine.EmailConfig.IsConnected = true;
-                            BackgroundAutomationsEngine.SaveEmailPassword(pw);
-
-                            _emailFeedbackText.Foreground = BrushMint;
-                            _emailFeedbackText.Text = string.Format("✅ Connected successfully! Found {0} unread emails in INBOX.", unread);
-
-                            BackgroundAutomationsEngine.RunEmailTriageAsync();
-                        }
-                        else
-                        {
-                            _emailFeedbackText.Foreground = new SolidColorBrush(Color.FromRgb(0xFF, 0x4F, 0x7B));
-                            _emailFeedbackText.Text = "❌ Connection failed: " + err;
-                        }
-                    }));
-                });
-            };
-            btnRow.Children.Add(testBtn);
-
-            var discBtn = new Border
-            {
-                Background = BrushBgDark,
-                BorderBrush = BrushBorder,
-                BorderThickness = new Thickness(1),
-                CornerRadius = new CornerRadius(8),
-                Padding = new Thickness(14, 7, 14, 7),
-                Cursor = Cursors.Hand
-            };
-            var discText = new TextBlock { Text = "Disconnect", FontSize = 12, Foreground = BrushMuted };
-            discBtn.Child = discText;
-            discBtn.MouseLeftButtonDown += (s, e) =>
-            {
-                e.Handled = true;
-                BackgroundAutomationsEngine.EmailConfig.IsConnected = false;
-                BackgroundAutomationsEngine.SaveEmailPassword("");
-                _passBox.Password = "";
-                _emailFeedbackText.Foreground = BrushMuted;
-                _emailFeedbackText.Text = "Email disconnected.";
-            };
-            btnRow.Children.Add(discBtn);
-
-            cardStack.Children.Add(btnRow);
-            emailCard.Child = cardStack;
-            stack.Children.Add(emailCard);
-
-            scroll.Content = stack;
-            return scroll;
-        }
-
-        // =====================================================================
-        // Tab 3: Triaged Inbox
-        // =====================================================================
-        private UIElement BuildInboxView()
-        {
-            var scroll = new ScrollViewer { VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
-            var stack = new StackPanel { Margin = new Thickness(2, 4, 6, 8) };
-
-            var topRow = new Grid { Margin = new Thickness(0, 0, 0, 12) };
-            topRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            topRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(160) });
-
-            var hStack = new StackPanel();
-            hStack.Children.Add(new TextBlock { Text = "Triaged Unread Emails", FontSize = 14, FontWeight = FontWeights.Bold, Foreground = BrushCream });
-            hStack.Children.Add(new TextBlock { Text = "Urgent emails are detected automatically and prioritized.", FontSize = 12, Foreground = BrushMuted });
-            Grid.SetColumn(hStack, 0);
-            topRow.Children.Add(hStack);
-
-            var refreshBtn = new Border
-            {
-                Background = BrushCardBg,
-                BorderBrush = BrushBorder,
-                BorderThickness = new Thickness(1),
-                CornerRadius = new CornerRadius(7),
-                Padding = new Thickness(12, 6, 12, 6),
-                HorizontalAlignment = HorizontalAlignment.Right,
-                Cursor = Cursors.Hand
-            };
-            var refreshText = new TextBlock { Text = "🔄 Sync Inbox Now", FontSize = 11, FontWeight = FontWeights.SemiBold, Foreground = BrushCream };
-            refreshBtn.Child = refreshText;
-            refreshBtn.MouseLeftButtonDown += (s, e) =>
-            {
-                e.Handled = true;
-                refreshText.Text = "Syncing...";
-                BackgroundAutomationsEngine.RunEmailTriageAsync().ContinueWith(t =>
-                {
-                    Dispatcher.BeginInvoke(new Action(() =>
-                    {
-                        refreshText.Text = "🔄 Sync Inbox Now";
-                        PopulateInboxCards();
-                    }));
-                });
-            };
-            Grid.SetColumn(refreshBtn, 1);
-            topRow.Children.Add(refreshBtn);
-
-            stack.Children.Add(topRow);
-
-            _inboxItemsPanel = new StackPanel();
-            PopulateInboxCards();
-            stack.Children.Add(_inboxItemsPanel);
-
-            scroll.Content = stack;
-            return scroll;
-        }
-
-        private void PopulateInboxCards()
-        {
-            if (_inboxItemsPanel == null) return;
-            _inboxItemsPanel.Children.Clear();
-
-            var msgs = BackgroundAutomationsEngine.RecentMessages;
-            if (!BackgroundAutomationsEngine.EmailConfig.IsConnected)
-            {
-                var emptyCard = new Border
-                {
-                    Background = BrushCardBg,
-                    BorderBrush = BrushBorder,
-                    BorderThickness = new Thickness(1),
-                    CornerRadius = new CornerRadius(10),
-                    Padding = new Thickness(24)
-                };
-                var sp = new StackPanel { HorizontalAlignment = HorizontalAlignment.Center };
-                sp.Children.Add(new TextBlock
-                {
-                    Text = "✉️ Email Not Connected",
-                    FontSize = 14,
-                    FontWeight = FontWeights.Bold,
-                    Foreground = BrushCream,
-                    HorizontalAlignment = HorizontalAlignment.Center,
-                    Margin = new Thickness(0, 0, 0, 6)
-                });
-                sp.Children.Add(new TextBlock
-                {
-                    Text = "Switch to the 'App Integrations' tab to connect your Gmail or Outlook account with an App Password.",
-                    FontSize = 12,
-                    Foreground = BrushMuted,
-                    HorizontalAlignment = HorizontalAlignment.Center
-                });
-                emptyCard.Child = sp;
-                _inboxItemsPanel.Children.Add(emptyCard);
-                return;
-            }
-
-            if (msgs == null || msgs.Count == 0)
-            {
-                var emptyCard = new Border
-                {
-                    Background = BrushCardBg,
-                    BorderBrush = BrushBorder,
-                    BorderThickness = new Thickness(1),
-                    CornerRadius = new CornerRadius(10),
-                    Padding = new Thickness(24)
-                };
-                var sp = new StackPanel { HorizontalAlignment = HorizontalAlignment.Center };
-                sp.Children.Add(new TextBlock
-                {
-                    Text = "🎉 Inbox Zero",
-                    FontSize = 15,
-                    FontWeight = FontWeights.Bold,
-                    Foreground = BrushMint,
-                    HorizontalAlignment = HorizontalAlignment.Center,
-                    Margin = new Thickness(0, 0, 0, 6)
-                });
-                sp.Children.Add(new TextBlock
-                {
-                    Text = "No unread messages found. Flinch will alert you when high-priority emails arrive.",
-                    FontSize = 12,
-                    Foreground = BrushMuted,
-                    HorizontalAlignment = HorizontalAlignment.Center
-                });
-                emptyCard.Child = sp;
-                _inboxItemsPanel.Children.Add(emptyCard);
-                return;
-            }
-
-            foreach (var m in msgs)
-            {
-                var itemCard = new Border
-                {
-                    Background = BrushCardBg,
-                    BorderBrush = m.IsUrgent ? BrushOrange : BrushBorder,
-                    BorderThickness = new Thickness(m.IsUrgent ? 1.5 : 1),
-                    CornerRadius = new CornerRadius(10),
-                    Padding = new Thickness(14),
-                    Margin = new Thickness(0, 0, 0, 8)
-                };
-
-                var itemStack = new StackPanel();
-
-                var headerRow = new Grid();
-                headerRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-                headerRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(90) });
-
-                var senderStack = new StackPanel { Orientation = Orientation.Horizontal };
-                if (m.IsUrgent)
-                {
-                    var urgentBadge = new Border
-                    {
-                        Background = new SolidColorBrush(Color.FromArgb(0x28, 0xFF, 0x8A, 0x3D)),
-                        BorderBrush = BrushOrange,
-                        BorderThickness = new Thickness(1),
-                        CornerRadius = new CornerRadius(4),
-                        Padding = new Thickness(6, 1, 6, 1),
-                        Margin = new Thickness(0, 0, 8, 0)
-                    };
-                    urgentBadge.Child = new TextBlock { Text = "URGENT", FontSize = 10, FontWeight = FontWeights.Bold, Foreground = BrushOrange };
-                    senderStack.Children.Add(urgentBadge);
-                }
-
-                senderStack.Children.Add(new TextBlock
-                {
-                    Text = m.From,
-                    FontSize = 13,
-                    FontWeight = FontWeights.Bold,
-                    Foreground = BrushCream
-                });
-                Grid.SetColumn(senderStack, 0);
-                headerRow.Children.Add(senderStack);
-
-                var dateText = new TextBlock
-                {
-                    Text = m.Date.ToShortDateString(),
-                    FontSize = 11,
-                    Foreground = BrushMuted,
-                    HorizontalAlignment = HorizontalAlignment.Right
-                };
-                Grid.SetColumn(dateText, 1);
-                headerRow.Children.Add(dateText);
-
-                itemStack.Children.Add(headerRow);
-
-                var subjText = new TextBlock
-                {
-                    Text = m.Subject,
-                    FontSize = 12,
-                    Foreground = m.IsUrgent ? BrushCream : BrushMuted,
-                    Margin = new Thickness(0, 4, 0, 0),
-                    TextTrimming = TextTrimming.CharacterEllipsis
-                };
-                itemStack.Children.Add(subjText);
-
-                itemCard.Child = itemStack;
-                _inboxItemsPanel.Children.Add(itemCard);
-            }
-        }
-
-        private void UpdateLiveStatusUI()
-        {
-            if (_emailStatusBadge != null)
-            {
-                _emailStatusBadge.Text = BackgroundAutomationsEngine.EmailStatusText;
-            }
-            if (_downloadsStatusBadge != null)
-            {
-                _downloadsStatusBadge.Text = BackgroundAutomationsEngine.DownloadsStatusText;
-            }
-            if (_inboxItemsPanel != null)
-            {
-                PopulateInboxCards();
-            }
         }
     }
 
