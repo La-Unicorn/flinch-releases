@@ -125,10 +125,10 @@ namespace FlinchApp
                 ClipToBounds = false
             };
 
-            // 1. Background Path with camera notch cutout (M28 0 L551 0 ...)
+            // 1. Background Path without camera notch gap cutout - completely filled & solid along top bezel
             var panelPath = new System.Windows.Shapes.Path
             {
-                Data = Geometry.Parse("M28 0 L551 0 Q565 0 565 14 L565 18 Q565 40 587 40 L843 40 Q865 40 865 18 L865 14 Q865 0 879 0 L1402 0 Q1430 0 1430 28 L1430 152 Q1430 192 1390 192 L40 192 Q0 192 0 152 L0 28 Q0 0 28 0 Z"),
+                Data = Geometry.Parse("M28 0 L1402 0 Q1430 0 1430 28 L1430 152 Q1430 192 1390 192 L40 192 Q0 192 0 152 L0 28 Q0 0 28 0 Z"),
                 Fill = new LinearGradientBrush
                 {
                     StartPoint = new Point(0, 0),
@@ -152,11 +152,10 @@ namespace FlinchApp
             };
             canvas.Children.Add(panelPath);
 
-            // 2. Dividers (4 vertical lines)
-            canvas.Children.Add(CreateDivider(361, 22, 361, 170));
-            canvas.Children.Add(CreateDivider(595, 60, 595, 170));
-            canvas.Children.Add(CreateDivider(845, 60, 845, 170));
-            canvas.Children.Add(CreateDivider(1194, 22, 1194, 170));
+            // 2. Dividers (3 vertical lines dividing into 4 balanced, fully filled sections)
+            canvas.Children.Add(CreateDivider(360, 22, 360, 170));
+            canvas.Children.Add(CreateDivider(720, 22, 720, 170));
+            canvas.Children.Add(CreateDivider(1080, 22, 1080, 170));
 
             // =================================================================
             // COLUMN 0: CHAT HISTORY (x: 0 to 361)
@@ -198,13 +197,13 @@ namespace FlinchApp
             canvas.Children.Add(row3);
 
             // =================================================================
-            // COLUMN 1: INTEGRATIONS (x: 361 to 595)
+            // COLUMN 1: INTEGRATIONS (x: 360 to 720)
             // =================================================================
             // Header
             var intHeader = new Canvas { Cursor = Cursors.Hand };
             intHeader.Children.Add(CreateSvgPath(
                 "M19.439 7.85c-.049.322.059.648.289.878l1.568 1.568c.47.47.706 1.087.706 1.704s-.235 1.233-.706 1.704l-1.611 1.611a.98.98 0 0 1-.837.276c-.47-.07-.802-.48-.968-.925a2.501 2.501 0 1 0-3.214 3.214c.446.166.855.497.925.968a.979.979 0 0 1-.276.837l-1.61 1.61a2.404 2.404 0 0 1-1.705.707 2.402 2.402 0 0 1-1.704-.706l-1.568-1.568a1.026 1.026 0 0 0-.877-.29c-.493.074-.84.504-1.02.968a2.5 2.5 0 1 1-3.237-3.237c.464-.18.894-.527.967-1.02a1.026 1.026 0 0 0-.289-.877l-1.568-1.568A2.402 2.402 0 0 1 1.998 12c0-.617.236-1.234.706-1.704L4.23 8.77c.24-.24.581-.353.917-.303.515.077.877.528 1.073 1.01a2.5 2.5 0 1 0 3.259-3.259c-.482-.196-.933-.558-1.01-1.073-.05-.336.062-.676.303-.917l1.525-1.525A2.402 2.402 0 0 1 12 1.998c.617 0 1.234.236 1.704.706l1.568 1.568c.23.23.556.338.877.29.493-.074.84-.504 1.02-.968a2.5 2.5 0 1 1 3.236 3.236c-.464.18-.894.527-.967 1.02Z",
-                383, 20, 27, 27, new SolidColorBrush(Color.FromRgb(0xF2, 0xF2, 0xF3)), 1.8));
+                400, 20, 27, 27, new SolidColorBrush(Color.FromRgb(0xF2, 0xF2, 0xF3)), 1.8));
             var intTitle = new TextBlock
             {
                 Text = "Integrations",
@@ -213,17 +212,17 @@ namespace FlinchApp
                 Foreground = new SolidColorBrush(Color.FromRgb(0xF5, 0xF5, 0xF7)),
                 FontFamily = AppleFont
             };
-            Canvas.SetLeft(intTitle, 419);
+            Canvas.SetLeft(intTitle, 438);
             Canvas.SetTop(intTitle, 16);
             intHeader.Children.Add(intTitle);
-            intHeader.Children.Add(CreateSvgPath("m6 9 6 6 6-6", 541, 25, 22, 22, new SolidColorBrush(Color.FromRgb(0x8E, 0x8E, 0x93)), 1.8));
+            intHeader.Children.Add(CreateSvgPath("m6 9 6 6 6-6", 570, 25, 22, 22, new SolidColorBrush(Color.FromRgb(0x8E, 0x8E, 0x93)), 1.8));
             intHeader.MouseLeftButtonDown += (s, e) => { e.Handled = true; ToggleHubFlyout("gmail"); };
             canvas.Children.Add(intHeader);
 
-            // Notion Tile (x: 394, y: 74, w: 40, h: 40, rx: 9)
+            // Notion Tile (x: 410, y: 74, w: 44, h: 40, rx: 9)
             var notionBorder = new Border
             {
-                Width = 40,
+                Width = 44,
                 Height = 40,
                 CornerRadius = new CornerRadius(9),
                 Background = Brushes.White,
@@ -242,11 +241,11 @@ namespace FlinchApp
             };
             notionBorder.Child = notionPath;
             notionBorder.MouseLeftButtonDown += (s, e) => { e.Handled = true; Process.Start("https://notion.so"); };
-            Canvas.SetLeft(notionBorder, 394);
+            Canvas.SetLeft(notionBorder, 410);
             Canvas.SetTop(notionBorder, 74);
             canvas.Children.Add(notionBorder);
 
-            // Spotify Tile (x: 458, y: 72, w: 52, h: 44, rx: 12)
+            // Spotify Tile (x: 482, y: 72, w: 52, h: 44, rx: 12)
             var spotifyBorder = new Border
             {
                 Width = 52,
@@ -264,11 +263,11 @@ namespace FlinchApp
             spotifyCanvas.Children.Add(CreateSvgPath("M10 23 Q17 21 24 24", 0, 0, 34, 34, new SolidColorBrush(Color.FromRgb(0x0B, 0x1A, 0x10)), 2.2));
             spotifyBorder.Child = spotifyCanvas;
             spotifyBorder.MouseLeftButtonDown += (s, e) => { e.Handled = true; Process.Start("https://open.spotify.com"); };
-            Canvas.SetLeft(spotifyBorder, 458);
+            Canvas.SetLeft(spotifyBorder, 482);
             Canvas.SetTop(spotifyBorder, 72);
             canvas.Children.Add(spotifyBorder);
 
-            // Google Drive / Gmail Tile (x: 521.5, y: 74)
+            // Google Drive / Gmail Tile (x: 560, y: 74)
             var gdriveBorder = new Border
             {
                 Width = 44,
@@ -299,14 +298,14 @@ namespace FlinchApp
 
             gdriveBorder.Child = gdriveCanvas;
             gdriveBorder.MouseLeftButtonDown += (s, e) => { e.Handled = true; ToggleHubFlyout("gmail"); };
-            Canvas.SetLeft(gdriveBorder, 521.5);
+            Canvas.SetLeft(gdriveBorder, 560);
             Canvas.SetTop(gdriveBorder, 74);
             canvas.Children.Add(gdriveBorder);
 
-            // Add Button (x: 388.75, y: 131.75, w: 180.5, h: 35.5, rx: 12)
+            // Add Button (x: 410, y: 131.75, w: 194, h: 35.5, rx: 12)
             var addBtn = new Border
             {
-                Width = 180.5,
+                Width = 194,
                 Height = 35.5,
                 CornerRadius = new CornerRadius(12),
                 Background = new SolidColorBrush(Color.FromRgb(0x1F, 0x1F, 0x21)),
@@ -328,25 +327,18 @@ namespace FlinchApp
             addStack.Children.Add(addText);
             addBtn.Child = addStack;
             addBtn.MouseLeftButtonDown += (s, e) => { e.Handled = true; ToggleHubFlyout("gmail"); };
-            Canvas.SetLeft(addBtn, 388.75);
+            Canvas.SetLeft(addBtn, 410);
             Canvas.SetTop(addBtn, 131.75);
             canvas.Children.Add(addBtn);
 
             // =================================================================
-            // COLUMN 2: CENTER AREA (Empty MacBook Camera Bezel Notch)
-            // =================================================================
-            // Intentionally clean and empty between dividers x=595 and x=845,
-            // faithfully preserving the top bezel camera notch cutout aesthetic
-            // without any mic or listening status card cluttering the center.
-
-            // =================================================================
-            // COLUMN 3: CUSTOMIZATION (x: 845 to 1194)
+            // COLUMN 2: CUSTOMIZATION (x: 720 to 1080)
             // =================================================================
             // Header
             var custHeader = new Canvas { Cursor = Cursors.Hand };
             custHeader.Children.Add(CreateSvgPath(
                 "M21 3 11.5 12.5 M9.5 11.5c-2.2-.3-4 1-4.3 3.2-.2 1.6-1.1 2.8-2.7 3.3 3.8 2.3 8.6 1.4 9.4-2.4.3-1.3-.4-2.9-1.5-3.6",
-                894, 20, 27, 27, new SolidColorBrush(Color.FromRgb(0xF2, 0xF2, 0xF3)), 1.8));
+                760, 20, 27, 27, new SolidColorBrush(Color.FromRgb(0xF2, 0xF2, 0xF3)), 1.8));
             var custTitle = new TextBlock
             {
                 Text = "Customization",
@@ -355,14 +347,14 @@ namespace FlinchApp
                 Foreground = new SolidColorBrush(Color.FromRgb(0xF5, 0xF5, 0xF7)),
                 FontFamily = AppleFont
             };
-            Canvas.SetLeft(custTitle, 933);
+            Canvas.SetLeft(custTitle, 798);
             Canvas.SetTop(custTitle, 16);
             custHeader.Children.Add(custTitle);
-            custHeader.Children.Add(CreateSvgPath("m6 9 6 6 6-6", 1084, 25, 22, 22, new SolidColorBrush(Color.FromRgb(0x8E, 0x8E, 0x93)), 1.8));
+            custHeader.Children.Add(CreateSvgPath("m6 9 6 6 6-6", 950, 25, 22, 22, new SolidColorBrush(Color.FromRgb(0x8E, 0x8E, 0x93)), 1.8));
             custHeader.MouseLeftButtonDown += (s, e) => { e.Handled = true; CycleHubAccentColor(); };
             canvas.Children.Add(custHeader);
 
-            // Sun Tile: rect x="883" y="79" w="56" h="56" rx="17" fill="#3a3a3c"
+            // Sun Tile
             var sunBorder = new Border
             {
                 Width = 56,
@@ -376,11 +368,11 @@ namespace FlinchApp
                 "M12 2a4 4 0 1 0 4 4 4 4 0 0 0-4-4zm0-2v2m0 16v2m-7.07-13.07 1.41 1.41m9.32 9.32 1.41 1.41M1 10h2m16 0h2M3.34 16.66l1.41-1.41m9.32-9.32 1.41-1.41",
                 0, 0, 28, 28, new SolidColorBrush(Color.FromRgb(0xF2, 0xF2, 0xF3)), 1.8);
             sunBorder.MouseLeftButtonDown += (s, e) => { e.Handled = true; ShowAlert("theme", "Daylight visual theme activated.", "Theme"); };
-            Canvas.SetLeft(sunBorder, 883);
+            Canvas.SetLeft(sunBorder, 760);
             Canvas.SetTop(sunBorder, 79);
             canvas.Children.Add(sunBorder);
 
-            // Moon Tile: rect x="955" y="79" w="56" h="56" rx="17" fill="#2a2a2c"
+            // Moon Tile
             var moonBorder = new Border
             {
                 Width = 56,
@@ -394,11 +386,11 @@ namespace FlinchApp
                 "M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z",
                 0, 0, 28, 28, new SolidColorBrush(Color.FromRgb(0xF2, 0xF2, 0xF3)), 1.8);
             moonBorder.MouseLeftButtonDown += (s, e) => { e.Handled = true; ShowAlert("theme", "Midnight dark theme activated.", "Theme"); };
-            Canvas.SetLeft(moonBorder, 955);
+            Canvas.SetLeft(moonBorder, 832);
             Canvas.SetTop(moonBorder, 79);
             canvas.Children.Add(moonBorder);
 
-            // Gradient Orb: circle cx="1055" cy="107" r="29" fill="#1a1a1b" stroke="#ffffff" stroke-opacity="0.35"
+            // Gradient Orb
             var orbOuter = new Canvas
             {
                 Width = 58,
@@ -436,11 +428,11 @@ namespace FlinchApp
             Canvas.SetTop(orbInner, 10);
             orbOuter.Children.Add(orbInner);
             orbOuter.MouseLeftButtonDown += (s, e) => { e.Handled = true; CycleHubAccentColor(); };
-            Canvas.SetLeft(orbOuter, 1026);
+            Canvas.SetLeft(orbOuter, 906);
             Canvas.SetTop(orbOuter, 78);
             canvas.Children.Add(orbOuter);
 
-            // Typography Tile: rect x="1100" y="79" w="56" h="56" rx="17" fill="#2a2a2c"
+            // Typography Tile
             var typeBorder = new Border
             {
                 Width = 56,
@@ -461,18 +453,18 @@ namespace FlinchApp
             };
             typeBorder.Child = typeText;
             typeBorder.MouseLeftButtonDown += (s, e) => { e.Handled = true; ShowAlert("scale", "Font scale set to standard.", "Display"); };
-            Canvas.SetLeft(typeBorder, 1100);
+            Canvas.SetLeft(typeBorder, 980);
             Canvas.SetTop(typeBorder, 79);
             canvas.Children.Add(typeBorder);
 
             // =================================================================
-            // COLUMN 4: SETTINGS (x: 1194 to 1430)
+            // COLUMN 3: SETTINGS (x: 1080 to 1430)
             // =================================================================
             // Header
             var settHeader = new Canvas { Cursor = Cursors.Hand };
             settHeader.Children.Add(CreateSvgPath(
                 "M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z M12 9a3 3 0 1 1-3 3 3 3 0 0 1 3-3z",
-                1231, 20, 27, 27, new SolidColorBrush(Color.FromRgb(0xF2, 0xF2, 0xF3)), 1.8));
+                1120, 20, 27, 27, new SolidColorBrush(Color.FromRgb(0xF2, 0xF2, 0xF3)), 1.8));
             var settTitle = new TextBlock
             {
                 Text = "Settings",
@@ -481,27 +473,27 @@ namespace FlinchApp
                 Foreground = new SolidColorBrush(Color.FromRgb(0xF5, 0xF5, 0xF7)),
                 FontFamily = AppleFont
             };
-            Canvas.SetLeft(settTitle, 1269);
+            Canvas.SetLeft(settTitle, 1158);
             Canvas.SetTop(settTitle, 16);
             settHeader.Children.Add(settTitle);
-            settHeader.Children.Add(CreateSvgPath("m6 9 6 6 6-6", 1359, 25, 22, 22, new SolidColorBrush(Color.FromRgb(0x8E, 0x8E, 0x93)), 1.8));
+            settHeader.Children.Add(CreateSvgPath("m6 9 6 6 6-6", 1260, 25, 22, 22, new SolidColorBrush(Color.FromRgb(0x8E, 0x8E, 0x93)), 1.8));
             settHeader.MouseLeftButtonDown += (s, e) => { e.Handled = true; ToggleHubFlyout("settings"); };
             canvas.Children.Add(settHeader);
 
-            // Row 1: General (x: 1232, y: 69)
+            // Row 1: General (x: 1122, y: 69)
             canvas.Children.Add(CreateSettingsRowItem(
                 "M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z M12 9a3 3 0 1 1-3 3 3 3 0 0 1 3-3z",
-                1232, 69, "General", 86, () => ToggleHubFlyout("settings")));
+                1122, 69, "General", 86, () => ToggleHubFlyout("settings")));
 
-            // Row 2: Hotkeys (x: 1232, y: 106)
+            // Row 2: Hotkeys (x: 1122, y: 106)
             canvas.Children.Add(CreateSettingsRowItem(
                 "M2 6a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6zm4 2h.01M10 8h.01M14 8h.01M18 8h.01M8 12h.01M12 12h.01M16 12h.01M7 16h10",
-                1232, 106, "Hotkeys", 123, () => ToggleHubFlyout("hotkeys")));
+                1122, 106, "Hotkeys", 123, () => ToggleHubFlyout("hotkeys")));
 
-            // Row 3: About Flinch (x: 1232, y: 143)
+            // Row 3: About Flinch (x: 1122, y: 143)
             canvas.Children.Add(CreateSettingsRowItem(
                 "M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm0 14v-4m0-4h.01",
-                1232, 143, "About Flinch", 160, () => ShowAlert("about", "Flinch v" + BuildConfig.BuildVersion + " · Autonomous Voice Companion", "About")));
+                1122, 143, "About Flinch", 160, () => ShowAlert("about", "Flinch v" + BuildConfig.BuildVersion + " · Autonomous Voice Companion", "About")));
 
             return canvas;
         }
